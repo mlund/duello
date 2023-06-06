@@ -74,5 +74,6 @@
         "memory_resource": "cpp",
         "random": "cpp",
         "utility": "cpp"
-    }
+    },
+    "rust-analyzer.showUnlinkedFileNotification": false
 }
