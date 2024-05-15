@@ -18,4 +18,3 @@ Cargo.lock
 *.dat.gz
 .DS_Store
 .mypy*
-.vscode/
