@@ -17,3 +17,4 @@ Cargo.lock
 *.dat
 *.dat.gz
 .DS_Store
+.mypy*
