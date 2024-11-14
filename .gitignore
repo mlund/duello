@@ -18,3 +18,4 @@ Cargo.lock
 *.dat.gz
 .DS_Store
 .mypy*
+.ipynb_checkpoints
