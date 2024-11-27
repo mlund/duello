@@ -8,6 +8,17 @@
     "rust-analyzer.rustfmt.extraArgs": [
         "+stable"
     ],
+    "file_scan_exclusions": [
+        "**/.git",
+        "**/.svn",
+        "**/.hg",
+        "**/CVS",
+        "**/.DS_Store",
+        "**/Thumbs.db",
+        "**/.classpath",
+        "**/.settings",
+        "**/~"
+    ],
     "files.associations": {
         "__bit_reference": "cpp",
         "__bits": "cpp",
