@@ -156,6 +156,11 @@ fn do_scan(cmd: &Commands) -> Result<()> {
     let ref_b = Structure::from_xyz(mol2, topology.atomkinds());
 
     info!("{}", medium);
+    info!(
+        "Molecular net-charges: [{:.2}e, {:.2}e]",
+        ref_a.net_charge(),
+        ref_b.net_charge(),
+    );
 
     // Scan over mass center distances
     let distances = iter_num_tools::arange(*rmin..*rmax, *dr).collect_vec();
