@@ -1,0 +1,44 @@
+[package]
+name = "virialize"
+version = "0.1.1"
+edition = "2021"
+description = "Calculates the osmotic second virial coefficient (B2), and dissociation constant (Kd), for two rigid (macro)molecules, e.g. globular proteins. Done by explicit summation of the partition function in six dimensions (angular space and rigid-body separation). Calvados 3 parameters for use with coarsed grained amino acids are provided, but any pair-wise additivie potential can be used."
+authors = ["Mikael Lund <lyssky@icloud.com>"]
+#repository = "https://github.com/mlund/faunus-rs"
+documentation = "https://docs.rs/virialize"
+readme = "README.md"
+license = "Apache-2.0"
+license-file = "LICENSE"
+categories = ["science"]
+keywords = ["pairwise_interaction", "bioinformatics", "virial_coefficient", "dissociation_constant"]
+
+[dependencies]
+anyhow = "1.0"
+approx = "0.5"
+chemfiles = "0.10"
+clap = { version = "4", features = ["derive"] }
+itertools = "0.12"
+itertools-num = "0.1"
+nalgebra = "0.33"
+rayon = "1.10"
+faunus = { path = "../faunus" }
+interatomic = { version = "0", path = "../interatomic"}
+coulomb = { version = "0", path = "../coulomb"}
+serde_yaml = "0.9"
+serde = { version = "1.0", features = ["derive"] }
+semver = { version = "1.0", features = ["serde"] }
+pretty_env_logger = "0.5"
+log = "0.4"
+average = "0.15"
+iter_num_tools = "0.7"
+indicatif = {version = "*", features = ["rayon"]}
+flate2 = "1.0"
+textplots = "0.8"
+rgb = "0.8"
+nu-ansi-term = "0.50"
+hexasphere = {version = "13.1", features = ["adjacency"]}
+num-traits = "0.2"
+rand = "0.8"
+get-size = {version = "0.1", features = ["derive"]}
+physical_constants = "0.5"
+

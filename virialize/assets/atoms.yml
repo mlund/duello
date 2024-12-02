@@ -1,0 +1,207 @@
+#
+# Changelog:
+#
+# v1.2.0: Removed id's
+# v1.1.0: Reformatted to YAML and fixed id's
+# v1.0.0: Initial version from C++ faunus
+#
+comment: Coarse grained residues amino acid model (AAM)
+version: "1.1.0"
+atomlist:
+  - name: Na
+    mass: 22.99
+    charge: 1.0
+    sigma: 3.8
+    element: Na
+  - name: Cl
+    mass: 35.45
+    charge: -1.0
+    sigma: 3.4
+    element: Cl
+  - name: ASP
+    mass: 110.0
+    charge: -1.0
+    sigma: 7.2
+    element: ASP
+  - name: HASP
+    mass: 110.0
+    charge: 0.0
+    sigma: 7.2
+    element: ASP
+  - name: LASP
+    mass: 110.0
+    charge: 2.0
+    sigma: 7.2
+    element: ASP
+  - name: CTR
+    mass: 16.0
+    charge: -1.0
+    sigma: 4.0
+    element: C
+  - name: HCTR
+    mass: 16.0
+    charge: 0.0
+    sigma: 4.0
+    element: C
+  - name: GLU
+    mass: 122.0
+    charge: -1.0
+    sigma: 7.6
+    element: GLU
+  - name: HGLU
+    mass: 122.0
+    charge: 0.0
+    sigma: 7.6
+    element: GLU
+  - name: LGLU
+    mass: 122.0
+    charge: 2.0
+    sigma: 7.6
+    element: GLU
+  - name: HIS
+    mass: 130.0
+    charge: 0.0
+    sigma: 7.8
+    element: HIS
+  - name: HHIS
+    mass: 130.0
+    charge: 1.0
+    sigma: 7.8
+    element: HIS
+  - name: NTR
+    mass: 14.0
+    charge: 0.0
+    sigma: 4.0
+    element: N
+  - name: HNTR
+    mass: 14.0
+    charge: 1.0
+    sigma: 4.0
+    element: N
+  - name: TYR
+    mass: 154.0
+    charge: -1.0
+    sigma: 8.2
+    element: TYR
+  - name: HTYR
+    mass: 154.0
+    charge: 0.0
+    sigma: 8.2
+    element: TYR
+  - name: LYS
+    mass: 116.0
+    charge: 0.0
+    sigma: 7.4
+    element: LYS
+  - name: HLYS
+    mass: 116.0
+    charge: 1.0
+    sigma: 7.4
+    element: LYS
+  - name: CYS
+    mass: 103.0
+    charge: -1.0
+    sigma: 7.2
+    element: CYS
+  - name: HCYS
+    mass: 103.0
+    charge: 0.0
+    sigma: 7.2
+    element: CYS
+  - name: ARG
+    mass: 144.0
+    charge: 0.0
+    sigma: 8.0
+    element: ARG
+  - name: HARG
+    mass: 144.0
+    charge: 1.0
+    sigma: 8.0
+    element: ARG
+  - name: ALA
+    mass: 66.0
+    charge: 0.0
+    sigma: 6.2
+    element: ALA
+  - name: ILE
+    mass: 102.0
+    charge: 0.0
+    sigma: 7.2
+    element: ILE
+  - name: LEU
+    mass: 102.0
+    charge: 0.0
+    sigma: 7.2
+    element: LEU
+    hydrophobicity: Hydrophobic
+  - name: MET
+    mass: 122.0
+    charge: 0.0
+    sigma: 7.6
+    element: MET
+  - name: PHE
+    mass: 138.0
+    charge: 0.0
+    sigma: 7.8
+    element: PHE
+  - name: PRO
+    mass: 90.0
+    charge: 0.0
+    sigma: 6.8
+    element: PRO
+  - name: TRP
+    mass: 176.0
+    charge: 0.0
+    sigma: 8.6
+    element: TRP
+  - name: VAL
+    mass: 90.0
+    charge: 0.0
+    sigma: 6.8
+    element: VAL
+  - name: SER
+    mass: 82.0
+    charge: 0.0
+    sigma: 6.6
+    element: SER
+  - name: THR
+    mass: 94.0
+    charge: 0.0
+    sigma: 7.0
+    element: THR
+  - name: ASN
+    mass: 108.0
+    charge: 0.0
+    sigma: 7.2
+    element: ASN
+  - name: GLN
+    mass: 120.0
+    charge: 0.0
+    sigma: 7.6
+    element: GLN
+  - name: GLY
+    mass: 54.0
+    charge: 0.0
+    sigma: 5.8
+    element: GLY
+  - name: FE
+    mass: 55.85
+    charge: 3.0
+    sigma: 3.6
+    element: Fe
+  - name: CYSs
+    mass: 98.0
+    charge: 0.0
+    sigma: 7.0
+  - name: PP # positive particle
+    mass: 1.0
+    charge: 1.0
+    sigma: 4.0
+  - name: NP # negative particle
+    mass: 1.0
+    charge: -1.0
+    sigma: 4.0
+  - name: MP # middle particle
+    mass: 10000000000.0
+    charge: 0.0
+    sigma: 40.0

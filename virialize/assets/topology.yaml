@@ -1,0 +1,26 @@
+include: [calvados3.yaml]
+atoms:
+  - name: PP # positive particle
+    mass: 1.0
+    charge: 1.0
+    sigma: 4.0
+  - name: NP # negative particle
+    mass: 1.0
+    charge: -1.0
+    sigma: 4.0
+  - name: MP # middle particle
+    mass: 1e9
+    charge: 0.0
+    sigma: 40.0
+
+system:
+  energy:
+    nonbonded:
+      # Note that a Coulomb term is automatically added, so don't specify one here!
+      default:
+        - !WCA {mixing: LB}
+        # Uncomment this for a Calvados potential
+        #- !AshbaughHatch {mixing: arithmetic, cutoff: 20.0}
+      [MP, MP]:
+        - !WCA {mixing: LB}
+
