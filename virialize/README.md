@@ -23,3 +23,12 @@ is automatically added and should hence not be specified in the topology.
 virialize scan --icotable -1 cppm-p18.xyz -2 cppm-p00.xyz --rmin 40.5 --rmax 60 --dr 1.0 --top topology.yaml --resolution 0.6 --molarity 0.05
 ```
 
+## Create `pip` package using Maturin
+
+This is for development purposes only.
+
+```console
+pip install ziglang pipx
+pipx install maturin # on ubuntu; then restart shell
+maturin publish --target=x86_64-unknown-linux-gnu --zig
+```
