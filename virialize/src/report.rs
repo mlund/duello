@@ -13,7 +13,7 @@ use std::{
 use textplots::{Chart, ColorPlot, Shape};
 
 /// Write PMF and mean energy as a function of mass center separation to file
-pub fn report_pmf(samples: &[(Vector3, Sample)], path: &PathBuf) {
+pub fn report_pmf(samples: &[(Vector3, Sample)], path: &PathBuf, masses: Option<(f64, f64)>) {
     // File with F(R) and U(R)
     let mut pmf_file = File::create(path).unwrap();
     let mut pmf_data = Vec::<(f32, f32)>::new();
@@ -52,6 +52,14 @@ pub fn report_pmf(samples: &[(Vector3, Sample)], path: &PathBuf) {
         .mul(-2.0 * PI * dr)
         .add(b2_hardsphere);
     info!("Second virial coefficient, 𝐵₂ = {:.2} Å³", b2);
+    if let Some((mw1, mw2)) = masses {
+        const ML_PER_ANGSTROM3: f64 = 1e-24;
+        info!(
+            "                              = {:.2e} mol⋅ml/g²",
+            b2 * ML_PER_ANGSTROM3 / (mw1 * mw2) * AVOGADRO_CONSTANT
+        );
+    }
+
     info!(
         "Reduced second virial coefficient, 𝐵₂ / 𝐵₂hs = {:.2} using σ = {:.2} Å",
         b2 / b2_hardsphere,

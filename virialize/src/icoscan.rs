@@ -99,6 +99,9 @@ pub fn do_icoscan(
         }
         samples.push((Vector3::new(0.0, 0.0, *r), partition_func));
     }
-    report_pmf(samples.as_slice(), pmf_file);
+
+    let masses = (ref_a.total_mass(), ref_b.total_mass());
+
+    report_pmf(samples.as_slice(), pmf_file, Some(masses));
     Ok(())
 }

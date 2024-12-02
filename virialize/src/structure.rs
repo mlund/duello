@@ -217,6 +217,11 @@ impl Structure {
         self.charges.iter().sum()
     }
 
+    /// Total mass of the structure
+    pub fn total_mass(&self) -> f64 {
+        self.masses.iter().sum()
+    }
+
     /// Calculates the inertia tensor of the structure
     ///
     /// The inertia tensor is computed from positions, 𝒑ᵢ,…𝒑ₙ, with

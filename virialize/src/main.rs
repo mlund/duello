@@ -157,9 +157,14 @@ fn do_scan(cmd: &Commands) -> Result<()> {
 
     info!("{}", medium);
     info!(
-        "Molecular net-charges: [{:.2}e, {:.2}e]",
+        "Molecular net-charges:    [{:.2}e, {:.2}e]",
         ref_a.net_charge(),
         ref_b.net_charge(),
+    );
+    info!(
+        "Molecular masses (g/mol): [{:.2}e, {:.2}e]",
+        ref_a.total_mass(),
+        ref_b.total_mass(),
     );
 
     // Scan over mass center distances
