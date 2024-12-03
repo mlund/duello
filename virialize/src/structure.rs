@@ -57,14 +57,16 @@ pub struct Structure {
 }
 
 /// Parse a single line from an XYZ file
-fn from_xyz_line(line: &str) -> (String, Vector3<f64>) {
+fn from_xyz_line(line: &str) -> anyhow::Result<(String, Vector3<f64>)> {
     let mut parts = line.split_whitespace();
-    assert_eq!(parts.clone().count(), 4); // name, x, y, z
+    if parts.clone().count() != 4 {
+        anyhow::bail!("Expected 4 columns in XYZ file: name x y z");
+    }
     let name = parts.next().unwrap().to_string();
-    let x: f64 = parts.next().unwrap().parse().unwrap();
-    let y: f64 = parts.next().unwrap().parse().unwrap();
-    let z: f64 = parts.next().unwrap().parse().unwrap();
-    (name, Vector3::new(x, y, z))
+    let x = parts.next().unwrap().parse::<f64>()?;
+    let y = parts.next().unwrap().parse::<f64>()?;
+    let z = parts.next().unwrap().parse::<f64>()?;
+    Ok((name, Vector3::new(x, y, z)))
 }
 
 impl Structure {
@@ -75,6 +77,7 @@ impl Structure {
             .lines()
             .skip(2) // skip header
             .map(from_xyz_line)
+            .map(|r| r.unwrap())
             .collect();
 
         let atom_ids = nxyz
