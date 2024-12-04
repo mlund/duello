@@ -8,7 +8,6 @@ authors = ["Mikael Lund <lyssky@icloud.com>"]
 documentation = "https://docs.rs/virialize"
 readme = "README.md"
 license = "Apache-2.0"
-license-file = "LICENSE"
 categories = ["science"]
 keywords = ["pairwise_interaction", "bioinformatics", "virial_coefficient", "dissociation_constant"]
 
