@@ -1,5 +1,6 @@
 use crate::structure::Structure;
 use coulomb::pairwise::{MultipoleEnergy, MultipolePotential, Plain};
+use coulomb::permittivity::ConstantPermittivity;
 use faunus::{energy::NonbondedMatrix, topology::AtomKind};
 use interatomic::{
     twobody::{IonIon, IsotropicTwobodyEnergy},
@@ -19,6 +20,7 @@ impl PairMatrix {
     >(
         mut nonbonded: NonbondedMatrix,
         atomkinds: &[AtomKind],
+        permittivity: ConstantPermittivity,
         coulomb_method: &T,
     ) -> Self {
         log::info!("Adding Coulomb potential to nonbonded matrix");
@@ -27,8 +29,11 @@ impl PairMatrix {
             .indexed_iter_mut()
             .for_each(|((i, j), pairpot)| {
                 let charge_product = atomkinds[i].charge() * atomkinds[j].charge();
-                let coulomb = Box::new(IonIon::<T>::new(charge_product, coulomb_method.clone()))
-                    as Box<dyn IsotropicTwobodyEnergy>;
+                let coulomb = Box::new(IonIon::<T>::new(
+                    charge_product,
+                    permittivity,
+                    coulomb_method.clone(),
+                )) as Box<dyn IsotropicTwobodyEnergy>;
                 let combined = coulomb + Box::new(pairpot.clone());
                 *pairpot = std::sync::Arc::new(combined);
             });

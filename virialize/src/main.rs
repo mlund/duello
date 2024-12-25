@@ -150,8 +150,12 @@ fn do_scan(cmd: &Commands) -> Result<()> {
 
     let multipole = coulomb::pairwise::Plain::new(*cutoff, medium.debye_length());
     let nonbonded = NonbondedMatrix::from_file(top_file, &topology)?;
-    let pair_matrix =
-        energy::PairMatrix::new_with_coulomb(nonbonded, topology.atomkinds(), &multipole);
+    let pair_matrix = energy::PairMatrix::new_with_coulomb(
+        nonbonded,
+        topology.atomkinds(),
+        medium.permittivity().into(),
+        &multipole,
+    );
     let ref_a = Structure::from_xyz(mol1, topology.atomkinds());
     let ref_b = Structure::from_xyz(mol2, topology.atomkinds());
 
