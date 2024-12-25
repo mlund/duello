@@ -272,7 +272,7 @@ pub fn mass_center(
 /// # Examples:
 /// ~~~
 /// use nalgebra::Vector3;
-/// use anglescan::structure::{inertia_tensor, mass_center};
+/// use virialize::structure::{inertia_tensor, mass_center};
 ///
 /// let masses: Vec<f64> = vec![1.0, 1.0, 2.0];
 /// let pos = [
