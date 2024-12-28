@@ -142,7 +142,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
     let medium = match fixed_dielectric {
         Some(dielectric_const) => Medium::new(
             *temperature,
-            permittivity::Permittivity::Constant((*dielectric_const).into()),
+            permittivity::Permittivity::Fixed(*dielectric_const),
             Some((Salt::SodiumChloride, *molarity)),
         ),
         _ => Medium::salt_water(*temperature, Salt::SodiumChloride, *molarity),
