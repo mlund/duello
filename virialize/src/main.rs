@@ -149,7 +149,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
     };
 
     let multipole = coulomb::pairwise::Plain::new(*cutoff, medium.debye_length());
-    let nonbonded = NonbondedMatrix::from_file(top_file, &topology, medium.clone())?;
+    let nonbonded = NonbondedMatrix::from_file(top_file, &topology, Some(medium.clone()))?;
     let pair_matrix = energy::PairMatrix::new_with_coulomb(
         nonbonded,
         topology.atomkinds(),
