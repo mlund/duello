@@ -4,23 +4,29 @@ atoms:
     mass: 1.0
     charge: 1.0
     sigma: 4.0
+    epsilon: 0.5
+    hydrophobicity: !Lambda 0.7407902764839954
   - name: NP # negative particle
     mass: 1.0
     charge: -1.0
     sigma: 4.0
+    epsilon: 0.5
+    hydrophobicity: !Lambda 0.7407902764839954
   - name: MP # middle particle
     mass: 1e9
     charge: 0.0
     sigma: 40.0
-
+    epsilon: 0.5
+    hydrophobicity: !Lambda 0.7407902764839954
 system:
   energy:
     nonbonded:
       # Note that a Coulomb term is automatically added, so don't specify one here!
       default:
-        - !WCA {mixing: LB}
+        #- !WCA {mixing: LB}
         # Uncomment this for a Calvados potential
-        #- !AshbaughHatch {mixing: arithmetic, cutoff: 20.0}
+        - !AshbaughHatch {mixing: arithmetic, cutoff: 20.0}
       [MP, MP]:
-        - !WCA {mixing: LB}
+        - !AshbaughHatch {mixing: arithmetic, cutoff: 20.0}
+        #- !WCA {mixing: LB}
 
