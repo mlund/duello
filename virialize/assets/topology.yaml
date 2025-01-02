@@ -23,10 +23,10 @@ system:
     nonbonded:
       # Note that a Coulomb term is automatically added, so don't specify one here!
       default:
-        #- !WCA {mixing: LB}
+        - !WCA {mixing: LB}
         # Uncomment this for a Calvados potential
-        - !AshbaughHatch {mixing: arithmetic, cutoff: 20.0}
+        #- !AshbaughHatch {mixing: arithmetic, cutoff: 20.0}
       [MP, MP]:
-        - !AshbaughHatch {mixing: arithmetic, cutoff: 20.0}
-        #- !WCA {mixing: LB}
+        #- !AshbaughHatch {mixing: arithmetic, cutoff: 20.0}
+        - !WCA {mixing: LB}
 
