@@ -23,6 +23,16 @@ is automatically added and should hence not be specified in the topology.
 virialize scan --icotable -1 cppm-p18.xyz -2 cppm-p00.xyz --rmin 40.5 --rmax 60 --dr 1.0 --top topology.yaml --resolution 0.6 --molarity 0.05
 ```
 
+### Examples
+
+See the `examples/` dir for more examples; run scripts are provided in the
+`scripts` folder.
+
+Command              | Description
+-------------------- | ------------------------------------------------------------
+`scripts/cppm.sh`    | Scan two spherical, multipolar particles using the CPPM model
+
+
 ## Create `pip` package using Maturin
 
 This is for development purposes only.
