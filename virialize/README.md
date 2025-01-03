@@ -25,13 +25,13 @@ virialize scan --icotable -1 cppm-p18.xyz -2 cppm-p00.xyz --rmin 40.5 --rmax 60 
 
 ### Examples
 
-See the `examples/` dir for more examples; run scripts are provided in the
-`scripts` folder.
+See the `examples/` directory for more examples; run scripts are provided in the
+`scripts/` directory:
 
-Command              | Description
--------------------- | ------------------------------------------------------------
-`scripts/cppm.sh`    | Scan two spherical, multipolar particles using the CPPM model
-
+Command               | Description
+--------------------- | ------------------------------------------------------------
+`scripts/cppm.sh`     | Spherical, multipolar particles using the CPPM model
+`scripts/lysozyme.sh` | Two coarse grained lysozyme molecules w. Calvados3 interactions
 
 ## Create `pip` package using Maturin
 

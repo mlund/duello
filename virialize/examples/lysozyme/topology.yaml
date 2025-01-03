@@ -1,0 +1,8 @@
+include: [calvados3.yaml]
+system:
+  energy:
+    nonbonded:
+      # Note that a Coulomb term is automatically added, so don't specify one here!
+      default:
+        - !AshbaughHatch {mixing: arithmetic, cutoff: 20.0}
+
