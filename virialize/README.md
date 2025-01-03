@@ -13,11 +13,14 @@ the thermally averaged energy, $u(r) = \sum u(r)e^{-\beta u(r)} / Q$.
 
 ## Usage
 
-The command-line tool `virialize` does the 6D scanning and calculates the potential of mean force, w(r) which
+The command-line tool `virialize` does the 6D scanning and calculates
+the potential of mean force, w(r) which
 is used to derive the 2nd virial coefficient and twobody dissociation constant.
-Two input structures are requires (`.xyz` format) and all particle types must be defined in the topology file.
-The topology files also defines the particular pair-potential to use. Note that currently, a coulomb potential
-is automatically added and should hence not be specified in the topology.
+Two input structures are requires (`.xyz` format) and all particle types must
+be defined in the topology file.
+The topology files also defines the particular pair-potential to use.
+Note that currently, a coulomb potential is automatically added and should
+hence not be specified in the topology.
 
 ```console
 virialize scan --icotable -1 cppm-p18.xyz -2 cppm-p00.xyz --rmin 40.5 --rmax 60 --dr 1.0 --top topology.yaml --resolution 0.6 --molarity 0.05
@@ -25,7 +28,7 @@ virialize scan --icotable -1 cppm-p18.xyz -2 cppm-p00.xyz --rmin 40.5 --rmax 60 
 
 ### Examples
 
-See the `examples/` directory for more examples; run scripts are provided in the
+See the `examples/` directory for examples; run scripts are provided in the
 `scripts/` directory:
 
 Command               | Description
@@ -33,9 +36,11 @@ Command               | Description
 `scripts/cppm.sh`     | Spherical, multipolar particles using the CPPM model
 `scripts/lysozyme.sh` | Two coarse grained lysozyme molecules w. Calvados3 interactions
 
-## Create `pip` package using Maturin
+## Development
 
 This is for development purposes only.
+
+### Create `pip` package using Maturin
 
 ```console
 pip install ziglang pipx
