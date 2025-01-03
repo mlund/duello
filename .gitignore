@@ -16,6 +16,9 @@ Cargo.lock
 *~
 *.dat
 *.dat.gz
+*.xyz
+scene.vmd
+output.*
 .DS_Store
 .mypy*
 .ipynb_checkpoints
