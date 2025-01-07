@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/duello-logo.png" alt="crates.io", height="200">
+  <img src="assets/duello-logo.png" alt="crates.io", height="300">
 </p>
 <p align="center">
     <a href="https://opensource.org/licenses/Apache-2.0">
