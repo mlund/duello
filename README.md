@@ -23,9 +23,11 @@ For each mass center separation, _R_, the partition function,
 $Q(r) = \sum e^{-V(R)/k_BT}$, is explicitly
 evaluated to obtain the free energy, $A(R) = -k_BT \ln \langle e^{-V(R)/k_BT} \rangle$ and
 the thermally averaged energy,
+
 $$
 U(R) = \frac{\sum V(R) e^{-V(R)/k_BT}} {Q}
 $$
+
 where $V(R)$ is the inter-body interaction energy averaged over angular space.
 
 <p align="center">
