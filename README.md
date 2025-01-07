@@ -23,15 +23,15 @@
 
 This iterates over all intermolecular poses between two rigid molecules using a regular grid in angular space using subdivided icosahedrons.
 For each mass center separation, _R_, the partition function,
-$Q(r) = \sum e^{-V(R)/k_BT}$, is explicitly
-evaluated to obtain the free energy, $A(R) = -k_BT \ln \langle e^{-V(R)/k_BT} \rangle$ and
+$Q(R) = \sum e^{-V(R)/k_BT}$, is explicitly
+evaluated to obtain the free energy, $A(R) = -k_BT \ln \langle e^{-V(R)/k_BT} \rangle_{\Omega}$ and
 the thermally averaged energy,
 
 $$
 U(R) = \frac{\sum V(R) e^{-V(R)/k_BT}} {Q}
 $$
 
-where $V(R)$ is the inter-body interaction energy averaged over angular space.
+where $V(R)$ is the inter-body interaction energy averaged over angular space $\Omega$.
 
 <p align="center">
   <img src="assets/illustration.png" alt="crates.io", height="200">
