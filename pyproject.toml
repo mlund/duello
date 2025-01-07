@@ -9,4 +9,3 @@ bindings = "bin"
 strip = true
 compatibility = "manylinux2014"
 
-

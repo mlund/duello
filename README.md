@@ -13,7 +13,7 @@ the thermally averaged energy, $u(r) = \sum u(r)e^{-\beta u(r)} / Q$.
 
 ## Usage
 
-The command-line tool `virialize` does the 6D scanning and calculates
+The command-line tool `duello` does the 6D scanning and calculates
 the potential of mean force, w(r) which
 is used to derive the 2nd virial coefficient and twobody dissociation constant.
 Two input structures are requires (`.xyz` format) and all particle types must
@@ -23,7 +23,7 @@ Note that currently, a coulomb potential is automatically added and should
 hence not be specified in the topology.
 
 ```console
-virialize scan --icotable -1 cppm-p18.xyz -2 cppm-p00.xyz --rmin 40.5 --rmax 60 --dr 1.0 --top topology.yaml --resolution 0.6 --molarity 0.05
+duello scan --icotable -1 cppm-p18.xyz -2 cppm-p00.xyz --rmin 40.5 --rmax 60 --dr 1.0 --top topology.yaml --resolution 0.6 --molarity 0.05
 ```
 
 ### Examples

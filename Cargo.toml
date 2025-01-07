@@ -1,11 +1,11 @@
 [package]
-name = "virialize"
-version = "0.1.3"
+name = "duello"
+version = "0.1.4"
 edition = "2021"
 description = "Calculates the osmotic second virial coefficient (B2), and dissociation constant (Kd), for two rigid (macro)molecules, e.g. globular proteins. Done by explicit summation of the partition function in six dimensions (angular space and rigid-body separation). Calvados 3 parameters for use with coarsed grained amino acids are provided, but any pair-wise additivie potential can be used."
 authors = ["Mikael Lund <lyssky@icloud.com>"]
-#repository = "https://github.com/mlund/faunus-rs"
-documentation = "https://docs.rs/virialize"
+repository = "https://github.com/mlund/duello"
+documentation = "https://docs.rs/duello"
 readme = "README.md"
 license = "Apache-2.0"
 categories = ["science"]
@@ -20,7 +20,7 @@ itertools = "0.12"
 itertools-num = "0.1"
 nalgebra = "0.33"
 rayon = "1.10"
-faunus = { path = "../faunus" }
+faunus = { git = "https://github.com/mlund/faunus-rs.git" }
 interatomic = { git = "https://github.com/mlund/interatomic.git", version = "0.2" }
 coulomb = { git = "https://github.com/mlund/coulomb.git", version = "0.2" }
 serde_yaml = "0.9"
