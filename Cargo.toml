@@ -16,7 +16,7 @@ anyhow = "1.0"
 approx = "0.5"
 chemfiles = "0.10"
 clap = { version = "4", features = ["derive"] }
-itertools = "0.12"
+itertools = "0.14"
 itertools-num = "0.1"
 nalgebra = "0.33"
 rayon = "1.10"
