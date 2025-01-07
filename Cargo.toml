@@ -35,7 +35,7 @@ flate2 = "1.0"
 textplots = "0.8"
 rgb = "0.8"
 nu-ansi-term = "0.50"
-hexasphere = {version = "13.1", features = ["adjacency"]}
+hexasphere = {version = "15.1", features = ["adjacency"]}
 num-traits = "0.2"
 rand = "0.8"
 get-size = {version = "0.1", features = ["derive"]}
