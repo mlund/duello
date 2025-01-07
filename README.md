@@ -87,10 +87,31 @@ duello scan \
 
 Ready run scripts examples are provided in the `scripts/` directory:
 
-Command               | Description
---------------------- | ------------------------------------------------------------
-`scripts/cppm.sh`     | Spherical, multipolar particles using the CPPM model
-`scripts/lysozyme.sh` | Two coarse grained lysozyme molecules w. Calvados3 interactions
+Command                | Description
+---------------------- | ------------------------------------------------------------
+`scripts/cppm.sh`      | Spherical, multipolar particles using the CPPM model
+`scripts/calvados3.sh` | Two coarse grained lysozyme molecules w. Calvados3 interactions
+
+## Interaction models
+
+Each macromolecule is represented by a rigid constellation of beads with
+properties defined under `atoms` in the topology file.
+The inter-molecular energy is calculated by summing all pairwise interactions
+between beads using a customizable pair potential.
+If needed, different pair-potentials can be explicitly defined for
+specific atom pairs.
+
+The provided examples illustrate the following schemes:
+
+- Screened `Coulomb` + `AshbaughHatch`, for the Calvados model.
+- Screened `Coulomb` + `WeeksChandlerAndersen` for the CPPM model.
+
+Many more pair-potentials are available through the
+[`interatomic`](https://crates.io/crates/interatomic) library,
+_e.g._ `LennardJones`, `HardSphere` etc.
+
+__Warning:__ The electrostatic term, `Coulomb` is
+always automatically added and should therefore _not_ be specified in the topology.
 
 # Development
 
