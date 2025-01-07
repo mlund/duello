@@ -18,35 +18,57 @@
 
 # Introduction
 
-This iterates over all intermolecular poses between two rigid molecules.
-For each pose, defined by two quaternions and a mass center separation, the
-intermolecular interaction energy is calculated.
+This iterates over all intermolecular poses between two rigid molecules using a regular grid in angular space using subdivided icosahedrons.
+For each mass center separation, _R_, the partition function,
+$Q(r) = \sum e^{-V(R)/k_BT}$, is explicitly
+evaluated to obtain the free energy, $A(R) = -k_BT \ln \langle e^{-V(R)/k_BT} \rangle$ and
+the thermally averaged energy,
+$$
+U(R) = \frac{\sum V(R) e^{-V(R)/k_BT}} {Q}
+$$
+where $V(R)$ is the inter-body interaction energy averaged over angular space.
 
-For each mass center separation, _r_, the partition function,
-$Q(r) = \sum e^{-\beta u(r)}$, is explicitly
-evaluated, whereby we can obtain the free energy, $w(r) = -kT \ln \langle e^{-\beta u(r)} \rangle$ and
-the thermally averaged energy, $u(r) = \sum u(r)e^{-\beta u(r)} / Q$.
-
-![Angular Scan](assets/illustration.png)
+<p align="center">
+  <img src="assets/illustration.png" alt="crates.io", height="200">
+</p>
 
 # Installation
+
+## Using pip (linux x86)
 
 ```console
 pip install duello
 ```
 
+## Using Cargo (all platforms)
+
+This requires prior installation of the [Rust](https://www.rust-lang.org/learn/get-started) toolchain.
+
+```sh
+cargo install duello
+```
+
+Alternatively you may compile and run directly from the source code:
+
+```sh
+git clone https://github.com/mlund/duello
+cd duello/
+cargo run --release -- <args...>
+```
+
 # Usage
 
 The command-line tool `duello` does the 6D scanning and calculates
-the potential of mean force, _w(r)_ which
-is used to derive the 2nd virial coefficient and twobody dissociation constant.
+the angularly averaged potential of mean force, _A(R)_ which
+is used to derive the 2nd virial coefficient and twobody dissociation constant, $K_d$.
 The two input structures should be in `.xyz` format and all particle names must
-be defined in the topology file.
+be defined in the topology file under `atoms`.
 The topology also defines the particular pair-potential to use.
 Note that currently, a coulomb potential is automatically added and should
 hence _not_ be specified in the topology.
+The program is written in Rust and attempts to use all available CPU cores.
 
-```console
+```sh
 duello scan \
     --icotable \
     --mol1 cppm-p18.xyz \
@@ -58,8 +80,6 @@ duello scan \
     --molarity 0.05 \
     --temperature 298.15
 ```
-
-The program is written in Rust and attempts to use all available CPU cores.
 
 ## Examples
 
@@ -76,7 +96,7 @@ This is for development purposes only.
 
 ## Create `pip` package using Maturin
 
-```console
+```sh
 pip install ziglang pipx
 pipx install maturin # on ubuntu; then restart shell
 maturin publish --target=x86_64-unknown-linux-gnu --zig
