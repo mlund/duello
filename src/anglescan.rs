@@ -242,7 +242,7 @@ pub fn make_icosphere(min_points: usize) -> Result<Subdivided<(), IcoSphereBase>
 ///
 /// ## Examples
 /// ~~~
-/// use virialize::anglescan;
+/// use duello::anglescan;
 /// let vertices = anglescan::make_icosphere_vertices(20).unwrap();
 /// assert_eq!(vertices.len(), 42);
 /// ~~~

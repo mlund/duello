@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use coulomb::{permittivity, DebyeLength, Medium, Salt, Vector3};
 use faunus::{energy::NonbondedMatrix, topology::Topology};
-use virialize::{
+use duello::{
     anglescan::do_anglescan, energy, icoscan, icotable::IcoTable, structure::Structure,
     to_cartesian, to_spherical, UnitQuaternion,
 };
@@ -309,7 +309,7 @@ fn do_potential(cmd: &Commands) -> Result<()> {
     let structure = Structure::from_xyz(mol1, topology.atomkinds());
 
     let n_points = (4.0 * PI / resolution.powi(2)).round() as usize;
-    let vertices = virialize::make_icosphere_vertices(n_points)?;
+    let vertices = duello::make_icosphere_vertices(n_points)?;
     let resolution = (4.0 * PI / vertices.len() as f64).sqrt();
     log::info!(
         "Requested {} points on a sphere; got {} -> new resolution = {:.2}",
