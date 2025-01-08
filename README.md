@@ -2,6 +2,9 @@
   <img src="assets/duello-logo.png" alt="crates.io", height="300">
 </p>
 <p align="center">
+    <a href="https://colab.research.google.com/github/mlund/duello/blob/master/scripts/colab.ipynb">
+        <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab">
+    </a>
     <a href="https://opensource.org/licenses/Apache-2.0">
         <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg">
     </a>
@@ -21,17 +24,40 @@
 
 # Introduction
 
-This iterates over all intermolecular poses between two rigid molecules using a regular grid in angular space using subdivided icosahedrons.
-For each mass center separation, _R_, the partition function,
-$Q(R) = \sum e^{-V(R)/k_BT}$, is explicitly
-evaluated to obtain the free energy, $A(R) = -k_BT \ln \langle e^{-V(R)/k_BT} \rangle_{\Omega}$ and
-the thermally averaged energy,
+Duello is a tool to calculate the potential of mean force (PMF) between two ridig bodies, performing a
+statistical mechanical average over inter-molecular orientations using subdivided icosahedrons.
+For each mass center separation, _R_, the static contribution to the partition function,
+$\mathcal{Z}(R) = \sum_{\mathbf{\Omega}} e^{-V(R,\mathbf{\Omega})/k_BT}$, is explicitly
+evaluated to obtain the potential of mean force,
+$w(R) = -k_BT \ln \mathcal{Z}(R)$
+and the thermally averaged energy,
 
 $$
-U(R) = \frac{\sum V(R) e^{-V(R)/k_BT}} {Q}
+U(R) = \frac{\sum V(R,\mathbf{\Omega}) e^{-V(R,\mathbf{\Omega})/k_BT}} {\mathcal{Z}(R)}
 $$
 
-where $V(R)$ is the inter-body interaction energy averaged over angular space $\Omega$.
+where $V(R,\mathbf{\Omega})$ is the total inter-body interaction energy and $\mathbf{\Omega}$ represents a 5D angular space (_e.g._ two spherical coordinates for each body plus a dihedral angle around the connection line).
+
+The osmotic second virial coefficient, which has dimensions of _volume_, reports on exactly two-body interactions:
+
+$$
+\begin{align}
+B_2 & = -\frac{1}{16\pi^2} \int_{\mathbf{\Omega}} \int_0^{\infty}
+\left (
+  e^{-V(R,\mathbf{\Omega})/k_BT} - 1
+\right )
+R^2 dR d\mathbf{\Omega}\\
+& =  -2\pi \int_0^{\infty} \left ( e^{-w(R)/k_BT} -1 \right )R^2 dR \\
+& = B_2^{hs} -2\pi \int_{\sigma}^{\infty} \left ( e^{-w(R)/k_BT} -1 \right )R^2 dR\\
+\end{align}
+$$
+where $B_2^{hs} = 2\pi\sigma^3/3$ is the hard-sphere contribution and $\sigma$ is a distance
+of closest approach where $w(R\lt \sigma)=\infty$ is assumed.
+For systems with net attractive interactions, the dissociation constant, $K_d$, can be estimated by,
+
+$$
+K_d^{-1} = 2 N_A\left (B_2^{hs} - B_2\right )
+$$
 
 <p align="center">
   <img src="assets/illustration.png" alt="crates.io", height="200">
@@ -99,8 +125,8 @@ Command                | Description
 
 Each macromolecule is represented by a rigid constellation of beads with
 properties defined under `atoms` in the topology file.
-The inter-molecular energy is calculated by summing all pairwise interactions
-between beads using a customizable pair potential.
+The inter-molecular energy, $V(R,\Omega)$ is calculated by summing all pairwise interactions
+between beads using a customizable pair potential, $u_{ij}$.
 If needed, different pair-potentials can be explicitly defined for
 specific atom pairs.
 
