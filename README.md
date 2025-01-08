@@ -51,6 +51,7 @@ R^2 dR d\mathbf{\Omega}\\
 & = B_2^{hs} -2\pi \int_{\sigma}^{\infty} \left ( e^{-w(R)/k_BT} -1 \right )R^2 dR\\
 \end{align}
 $$
+
 where $B_2^{hs} = 2\pi\sigma^3/3$ is the hard-sphere contribution and $\sigma$ is a distance
 of closest approach where $w(R\lt \sigma)=\infty$ is assumed.
 For systems with net attractive interactions, the dissociation constant, $K_d$, can be estimated by,
