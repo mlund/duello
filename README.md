@@ -65,21 +65,12 @@ $$
 
 # Installation
 
-## Using pip (linux x86)
-
 ```console
 pip install duello
 ```
 
-## Using Cargo (all platforms)
-
-This requires prior installation of the [Rust](https://www.rust-lang.org/learn/get-started) toolchain.
-
-```sh
-cargo install duello
-```
-
-Alternatively you may compile and run directly from the source code:
+If you have a [Rust toolchain](https://www.rust-lang.org/learn/get-started) installed,
+you may alternatively compile and run directly from the source code:
 
 ```sh
 git clone https://github.com/mlund/duello
@@ -146,10 +137,21 @@ always automatically added and should therefore _not_ be specified in the topolo
 
 This is for development purposes only.
 
-## Create `pip` package using Maturin
+## Create `pip` package using Maturin via a Docker image:
+
+```sh
+docker run --rm -v $(pwd):/io ghcr.io/pyo3/maturin publish -u __token__ -p ...
+```
+
+For local Maturin installs, follow the steps below.
 
 ```sh
 pip install ziglang pipx
 pipx install maturin # on ubuntu; then restart shell
-maturin publish --target=x86_64-unknown-linux-gnu --zig
+maturin publish -u __token__ --target=x86_64-unknown-linux-gnu --zig
 ```
+
+MacOS targets can be generated without `--zig` using the targets
+`x86_64-apple-darwin` and `aarch64-apple-darwin`.
+See list of targets with `rustup target list`.
+
