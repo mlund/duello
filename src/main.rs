@@ -1,18 +1,21 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use coulomb::{permittivity, DebyeLength, Medium, Salt, Vector3};
-use faunus::{energy::NonbondedMatrix, topology::Topology};
 use duello::{
     anglescan::do_anglescan, energy, icoscan, icotable::IcoTable, structure::Structure,
     to_cartesian, to_spherical, UnitQuaternion,
 };
+use faunus::{energy::NonbondedMatrix, topology::Topology};
 // use indicatif::ProgressIterator;
 use itertools::Itertools;
 use std::{f64::consts::PI, fs::File, io::Write, ops::Neg, path::PathBuf};
-extern crate pretty_env_logger;
-#[macro_use]
-extern crate log;
+//extern crate pretty_env_logger;
+//#[macro_use]
+//extern crate log;
+use env_logger::{Builder, Target};
 use iter_num_tools::arange;
+use log::info;
+use log::LevelFilter;
 use rand::Rng;
 
 #[derive(Parser)]
@@ -110,6 +113,9 @@ enum Commands {
         /// Output file for PMF
         #[arg(long = "pmf", default_value = "pmf.dat")]
         pmf_file: PathBuf,
+        /// Output file for log
+        #[arg(long = "log", default_value = "output.log")]
+        log_file: PathBuf,
     },
 }
 
@@ -129,6 +135,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         icotable,
         fixed_dielectric,
         pmf_file,
+        log_file,
     } = cmd
     else {
         anyhow::bail!("Unknown command");
@@ -386,11 +393,11 @@ fn pqr_write_atom(
     Ok(())
 }
 
-fn do_main() -> Result<()> {
+fn do_main() -> Result<(), anyhow::Error> {
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info");
     }
-    pretty_env_logger::init();
+    //pretty_env_logger::init();
 
     let cli = Cli::parse();
     match cli.command {
@@ -407,9 +414,48 @@ fn do_main() -> Result<()> {
 }
 
 fn main() {
+    let cli = Cli::parse();
+
+    // Set up logging
+    let log_path = match &cli.command {
+        Some(Commands::Scan { log_file, .. }) => log_file,
+        _ => {
+            eprintln!("No valid command given or log file not specified.");
+            return;
+        }
+    };
+    let log_file = File::create(log_path).unwrap();
+    // Initialize the logger
+    let mut builder = Builder::new();
+    builder
+        .filter(None, LevelFilter::Info)
+        .write_style(env_logger::WriteStyle::Always)
+        .target(Target::Pipe(Box::new(log_file)));
+
+    if let Err(e) = builder.try_init() {
+        eprintln!("Logger initialization failed: {}", e);
+    }
+
+    match cli.command {
+        Some(Commands::Scan { .. }) => {
+            // Use log_file here if needed
+            do_scan(&cli.command.unwrap()).unwrap();
+        }
+        Some(Commands::Potential { .. }) => {
+            // Use log_file here if needed
+            do_potential(&cli.command.unwrap()).unwrap();
+        }
+        Some(Commands::Dipole { .. }) => {
+            // Use log_file here if needed
+            do_dipole(&cli.command.unwrap()).unwrap();
+        }
+        None => {
+            anyhow::bail!("No command given");
+        }
+    };
+
     if let Err(err) = do_main() {
         eprintln!("Error: {}", &err);
-        std::process::exit(1);
     }
 }
 

@@ -1,5 +1,6 @@
 use crate::Sample;
 use coulomb::Vector3;
+use log::info;
 use nu_ansi_term::Color::{Red, Yellow};
 use num_traits::Inv;
 use physical_constants::AVOGADRO_CONSTANT;
