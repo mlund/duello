@@ -1,0 +1,11 @@
+[2025-01-13T13:00:57Z INFO  duello::energy] Adding Coulomb potential to nonbonded matrix
+[2025-01-13T13:00:57Z INFO  duello] Medium: 𝑇 = 280.00 K, εᵣ = 85.3, λᴮ = 7.0 Å, 𝐼 = 1.0 mM, λᴰ = 97.2 Å, 0.0 M 🧂Salt = NaCl
+[2025-01-13T13:00:57Z INFO  duello] Molecular net-charges:    [-8.00e, -8.00e]
+[2025-01-13T13:00:57Z INFO  duello] Molecular masses (g/mol): [1000000066.00e, 1000000066.00e]
+[2025-01-13T13:00:57Z INFO  duello] COM range: [37.0, 121.0) in 0.5 Å steps 🐾
+[2025-01-13T13:00:57Z INFO  duello::icotable] Actual angle resolution = 0.55 radians
+[2025-01-13T13:00:57Z INFO  duello::icoscan] 6D table: 𝑅(168) x 𝜔(12) x 𝜃𝜑(42) x 𝜃𝜑(42) = 3556224 poses 💃🕺 (463.7 MB)
+[2025-01-13T13:01:05Z INFO  duello::report] Second virial coefficient, 𝐵₂ = 2479818.43 Å³
+[2025-01-13T13:01:05Z INFO  duello::report]                               = 1.49e-12 mol⋅ml/g²
+[2025-01-13T13:01:05Z INFO  duello::report] Reduced second virial coefficient, 𝐵₂ / 𝐵₂hs = 23.38 using σ = 37.00 Å
+[2025-01-13T13:01:05Z INFO  duello::report] Plot: [1;33mfree energy[0m and [1;31mmean energy[0m along mass center separation. In units of kT and angstroms.

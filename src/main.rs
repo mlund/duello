@@ -120,7 +120,7 @@ enum Commands {
 }
 
 /// Calculate energy of all two-body poses
-fn do_scan(cmd: &Commands) -> Result<()> {
+fn do_scan(cmd: &Commands) -> Result<(), Box<dyn std::error::Error>> {
     let Commands::Scan {
         mol1,
         mol2,
@@ -138,7 +138,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         log_file,
     } = cmd
     else {
-        anyhow::bail!("Unknown command");
+        return Err(Box::<dyn std::error::Error>::from("No command given"));
     };
     assert!(rmin < rmax);
 
@@ -195,7 +195,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
             pair_matrix,
             temperature,
             pmf_file,
-        )
+        );
     } else {
         do_anglescan(
             distances,
@@ -205,8 +205,9 @@ fn do_scan(cmd: &Commands) -> Result<()> {
             pair_matrix,
             temperature,
             pmf_file,
-        )
-    }
+        );
+    };
+    Ok(())
 }
 
 fn do_dipole(cmd: &Commands) -> Result<()> {
@@ -393,11 +394,10 @@ fn pqr_write_atom(
     Ok(())
 }
 
-fn do_main() -> Result<(), anyhow::Error> {
+fn do_main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info");
     }
-    //pretty_env_logger::init();
 
     let cli = Cli::parse();
     match cli.command {
@@ -407,13 +407,20 @@ fn do_main() -> Result<(), anyhow::Error> {
             Commands::Potential { .. } => do_potential(&cmd)?,
         },
         None => {
-            anyhow::bail!("No command given");
+            return Err(Box::<dyn std::error::Error>::from("No command given"));
         }
     };
     Ok(())
 }
 
 fn main() {
+    if let Err(e) = run() {
+        eprintln!("Application error: {}", e);
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     // Set up logging
@@ -421,10 +428,11 @@ fn main() {
         Some(Commands::Scan { log_file, .. }) => log_file,
         _ => {
             eprintln!("No valid command given or log file not specified.");
-            return;
+            return Err(Box::<dyn std::error::Error>::from("No command given"));
         }
     };
-    let log_file = File::create(log_path).unwrap();
+
+    let mut log_file = File::create(log_path)?;
     // Initialize the logger
     let mut builder = Builder::new();
     builder
@@ -438,25 +446,20 @@ fn main() {
 
     match cli.command {
         Some(Commands::Scan { .. }) => {
-            // Use log_file here if needed
-            do_scan(&cli.command.unwrap()).unwrap();
+            do_scan(&cli.command.unwrap())?;
         }
         Some(Commands::Potential { .. }) => {
-            // Use log_file here if needed
-            do_potential(&cli.command.unwrap()).unwrap();
+            do_potential(&cli.command.unwrap())?;
         }
         Some(Commands::Dipole { .. }) => {
-            // Use log_file here if needed
-            do_dipole(&cli.command.unwrap()).unwrap();
+            do_dipole(&cli.command.unwrap())?;
         }
         None => {
-            anyhow::bail!("No command given");
+            return Err(Box::<dyn std::error::Error>::from("No command given"));
         }
     };
 
-    if let Err(err) = do_main() {
-        eprintln!("Error: {}", &err);
-    }
+    Ok(())
 }
 
 #[cfg(test)]
