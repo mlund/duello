@@ -87,9 +87,5 @@
         "utility": "cpp"
     },
     "rust-analyzer.showUnlinkedFileNotification": false,
-    "rust-analyzer.cargo.features": [
-    
-        "serde"
-    ],
     "rust-analyzer.cargo.noDefaultFeatures": false
 }
