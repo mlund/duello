@@ -121,7 +121,7 @@ enum Commands {
 
 /// Calculate energy of all two-body poses
 fn do_scan(cmd: &Commands) -> Result<(), Box<dyn std::error::Error>> {
-    let Commands::Scan {
+    if let Commands::Scan {
         mol1,
         mol2,
         resolution,
@@ -137,76 +137,81 @@ fn do_scan(cmd: &Commands) -> Result<(), Box<dyn std::error::Error>> {
         pmf_file,
         log_file,
     } = cmd
-    else {
-        return Err(Box::<dyn std::error::Error>::from("No command given"));
-    };
-    assert!(rmin < rmax);
+    {
+        // Use the log_file here
+        let mut file = File::create(log_file)?;
+        writeln!(file, "Scan command executed")?;
 
-    let mut topology = Topology::from_file_partial(top_file)?;
-    faunus::topology::set_missing_epsilon(topology.atomkinds_mut(), 2.479);
+        assert!(rmin < rmax);
 
-    // Either use fixed dielectric constant or calculate it from the medium
-    let medium = match fixed_dielectric {
-        Some(dielectric_const) => Medium::new(
-            *temperature,
-            permittivity::Permittivity::Fixed(*dielectric_const),
-            Some((Salt::SodiumChloride, *molarity)),
-        ),
-        _ => Medium::salt_water(*temperature, Salt::SodiumChloride, *molarity),
-    };
+        let mut topology = Topology::from_file_partial(top_file)?;
+        faunus::topology::set_missing_epsilon(topology.atomkinds_mut(), 2.479);
 
-    let multipole = coulomb::pairwise::Plain::new(*cutoff, medium.debye_length());
-    let nonbonded = NonbondedMatrix::from_file(top_file, &topology, Some(medium.clone()))?;
-    let pair_matrix = energy::PairMatrix::new_with_coulomb(
-        nonbonded,
-        topology.atomkinds(),
-        medium.permittivity().into(),
-        &multipole,
-    );
-    let ref_a = Structure::from_xyz(mol1, topology.atomkinds());
-    let ref_b = Structure::from_xyz(mol2, topology.atomkinds());
+        // Either use fixed dielectric constant or calculate it from the medium
+        let medium = match fixed_dielectric {
+            Some(dielectric_const) => Medium::new(
+                *temperature,
+                permittivity::Permittivity::Fixed(*dielectric_const),
+                Some((Salt::SodiumChloride, *molarity)),
+            ),
+            _ => Medium::salt_water(*temperature, Salt::SodiumChloride, *molarity),
+        };
 
-    info!("{}", medium);
-    info!(
-        "Molecular net-charges:    [{:.2}e, {:.2}e]",
-        ref_a.net_charge(),
-        ref_b.net_charge(),
-    );
-    info!(
-        "Molecular masses (g/mol): [{:.2}e, {:.2}e]",
-        ref_a.total_mass(),
-        ref_b.total_mass(),
-    );
-
-    // Scan over mass center distances
-    let distances = iter_num_tools::arange(*rmin..*rmax, *dr).collect_vec();
-    info!(
-        "COM range: [{:.1}, {:.1}) in {:.1} Å steps 🐾",
-        rmin, rmax, dr
-    );
-    if *icotable {
-        icoscan::do_icoscan(
-            *rmin,
-            *rmax,
-            *dr,
-            *resolution,
-            ref_a,
-            ref_b,
-            pair_matrix,
-            temperature,
-            pmf_file,
+        let multipole = coulomb::pairwise::Plain::new(*cutoff, medium.debye_length());
+        let nonbonded = NonbondedMatrix::from_file(top_file, &topology, Some(medium.clone()))?;
+        let pair_matrix = energy::PairMatrix::new_with_coulomb(
+            nonbonded,
+            topology.atomkinds(),
+            medium.permittivity().into(),
+            &multipole,
         );
+        let ref_a = Structure::from_xyz(mol1, topology.atomkinds());
+        let ref_b = Structure::from_xyz(mol2, topology.atomkinds());
+
+        info!("{}", medium);
+        info!(
+            "Molecular net-charges:    [{:.2}e, {:.2}e]",
+            ref_a.net_charge(),
+            ref_b.net_charge(),
+        );
+        info!(
+            "Molecular masses (g/mol): [{:.2}e, {:.2}e]",
+            ref_a.total_mass(),
+            ref_b.total_mass(),
+        );
+
+        // Scan over mass center distances
+        let distances = iter_num_tools::arange(*rmin..*rmax, *dr).collect_vec();
+        info!(
+            "COM range: [{:.1}, {:.1}) in {:.1} Å steps 🐾",
+            rmin, rmax, dr
+        );
+        if *icotable {
+            let _ = icoscan::do_icoscan(
+                *rmin,
+                *rmax,
+                *dr,
+                *resolution,
+                ref_a,
+                ref_b,
+                pair_matrix,
+                temperature,
+                pmf_file,
+            );
+        } else {
+            let _ = do_anglescan(
+                distances,
+                *resolution,
+                ref_a,
+                ref_b,
+                pair_matrix,
+                temperature,
+                pmf_file,
+            );
+        };
     } else {
-        do_anglescan(
-            distances,
-            *resolution,
-            ref_a,
-            ref_b,
-            pair_matrix,
-            temperature,
-            pmf_file,
-        );
-    };
+        return Err(Box::<dyn std::error::Error>::from("No command given"));
+    }
     Ok(())
 }
 
@@ -394,7 +399,7 @@ fn pqr_write_atom(
     Ok(())
 }
 
-fn do_main() -> Result<(), Box<dyn std::error::Error>> {
+/* fn do_main2() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info");
     }
@@ -411,16 +416,16 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     Ok(())
-}
+} */
 
 fn main() {
-    if let Err(e) = run() {
+    if let Err(e) = do_main() {
         eprintln!("Application error: {}", e);
         std::process::exit(1);
     }
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
+fn do_main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     // Set up logging
@@ -432,7 +437,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let mut log_file = File::create(log_path)?;
+    let log_file = File::create(log_path)?;
     // Initialize the logger
     let mut builder = Builder::new();
     builder
