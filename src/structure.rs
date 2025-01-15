@@ -58,22 +58,20 @@ pub struct Structure {
 
 /// Parse a single line from an XYZ file
 fn from_xyz_line(line: &str) -> anyhow::Result<(String, Vector3<f64>)> {
-    let mut parts = line.split_whitespace();
-    if parts.clone().count() != 4 {
-        anyhow::bail!("Expected 4 columns in XYZ file: name x y z");
+    if let Some([name, x, y, z]) = line.split_whitespace().collect_array() {
+        Ok((
+            name.to_string(),
+            Vector3::new(x.parse()?, y.parse()?, z.parse()?),
+        ))
+    } else {
+        anyhow::bail!("'name x y z' expected in XYZ record: {}", line);
     }
-    let name = parts.next().unwrap().to_string();
-    let x = parts.next().unwrap().parse::<f64>()?;
-    let y = parts.next().unwrap().parse::<f64>()?;
-    let z = parts.next().unwrap().parse::<f64>()?;
-    Ok((name, Vector3::new(x, y, z)))
 }
 
 impl Structure {
     /// Constructs a new structure from an XYZ file, centering the structure at the origin
-    pub fn from_xyz(path: &PathBuf, atomkinds: &[AtomKind]) -> Self {
-        let nxyz: Vec<(String, Vector3<f64>)> = std::fs::read_to_string(path)
-            .unwrap()
+    pub fn from_xyz(path: &PathBuf, atomkinds: &[AtomKind]) -> anyhow::Result<Self> {
+        let nxyz: Vec<(String, Vector3<f64>)> = std::fs::read_to_string(path)?
             .lines()
             .skip(2) // skip header
             .map(from_xyz_line)
@@ -127,12 +125,11 @@ impl Structure {
         let center = structure.mass_center();
         structure.translate(&-center); // translate to 0,0,0
         debug!("Read {}: {}", path.display(), structure);
-        structure
+        Ok(structure)
     }
     /// Constructs a new structure from a Faunus AAM file
-    pub fn from_aam(path: &PathBuf, atomkinds: &[AtomKind]) -> Self {
-        let aam: Vec<AminoAcidModelRecord> = std::fs::read_to_string(path)
-            .unwrap()
+    pub fn from_aam(path: &PathBuf, atomkinds: &[AtomKind]) -> anyhow::Result<Self> {
+        let aam: Vec<AminoAcidModelRecord> = std::fs::read_to_string(path)?
             .lines()
             .skip(1) // skip header
             .map(AminoAcidModelRecord::from_line)
@@ -157,7 +154,7 @@ impl Structure {
         };
         let center = structure.mass_center();
         structure.translate(&-center); // translate to 0,0,0
-        structure
+        Ok(structure)
     }
 
     /// Constructs a new structure from a chemfiles trajectory file

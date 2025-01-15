@@ -306,7 +306,7 @@ fn do_potential(cmd: &Commands) -> Result<()> {
     let mut topology = Topology::from_file_partial(topology)?;
     faunus::topology::set_missing_epsilon(topology.atomkinds_mut(), 2.479);
 
-    let structure = Structure::from_xyz(mol1, topology.atomkinds());
+    let structure = Structure::from_xyz(mol1, topology.atomkinds())?;
 
     let n_points = (4.0 * PI / resolution.powi(2)).round() as usize;
     let vertices = duello::make_icosphere_vertices(n_points)?;
