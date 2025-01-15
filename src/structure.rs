@@ -19,24 +19,19 @@ pub struct AminoAcidModelRecord {
 }
 
 impl AminoAcidModelRecord {
-    /// Create from space-separated text record (name, _, x, y, z, charge, mass, radius)
-    pub fn from_line(text: &str) -> Self {
-        let mut parts = text.split_whitespace();
-        assert!(parts.clone().count() == 8);
-        let name = parts.next().unwrap().to_string();
-        parts.next(); // skip the second field
-        let pos = Vector3::new(
-            parts.next().unwrap().parse().unwrap(),
-            parts.next().unwrap().parse().unwrap(),
-            parts.next().unwrap().parse().unwrap(),
-        );
-        let (charge, mass, radius) = parts.map(|i| i.parse().unwrap()).next_tuple().unwrap();
-        Self {
-            name,
-            pos,
-            charge,
-            mass,
-            radius,
+    pub fn from_line(line: &str) -> anyhow::Result<Self> {
+        if let Some([name, _, x, y, z, charge, mass, radius]) =
+            line.split_whitespace().collect_array()
+        {
+            Ok(Self {
+                name: name.to_string(),
+                pos: Vector3::new(x.parse()?, y.parse()?, z.parse()?),
+                charge: charge.parse()?,
+                mass: mass.parse()?,
+                radius: radius.parse()?,
+            })
+        } else {
+            anyhow::bail!("Invalid AAM record: {}", line);
         }
     }
 }
@@ -139,7 +134,7 @@ impl Structure {
             .lines()
             .skip(1) // skip header
             .map(AminoAcidModelRecord::from_line)
-            .collect();
+            .try_collect()?;
 
         let atom_ids = aam
             .iter()
