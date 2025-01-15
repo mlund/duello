@@ -71,12 +71,18 @@ fn from_xyz_line(line: &str) -> anyhow::Result<(String, Vector3<f64>)> {
 impl Structure {
     /// Constructs a new structure from an XYZ file, centering the structure at the origin
     pub fn from_xyz(path: &PathBuf, atomkinds: &[AtomKind]) -> anyhow::Result<Self> {
-        let nxyz: Vec<(String, Vector3<f64>)> = std::fs::read_to_string(path)?
+        let nxyz: Vec<(String, Vector3<f64>)> = std::fs::read_to_string(path)
+            .or_else(|e| {
+                anyhow::bail!(
+                    "Could not read XYZ file {}: {}",
+                    path.display(),
+                    e.to_string()
+                )
+            })?
             .lines()
             .skip(2) // skip header
             .map(from_xyz_line)
-            .map(|r| r.unwrap())
-            .collect();
+            .try_collect()?;
 
         let atom_ids = nxyz
             .iter()
