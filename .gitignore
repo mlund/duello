@@ -25,3 +25,5 @@ output.*
 .DS_Store
 .mypy*
 .ipynb_checkpoints
+*.log
+*.pmf
