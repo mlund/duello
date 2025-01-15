@@ -13,12 +13,16 @@ use std::{
 use textplots::{Chart, ColorPlot, Shape};
 
 /// Write PMF and mean energy as a function of mass center separation to file
-pub fn report_pmf(samples: &[(Vector3, Sample)], path: &PathBuf, masses: Option<(f64, f64)>) {
+pub fn report_pmf(
+    samples: &[(Vector3, Sample)],
+    path: &PathBuf,
+    masses: Option<(f64, f64)>,
+) -> anyhow::Result<()> {
     // File with F(R) and U(R)
     let mut pmf_file = File::create(path).unwrap();
     let mut pmf_data = Vec::<(f32, f32)>::new();
     let mut mean_energy_data = Vec::<(f32, f32)>::new();
-    writeln!(pmf_file, "# R/Å F/kT U/kT").unwrap();
+    writeln!(pmf_file, "# R/Å F/kT U/kT")?;
     samples.iter().for_each(|(r, sample)| {
         let mean_energy = sample.mean_energy() / sample.thermal_energy;
         let free_energy = sample.free_energy() / sample.thermal_energy;
@@ -32,7 +36,8 @@ pub fn report_pmf(samples: &[(Vector3, Sample)], path: &PathBuf, masses: Option<
                 free_energy,
                 mean_energy
             )
-            .unwrap();
+            .or_else(|e| anyhow::bail!("Error writing to file: {}", e))
+            .ok();
         }
     });
 
@@ -93,5 +98,6 @@ pub fn report_pmf(samples: &[(Vector3, Sample)], path: &PathBuf, masses: Option<
             .linecolorplot(&Shape::Lines(&mean_energy_data), RED)
             .linecolorplot(&Shape::Lines(&pmf_data), YELLOW)
             .nice();
-    }
+    };
+    Ok(())
 }

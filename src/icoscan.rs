@@ -102,6 +102,6 @@ pub fn do_icoscan(
 
     let masses = (ref_a.total_mass(), ref_b.total_mass());
 
-    report_pmf(samples.as_slice(), pmf_file, Some(masses));
+    report_pmf(samples.as_slice(), pmf_file, Some(masses))?;
     Ok(())
 }
