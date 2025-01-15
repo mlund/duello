@@ -280,7 +280,7 @@ pub fn do_anglescan(
 
     let masses = (ref_a.total_mass(), ref_b.total_mass());
 
-    report_pmf(com_scan.as_slice(), pmf_file, Some(masses));
+    report_pmf(com_scan.as_slice(), pmf_file, Some(masses))?;
     Ok(())
 }
 
