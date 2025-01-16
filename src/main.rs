@@ -241,7 +241,7 @@ fn do_dipole(cmd: &Commands) -> Result<()> {
             (-u).exp()
         };
         icotable.clear_vertex_data();
-        icotable.set_vertex_data(exact_exp_energy);
+        icotable.set_vertex_data(exact_exp_energy)?;
 
         // Q summed from exact data at each vertex
         let partition_function = icotable.vertex_data().sum::<f64>() / icotable.len() as f64;
@@ -325,7 +325,7 @@ fn do_potential(cmd: &Commands) -> Result<()> {
     let icotable = IcoTable::<f64>::from_min_points(n_points)?;
     icotable.set_vertex_data(|_, v| {
         energy::electric_potential(&structure, &v.scale(*radius), &multipole)
-    });
+    })?;
 
     File::create("pot_at_vertices.dat")?.write_fmt(format_args!("{}", icotable))?;
 
