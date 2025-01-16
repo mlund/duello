@@ -113,6 +113,12 @@ Command                | Description
 `scripts/cppm.sh`      | Spherical, multipolar particles using the CPPM model
 `scripts/calvados3.sh` | Two coarse grained lysozyme molecules w. Calvados3 interactions
 
+## Converting PDB files
+
+A simple script to convert protein structure files to coarse grained, one bead
+per amino acid XYZ files is provided in `scripts/pdb2xyz.py`.
+Requires that `mdtraj` is installed.
+
 ## Interaction models
 
 Each macromolecule is represented by a rigid constellation of beads with

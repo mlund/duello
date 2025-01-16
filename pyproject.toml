@@ -9,3 +9,5 @@ bindings = "bin"
 strip = true
 compatibility = "manylinux2014"
 
+[project]
+dependencies = ["mdtraj>=1.9"]
