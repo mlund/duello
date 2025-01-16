@@ -1,18 +1,21 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use coulomb::{permittivity, DebyeLength, Medium, Salt, Vector3};
-use faunus::{energy::NonbondedMatrix, topology::Topology};
 use duello::{
     anglescan::do_anglescan, energy, icoscan, icotable::IcoTable, structure::Structure,
     to_cartesian, to_spherical, UnitQuaternion,
 };
+use faunus::{energy::NonbondedMatrix, topology::Topology};
 // use indicatif::ProgressIterator;
 use itertools::Itertools;
 use std::{f64::consts::PI, fs::File, io::Write, ops::Neg, path::PathBuf};
-extern crate pretty_env_logger;
-#[macro_use]
-extern crate log;
+//extern crate pretty_env_logger;
+//#[macro_use]
+//extern crate log;
+use env_logger::{Builder, Target};
 use iter_num_tools::arange;
+use log::info;
+use log::LevelFilter;
 use rand::Rng;
 
 #[derive(Parser)]
@@ -110,12 +113,15 @@ enum Commands {
         /// Output file for PMF
         #[arg(long = "pmf", default_value = "pmf.dat")]
         pmf_file: PathBuf,
+        /// Output file for log
+        #[arg(long = "log", default_value = "output.log")]
+        log_file: PathBuf,
     },
 }
 
 /// Calculate energy of all two-body poses
-fn do_scan(cmd: &Commands) -> Result<()> {
-    let Commands::Scan {
+fn do_scan(cmd: &Commands) -> Result<(), Box<dyn std::error::Error>> {
+    if let Commands::Scan {
         mol1,
         mol2,
         resolution,
@@ -129,77 +135,84 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         icotable,
         fixed_dielectric,
         pmf_file,
+        log_file,
     } = cmd
-    else {
-        anyhow::bail!("Unknown command");
-    };
-    assert!(rmin < rmax);
+    {
+        // Use the log_file here
+        let mut file = File::create(log_file)?;
+        writeln!(file, "Scan command executed")?;
 
-    let mut topology = Topology::from_file_partial(top_file)?;
-    faunus::topology::set_missing_epsilon(topology.atomkinds_mut(), 2.479);
+        assert!(rmin < rmax);
 
-    // Either use fixed dielectric constant or calculate it from the medium
-    let medium = match fixed_dielectric {
-        Some(dielectric_const) => Medium::new(
-            *temperature,
-            permittivity::Permittivity::Fixed(*dielectric_const),
-            Some((Salt::SodiumChloride, *molarity)),
-        ),
-        _ => Medium::salt_water(*temperature, Salt::SodiumChloride, *molarity),
-    };
+        let mut topology = Topology::from_file_partial(top_file)?;
+        faunus::topology::set_missing_epsilon(topology.atomkinds_mut(), 2.479);
 
-    let multipole = coulomb::pairwise::Plain::new(*cutoff, medium.debye_length());
-    let nonbonded = NonbondedMatrix::from_file(top_file, &topology, Some(medium.clone()))?;
-    let pair_matrix = energy::PairMatrix::new_with_coulomb(
-        nonbonded,
-        topology.atomkinds(),
-        medium.permittivity().into(),
-        &multipole,
-    );
-    let ref_a = Structure::from_xyz(mol1, topology.atomkinds());
-    let ref_b = Structure::from_xyz(mol2, topology.atomkinds());
+        // Either use fixed dielectric constant or calculate it from the medium
+        let medium = match fixed_dielectric {
+            Some(dielectric_const) => Medium::new(
+                *temperature,
+                permittivity::Permittivity::Fixed(*dielectric_const),
+                Some((Salt::SodiumChloride, *molarity)),
+            ),
+            _ => Medium::salt_water(*temperature, Salt::SodiumChloride, *molarity),
+        };
 
-    info!("{}", medium);
-    info!(
-        "Molecular net-charges:    [{:.2}e, {:.2}e]",
-        ref_a.net_charge(),
-        ref_b.net_charge(),
-    );
-    info!(
-        "Molecular masses (g/mol): [{:.2}e, {:.2}e]",
-        ref_a.total_mass(),
-        ref_b.total_mass(),
-    );
+        let multipole = coulomb::pairwise::Plain::new(*cutoff, medium.debye_length());
+        let nonbonded = NonbondedMatrix::from_file(top_file, &topology, Some(medium.clone()))?;
+        let pair_matrix = energy::PairMatrix::new_with_coulomb(
+            nonbonded,
+            topology.atomkinds(),
+            medium.permittivity().into(),
+            &multipole,
+        );
+        let ref_a = Structure::from_xyz(mol1, topology.atomkinds())?;
+        let ref_b = Structure::from_xyz(mol2, topology.atomkinds())?;
 
-    // Scan over mass center distances
-    let distances = iter_num_tools::arange(*rmin..*rmax, *dr).collect_vec();
-    info!(
-        "COM range: [{:.1}, {:.1}) in {:.1} Å steps 🐾",
-        rmin, rmax, dr
-    );
-    if *icotable {
-        icoscan::do_icoscan(
-            *rmin,
-            *rmax,
-            *dr,
-            *resolution,
-            ref_a,
-            ref_b,
-            pair_matrix,
-            temperature,
-            pmf_file,
-        )
+        info!("{}", medium);
+        info!(
+            "Molecular net-charges:    [{:.2}e, {:.2}e]",
+            ref_a.net_charge(),
+            ref_b.net_charge(),
+        );
+        info!(
+            "Molecular masses (g/mol): [{:.2}e, {:.2}e]",
+            ref_a.total_mass(),
+            ref_b.total_mass(),
+        );
+
+        // Scan over mass center distances
+        let distances = iter_num_tools::arange(*rmin..*rmax, *dr).collect_vec();
+        info!(
+            "COM range: [{:.1}, {:.1}) in {:.1} Å steps 🐾",
+            rmin, rmax, dr
+        );
+        if *icotable {
+            let _ = icoscan::do_icoscan(
+                *rmin,
+                *rmax,
+                *dr,
+                *resolution,
+                ref_a,
+                ref_b,
+                pair_matrix,
+                temperature,
+                pmf_file,
+            );
+        } else {
+            let _ = do_anglescan(
+                distances,
+                *resolution,
+                ref_a,
+                ref_b,
+                pair_matrix,
+                temperature,
+                pmf_file,
+            );
+        };
     } else {
-        do_anglescan(
-            distances,
-            *resolution,
-            ref_a,
-            ref_b,
-            pair_matrix,
-            temperature,
-            pmf_file,
-        )
+        return Err(Box::<dyn std::error::Error>::from("No command given"));
     }
+    Ok(())
 }
 
 fn do_dipole(cmd: &Commands) -> Result<()> {
@@ -241,7 +254,7 @@ fn do_dipole(cmd: &Commands) -> Result<()> {
             (-u).exp()
         };
         icotable.clear_vertex_data();
-        icotable.set_vertex_data(exact_exp_energy);
+        icotable.set_vertex_data(exact_exp_energy)?;
 
         // Q summed from exact data at each vertex
         let partition_function = icotable.vertex_data().sum::<f64>() / icotable.len() as f64;
@@ -306,7 +319,7 @@ fn do_potential(cmd: &Commands) -> Result<()> {
     let mut topology = Topology::from_file_partial(topology)?;
     faunus::topology::set_missing_epsilon(topology.atomkinds_mut(), 2.479);
 
-    let structure = Structure::from_xyz(mol1, topology.atomkinds());
+    let structure = Structure::from_xyz(mol1, topology.atomkinds())?;
 
     let n_points = (4.0 * PI / resolution.powi(2)).round() as usize;
     let vertices = duello::make_icosphere_vertices(n_points)?;
@@ -325,7 +338,7 @@ fn do_potential(cmd: &Commands) -> Result<()> {
     let icotable = IcoTable::<f64>::from_min_points(n_points)?;
     icotable.set_vertex_data(|_, v| {
         energy::electric_potential(&structure, &v.scale(*radius), &multipole)
-    });
+    })?;
 
     File::create("pot_at_vertices.dat")?.write_fmt(format_args!("{}", icotable))?;
 
@@ -386,11 +399,10 @@ fn pqr_write_atom(
     Ok(())
 }
 
-fn do_main() -> Result<()> {
+/* fn do_main2() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info");
     }
-    pretty_env_logger::init();
 
     let cli = Cli::parse();
     match cli.command {
@@ -400,17 +412,59 @@ fn do_main() -> Result<()> {
             Commands::Potential { .. } => do_potential(&cmd)?,
         },
         None => {
-            anyhow::bail!("No command given");
+            return Err(Box::<dyn std::error::Error>::from("No command given"));
         }
     };
     Ok(())
-}
+} */
 
 fn main() {
-    if let Err(err) = do_main() {
-        eprintln!("Error: {}", &err);
+    if let Err(e) = do_main() {
+        eprintln!("Application error: {}", e);
         std::process::exit(1);
     }
+}
+
+fn do_main() -> Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::parse();
+
+    // Set up logging
+    let log_path = match &cli.command {
+        Some(Commands::Scan { log_file, .. }) => log_file,
+        _ => {
+            eprintln!("No valid command given or log file not specified.");
+            return Err(Box::<dyn std::error::Error>::from("No command given"));
+        }
+    };
+
+    let log_file = File::create(log_path)?;
+    // Initialize the logger
+    let mut builder = Builder::new();
+    builder
+        .filter(None, LevelFilter::Info)
+        .write_style(env_logger::WriteStyle::Always)
+        .target(Target::Pipe(Box::new(log_file)));
+
+    if let Err(e) = builder.try_init() {
+        eprintln!("Logger initialization failed: {}", e);
+    }
+
+    match cli.command {
+        Some(Commands::Scan { .. }) => {
+            do_scan(&cli.command.unwrap())?;
+        }
+        Some(Commands::Potential { .. }) => {
+            do_potential(&cli.command.unwrap())?;
+        }
+        Some(Commands::Dipole { .. }) => {
+            do_dipole(&cli.command.unwrap())?;
+        }
+        None => {
+            return Err(Box::<dyn std::error::Error>::from("No command given"));
+        }
+    };
+
+    Ok(())
 }
 
 #[cfg(test)]
