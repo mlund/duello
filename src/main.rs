@@ -1,11 +1,11 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use coulomb::{permittivity, DebyeLength, Medium, Salt, Vector3};
-use faunus::{energy::NonbondedMatrix, topology::Topology};
 use duello::{
     anglescan::do_anglescan, energy, icoscan, icotable::IcoTable, structure::Structure,
     to_cartesian, to_spherical, UnitQuaternion,
 };
+use faunus::{energy::NonbondedMatrix, topology::Topology};
 // use indicatif::ProgressIterator;
 use itertools::Itertools;
 use std::{f64::consts::PI, fs::File, io::Write, ops::Neg, path::PathBuf};
@@ -156,8 +156,8 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         medium.permittivity().into(),
         &multipole,
     );
-    let ref_a = Structure::from_xyz(mol1, topology.atomkinds());
-    let ref_b = Structure::from_xyz(mol2, topology.atomkinds());
+    let ref_a = Structure::from_xyz(mol1, topology.atomkinds())?;
+    let ref_b = Structure::from_xyz(mol2, topology.atomkinds())?;
 
     info!("{}", medium);
     info!(
