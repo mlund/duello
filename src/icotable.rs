@@ -114,7 +114,7 @@ impl<T: Clone + GetSize> IcoTable<T> {
     /// Generate table based on an existing subdivided icosaedron
     pub fn from_icosphere(icosphere: Subdivided<(), IcoSphereBase>, default_data: T) -> Self {
         let table = Self::from_icosphere_without_data(icosphere);
-        table.set_vertex_data(|_, _| default_data.clone());
+        table.set_vertex_data(|_, _| default_data.clone()).unwrap();
         table
     }
 
@@ -136,13 +136,20 @@ impl<T: Clone + GetSize> IcoTable<T> {
     /// Set data associated with each vertex using a generator function
     /// The function takes the index of the vertex and its position
     /// Due to the `OnceLock` wrap, this can be done only once!
-    pub fn set_vertex_data(&self, f: impl Fn(usize, &Vector3) -> T) {
-        self.vertices.iter().enumerate().for_each(|(i, v)| {
-            assert!(v.data.get().is_none());
-            let value = f(i, &v.pos);
-            let result = v.data.set(value); // why can we not use unwrap here?!
-            assert!(result.is_ok());
-        });
+    pub fn set_vertex_data(&self, f: impl Fn(usize, &Vector3) -> T) -> anyhow::Result<()> {
+        if self.vertices.iter().any(|v| v.data.get().is_some()) {
+            anyhow::bail!("Data already set for some vertices")
+        }
+        self.vertices
+            .iter()
+            .enumerate()
+            .try_for_each(|(i, vertex)| {
+                let value = f(i, &vertex.pos);
+                if vertex.data.set(value).is_err() {
+                    anyhow::bail!("Data already set for vertex {}", i);
+                }
+                Ok(())
+            })
     }
 
     /// Discard data associated with each vertex
@@ -242,10 +249,11 @@ impl<T: Clone + GetSize> IcoTable<T> {
 
     /// Get the three vertices of a face
     pub fn face_positions(&self, face: &Face) -> (&Vector3, &Vector3, &Vector3) {
-        let a = &self.vertices[face[0] as usize].pos;
-        let b = &self.vertices[face[1] as usize].pos;
-        let c = &self.vertices[face[2] as usize].pos;
-        (a, b, c)
+        (
+            &self.vertices[face[0] as usize].pos,
+            &self.vertices[face[1] as usize].pos,
+            &self.vertices[face[2] as usize].pos,
+        )
     }
 
     /// Find nearest vertex to a given point
@@ -466,7 +474,7 @@ mod tests {
         let n_points = 12;
         let icosphere = make_icosphere(n_points).unwrap();
         let icotable = IcoTable::<f64>::from_icosphere_without_data(icosphere);
-        icotable.set_vertex_data(|i, _| i as f64);
+        icotable.set_vertex_data(|i, _| i as f64).unwrap();
         let icotable_of_spheres = IcoTableOfSpheres::from_min_points(n_points, icotable).unwrap();
 
         let face_a = [0, 1, 2];
