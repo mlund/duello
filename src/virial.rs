@@ -15,10 +15,7 @@
 use itertools::Itertools;
 use num_traits::Inv;
 use physical_constants::AVOGADRO_CONSTANT;
-use std::{
-    f64::consts::PI,
-    ops::{Add, Mul, Neg},
-};
+use std::{f64::consts::PI, ops::Neg};
 
 /// Struct for handling osmotic second virial coefficients, B2
 #[derive(Debug, Clone)]
@@ -66,12 +63,10 @@ impl VirialCoeff {
         // integrate
         let b2 = pomf
             .iter()
-            .map(|(r, w)| (*r, *w))
             .filter(|(r, _)| *r >= sigma)
             .map(|(r, w)| w.neg().exp_m1() * r * r)
             .sum::<f64>()
-            .mul(-2.0 * PI * dr)
-            .add(b2_hardsphere);
+            .mul_add(-2.0 * PI * dr, b2_hardsphere);
         Ok(Self { b2, sigma })
     }
 
