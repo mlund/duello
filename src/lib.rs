@@ -6,6 +6,8 @@ pub mod icotable;
 pub mod report;
 pub mod structure;
 pub mod table;
+mod virial;
+pub use virial::VirialCoeff;
 extern crate pretty_env_logger;
 #[macro_use]
 extern crate log;
