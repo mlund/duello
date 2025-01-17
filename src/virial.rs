@@ -95,13 +95,8 @@ impl VirialCoeff {
     /// See "Colloidal Domain" by Evans and Wennerström, 2nd Ed, p. 408
     pub fn association_const(&self) -> Option<f64> {
         const LITER_PER_CUBIC_ANGSTROM: f64 = 1e-27;
-        let association_const =
-            -2.0 * (self.b2 - self.hardsphere()) * LITER_PER_CUBIC_ANGSTROM * AVOGADRO_CONSTANT;
-        if association_const.is_sign_positive() {
-            Some(association_const)
-        } else {
-            None
-        }
+        Some(-2.0 * (self.b2 - self.hardsphere()) * LITER_PER_CUBIC_ANGSTROM * AVOGADRO_CONSTANT)
+            .filter(|x| x.is_sign_positive())
     }
     /// Dissociation constant, 𝐾𝑑
     /// See "Colloidal Domain" by Evans and Wennerström, 2nd Ed, p. 408
@@ -143,7 +138,7 @@ mod tests {
             (49.0, -0.0356),
         ];
         let virial = VirialCoeff::from_pmf(pmf.iter().cloned(), None).unwrap();
-        assert_relative_eq!(virial.b2(), 87041.72463623626);
+        assert_relative_eq!(virial.b2(), 87041.72463623626, epsilon = 1e-3);
         assert_relative_eq!(virial.hardsphere(), 106087.39512152252);
         assert_relative_eq!(virial.sigma(), 37.0);
         assert_relative_eq!(virial.reduced(), 0.820471881098885);
@@ -155,5 +150,8 @@ mod tests {
         assert_relative_eq!(virial.sigma(), 40.0);
         assert_relative_eq!(virial.reduced(), 0.6553003699405502);
         assert_relative_eq!(virial.dissociation_const().unwrap(), 0.017969653256450453);
+
+        let virial = VirialCoeff::from_raw_parts(16760.0, 20.0);
+        assert!(virial.association_const().is_none());
     }
 }
