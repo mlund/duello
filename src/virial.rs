@@ -34,7 +34,22 @@ impl VirialCoeff {
     /// w(r) should be in units of kT; r should be equidistant and in Å.
     /// 𝐵₂ = -½ ∫ [ exp(-𝛽𝑤(𝑟) ) - 1 ] 4π𝑟² d𝑟
     /// If σ is not provided, it is assumed to be the first distance in the PMF.
-    pub fn from_pmf(pomf: &[(f32, f32)], sigma: Option<f32>) -> anyhow::Result<Self> {
+    pub fn from_pmf(
+        pomf: impl IntoIterator<Item = (impl Into<f64>, impl Into<f64>)>,
+        sigma: Option<f64>,
+    ) -> anyhow::Result<Self> {
+        let pomf = pomf
+            .into_iter()
+            .map(|(r, w)| (r.into(), w.into()))
+            .collect_vec();
+        Self::from_pmf_slice(pomf.as_slice(), sigma)
+    }
+
+    /// Calculates B2 from PMF data, pairs of (r, w(r)).
+    /// w(r) should be in units of kT; r should be equidistant and in Å.
+    /// 𝐵₂ = -½ ∫ [ exp(-𝛽𝑤(𝑟) ) - 1 ] 4π𝑟² d𝑟
+    /// If σ is not provided, it is assumed to be the first distance in the PMF.
+    pub fn from_pmf_slice(pomf: &[(f64, f64)], sigma: Option<f64>) -> anyhow::Result<Self> {
         // use first two distances to calculate dr and assume it's constant
         let (r0, r1) = pomf
             .iter()
@@ -42,16 +57,16 @@ impl VirialCoeff {
             .take(2)
             .collect_tuple()
             .ok_or_else(|| anyhow::anyhow!("Error calculating PMF dr"))?;
-        let dr = (r1 - r0) as f64;
+        let dr = r1 - r0;
         if dr <= 0.0 {
             anyhow::bail!("Negative dr in PMF");
         }
-        let sigma = sigma.unwrap_or(r0) as f64; // closest distance, "σ"
+        let sigma = sigma.unwrap_or(r0); // closest distance, "σ"
         let b2_hardsphere = 2.0 * PI / 3.0 * sigma.powi(3);
         // integrate
         let b2 = pomf
             .iter()
-            .map(|(r, w)| (*r as f64, *w as f64))
+            .map(|(r, w)| (*r, *w))
             .filter(|(r, _)| *r >= sigma)
             .map(|(r, w)| w.neg().exp_m1() * r * r)
             .sum::<f64>()
@@ -132,18 +147,18 @@ mod tests {
             (48.0, -0.0774),
             (49.0, -0.0356),
         ];
-        let virial = VirialCoeff::from_pmf(&pmf, None).unwrap();
-        assert_relative_eq!(virial.b2(), 87041.72562419297);
+        let virial = VirialCoeff::from_pmf(pmf.iter().cloned(), None).unwrap();
+        assert_relative_eq!(virial.b2(), 87041.72463623626);
         assert_relative_eq!(virial.hardsphere(), 106087.39512152252);
         assert_relative_eq!(virial.sigma(), 37.0);
-        assert_relative_eq!(virial.reduced(), 0.8204718904115532);
-        assert_relative_eq!(virial.dissociation_const().unwrap(), 0.04359361238014435);
+        assert_relative_eq!(virial.reduced(), 0.820471881098885);
+        assert_relative_eq!(virial.dissociation_const().unwrap(), 0.04359361011881143);
 
-        let virial = VirialCoeff::from_pmf(&pmf, Some(40.0)).unwrap();
-        assert_relative_eq!(virial.b2(), 87837.30565457643);
+        let virial = VirialCoeff::from_pmf(pmf.iter().cloned(), Some(40.0)).unwrap();
+        assert_relative_eq!(virial.b2(), 87837.30466559599);
         assert_relative_eq!(virial.hardsphere(), 134041.2865531645);
         assert_relative_eq!(virial.sigma(), 40.0);
-        assert_relative_eq!(virial.reduced(), 0.6553003773187279);
-        assert_relative_eq!(virial.dissociation_const().unwrap(), 0.017969653641084746);
+        assert_relative_eq!(virial.reduced(), 0.6553003699405502);
+        assert_relative_eq!(virial.dissociation_const().unwrap(), 0.017969653256450453);
     }
 }

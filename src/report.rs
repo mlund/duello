@@ -48,7 +48,7 @@ pub fn report_pmf(
         }
     });
 
-    let virial = VirialCoeff::from_pmf(&pmf_data, None)?;
+    let virial = VirialCoeff::from_pmf(pmf_data.iter().cloned(), None)?;
 
     info!(
         "Second virial coefficient, 𝐵₂ = {:.2} Å³",
