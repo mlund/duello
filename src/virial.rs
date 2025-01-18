@@ -47,17 +47,15 @@ impl VirialCoeff {
     /// 𝐵₂ = -½ ∫ [ exp(-𝛽𝑤(𝑟) ) - 1 ] 4π𝑟² d𝑟
     /// If σ is not provided, it is assumed to be the first distance in the PMF.
     pub fn from_pmf_slice(pomf: &[(f64, f64)], sigma: Option<f64>) -> anyhow::Result<Self> {
-        // use first two distances to calculate dr and assume it's constant
-        let (r0, r1) = pomf
-            .iter()
-            .map(|pair| pair.0)
-            .take(2)
-            .collect_tuple()
-            .ok_or_else(|| anyhow::anyhow!("Error calculating PMF dr"))?;
-        let dr = r1 - r0;
-        if dr <= 0.0 {
-            anyhow::bail!("Negative dr in PMF");
+        if pomf.len() < 2 {
+            anyhow::bail!("PMF must have at least two points");
         }
+        if !pomf.iter().map(|(r, _)| *r).is_sorted() {
+            anyhow::bail!("PMF distances must be in increasing order");
+        }
+        // use first two distances to calculate dr and assume it's constant
+        let (r0, r1) = (pomf[0].0, pomf[1].0);
+        let dr = r1 - r0;
         let sigma = sigma.unwrap_or(r0); // closest distance, "σ"
         let b2_hardsphere = 2.0 * PI / 3.0 * sigma.powi(3);
         // integrate
