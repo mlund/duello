@@ -59,6 +59,10 @@ impl Table6D {
         let table3 = PaddedTable::<IcoTableOfSpheres>::new(0.0, 2.0 * PI, angle_resolution, table2); // 𝜔
         Ok(Self::new(r_min, r_max, dr, table3)) // R
     }
+    /// Get remaining 4D space (icotables) at (r, omega)
+    pub fn get_icospheres(&self, r: f64, omega: f64) -> Result<&IcoTableOfSpheres> {
+        self.get(r)?.get(omega)
+    }
 }
 
 /// Represents indices of a face

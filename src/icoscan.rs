@@ -27,6 +27,34 @@ use std::{f64::consts::PI, path::PathBuf};
 
 pub type Vector3 = nalgebra::Vector3<f64>;
 pub type UnitQuaternion = nalgebra::UnitQuaternion<f64>;
+use nalgebra::UnitVector3;
+
+/// Orient two reference structures to given 6D point and return the two structures
+///
+/// Structure A is kept fixed at origin while structure B is rotated and translated
+/// to the given 6D point (r, omega, 2 x vertex positions). The given reference structures
+/// are assumed to be centered at the origin.
+pub fn orient_structures(
+    r: f64,
+    omega: f64,
+    vertex_i: Vector3,
+    vertex_j: Vector3,
+    ref_a: &Structure,
+    ref_b: &Structure,
+) -> (Structure, Structure) {
+    let r_vec = Vector3::new(0.0, 0.0, r);
+    // Z axis cannot be *exactly* parallel to r_vec; see nalgebra::rotation_between
+    let zaxis = UnitVector3::new_normalize(Vector3::new(0.0005, 0.0005, 1.0));
+    let to_neg_zaxis = |p| UnitQuaternion::rotation_between(p, &-zaxis).unwrap();
+    let around_z = |angle| UnitQuaternion::from_axis_angle(&zaxis, angle);
+    let q1 = to_neg_zaxis(&vertex_j);
+    let q2 = around_z(omega);
+    let q3 = UnitQuaternion::rotation_between(&zaxis, &vertex_i).unwrap();
+    let mut mol_b = ref_b.clone(); // initially at origin
+    mol_b.transform(|pos| (q1 * q2).transform_vector(&pos));
+    mol_b.transform(|pos| q3.transform_vector(&(pos + r_vec)));
+    (ref_a.clone(), mol_b)
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn do_icoscan(
@@ -58,44 +86,20 @@ pub fn do_icoscan(
         table.get_heap_size() as f64 / 1e6
     );
 
-    use nalgebra::UnitVector3;
-
-    // Rotation operations via unit quaternions
-    let zaxis = UnitVector3::new_normalize(Vector3::new(0.0005, 0.0005, 1.0));
-    let to_neg_zaxis = |p| UnitQuaternion::rotation_between(p, &-zaxis).unwrap();
-    let around_z = |angle| UnitQuaternion::from_axis_angle(&zaxis, angle);
-
     // Calculate energy of all two-body poses for given mass center separation and dihedral angle
+    // by looping over remaining 4D angular space. Energies are stored on each vertex of the deepest level
+    // icospheres.
     let calc_energy = |r: f64, omega: f64| {
-        let r_vec = Vector3::new(0.0, 0.0, r);
-        let a = table
-            .get(r)
-            .expect("invalid r value")
-            .get(omega)
-            .expect("invalid omega value");
-
-        a.flat_iter().for_each(|(vertex_a, vertex_b)| {
-            let q1 = to_neg_zaxis(&vertex_b.pos);
-            let q2 = around_z(omega);
-            let q3 = UnitQuaternion::rotation_between(&zaxis, &vertex_a.pos).unwrap();
-            let mut mol_b = ref_b.clone(); // initially at origin
-            mol_b.transform(|pos| (q1 * q2).transform_vector(&pos));
-            mol_b.transform(|pos| q3.transform_vector(&(pos + r_vec)));
-            let energy = pair_matrix.sum_energy(&ref_a, &mol_b);
-            vertex_b.data.set(energy).unwrap();
-        });
-        // for vertex_a in a.vertices.iter() {
-        //     for vertex_b in vertex_a.data.get().unwrap().vertices.iter() {
-        //         let q1 = to_neg_zaxis(&vertex_b.pos);
-        //         let q2 = around_z(omega);
-        //         let q3 = UnitQuaternion::rotation_between(&zaxis, &vertex_a.pos).unwrap();
-        //         let mut mol_b = ref_b.clone(); // initially at origin
-        //         mol_b.transform(|pos| (q1 * q2).transform_vector(&pos));
-        //         mol_b.transform(|pos| q3.transform_vector(&(pos + r_vec)));
-        //         let energy = pair_matrix.sum_energy(&ref_a, &mol_b);
-        //         vertex_b.data.set(energy).unwrap();
-        //     }
-        // }
+        table
+            .get_icospheres(r, omega) // remaining 4D
+            .expect("invalid (r, omega) value")
+            .flat_iter()
+            .for_each(|(vertex_a, vertex_b)| {
+                let (oriented_a, oriented_b) =
+                    orient_structures(r, omega, vertex_a.pos, vertex_b.pos, &ref_a, &ref_b);
+                let energy = pair_matrix.sum_energy(&oriented_a, &oriented_b);
+                vertex_b.data.set(energy).unwrap();
+            });
     };
 
     // Pair all mass center separations (r) and dihedral angles (omega)
