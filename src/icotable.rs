@@ -25,6 +25,21 @@ use std::sync::OnceLock;
 /// A icotable where each vertex holds an icotable of floats
 pub type IcoTableOfSpheres = IcoTable<IcoTable<f64>>;
 
+impl IcoTableOfSpheres {
+    /// Get flat iterator that runs over all pairs of (vertex_a, vertex_b)
+    pub fn flat_iter(&self) -> impl Iterator<Item = (&Vertex<IcoTable<f64>>, &Vertex<f64>)> {
+        self.vertices.iter().flat_map(|vertex_a| {
+            vertex_a
+                .data
+                .get()
+                .unwrap()
+                .vertices
+                .iter()
+                .map(move |vertex_b| (vertex_a, vertex_b))
+        })
+    }
+}
+
 /// A 6D table for relative twobody orientations, R → 𝜔 → (𝜃𝜑) → (𝜃𝜑)
 ///
 /// The first two dimensions are radial distances and dihedral angles.

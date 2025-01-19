@@ -73,18 +73,29 @@ pub fn do_icoscan(
             .expect("invalid r value")
             .get(omega)
             .expect("invalid omega value");
-        for vertex_a in a.vertices.iter() {
-            for vertex_b in vertex_a.data.get().unwrap().vertices.iter() {
-                let q1 = to_neg_zaxis(&vertex_b.pos);
-                let q2 = around_z(omega);
-                let q3 = UnitQuaternion::rotation_between(&zaxis, &vertex_a.pos).unwrap();
-                let mut mol_b = ref_b.clone(); // initially at origin
-                mol_b.transform(|pos| (q1 * q2).transform_vector(&pos));
-                mol_b.transform(|pos| q3.transform_vector(&(pos + r_vec)));
-                let energy = pair_matrix.sum_energy(&ref_a, &mol_b);
-                vertex_b.data.set(energy).unwrap();
-            }
-        }
+
+        a.flat_iter().for_each(|(vertex_a, vertex_b)| {
+            let q1 = to_neg_zaxis(&vertex_b.pos);
+            let q2 = around_z(omega);
+            let q3 = UnitQuaternion::rotation_between(&zaxis, &vertex_a.pos).unwrap();
+            let mut mol_b = ref_b.clone(); // initially at origin
+            mol_b.transform(|pos| (q1 * q2).transform_vector(&pos));
+            mol_b.transform(|pos| q3.transform_vector(&(pos + r_vec)));
+            let energy = pair_matrix.sum_energy(&ref_a, &mol_b);
+            vertex_b.data.set(energy).unwrap();
+        });
+        // for vertex_a in a.vertices.iter() {
+        //     for vertex_b in vertex_a.data.get().unwrap().vertices.iter() {
+        //         let q1 = to_neg_zaxis(&vertex_b.pos);
+        //         let q2 = around_z(omega);
+        //         let q3 = UnitQuaternion::rotation_between(&zaxis, &vertex_a.pos).unwrap();
+        //         let mut mol_b = ref_b.clone(); // initially at origin
+        //         mol_b.transform(|pos| (q1 * q2).transform_vector(&pos));
+        //         mol_b.transform(|pos| q3.transform_vector(&(pos + r_vec)));
+        //         let energy = pair_matrix.sum_energy(&ref_a, &mol_b);
+        //         vertex_b.data.set(energy).unwrap();
+        //     }
+        // }
     };
 
     // Pair all mass center separations (r) and dihedral angles (omega)
