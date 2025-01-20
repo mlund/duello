@@ -15,6 +15,7 @@
 use itertools::Itertools;
 use num_traits::Inv;
 use physical_constants::AVOGADRO_CONSTANT;
+use serde::ser::SerializeStruct;
 use std::{f64::consts::PI, ops::Neg};
 
 /// Struct for handling osmotic second virial coefficients, B2
@@ -105,6 +106,21 @@ impl VirialCoeff {
     pub fn mol_ml_per_gram2(&self, mw1: f64, mw2: f64) -> f64 {
         const ML_PER_ANGSTROM3: f64 = 1e-24;
         self.b2 * ML_PER_ANGSTROM3 / (mw1 * mw2) * AVOGADRO_CONSTANT
+    }
+}
+
+// Implement serialize which writes B2, hardsphere, and dissociation constant
+impl serde::Serialize for VirialCoeff {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut state = serializer.serialize_struct("VirialCoeff", 4)?;
+        state.serialize_field("B2", &self.b2)?;
+        state.serialize_field("B2_hs", &self.hardsphere())?;
+        state.serialize_field("B2_reduced", &self.reduced())?;
+        state.serialize_field("sigma", &self.sigma())?;
+        if let Some(kd) = self.dissociation_const() {
+            state.serialize_field("kD", &kd)?;
+        }
+        state.end()
     }
 }
 
