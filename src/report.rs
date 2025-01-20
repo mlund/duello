@@ -50,6 +50,10 @@ pub fn report_pmf(
 
     let virial = VirialCoeff::from_pmf(pmf_data.iter().cloned(), None)?;
 
+    // Let's also write B2 etc. to a YAML file
+    let mut json_file = File::create(path.with_extension("json")).unwrap();
+    writeln!(json_file, "{}", serde_json::to_string(&virial)?)?;
+
     info!(
         "Second virial coefficient, 𝐵₂ = {:.2} Å³",
         f64::from(virial.clone())

@@ -28,7 +28,7 @@ extern crate log;
 use physical_constants::MOLAR_GAS_CONSTANT;
 use std::f64::consts::PI;
 use std::iter::Sum;
-use std::ops::{Add, Neg};
+use std::ops::{Add, AddAssign, Neg};
 
 extern crate flate2;
 
@@ -108,6 +108,15 @@ impl Add for Sample {
             mean_energy: self.mean_energy + other.mean_energy,
             exp_energy: self.exp_energy + other.exp_energy,
         }
+    }
+}
+
+impl AddAssign for Sample {
+    fn add_assign(&mut self, other: Self) {
+        self.n += other.n;
+        self.mean_energy += other.mean_energy;
+        self.exp_energy += other.exp_energy;
+        self.thermal_energy = f64::max(self.thermal_energy, other.thermal_energy);
     }
 }
 

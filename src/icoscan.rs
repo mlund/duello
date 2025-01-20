@@ -21,6 +21,7 @@ use crate::{
 };
 use get_size::GetSize;
 use indicatif::ParallelProgressIterator;
+use iter_num_tools::arange;
 use itertools::Itertools;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::{f64::consts::PI, path::PathBuf};
@@ -68,21 +69,20 @@ pub fn do_icoscan(
     temperature: &f64,
     pmf_file: &PathBuf,
 ) -> std::result::Result<(), anyhow::Error> {
-    let distances = iter_num_tools::arange(rmin..rmax, dr).collect_vec();
     let table = Table6D::from_resolution(rmin, rmax, dr, angle_resolution)?;
-    let n_points = table.get(rmin).unwrap().get(0.0).unwrap().len();
-    let angle_resolution = (4.0 * PI / n_points as f64).sqrt();
-    let dihedral_angles = iter_num_tools::arange(0.0..2.0 * PI, angle_resolution).collect_vec();
-
-    let total = distances.len() * dihedral_angles.len() * n_points * n_points;
+    let n_vertices = table.get(rmin).unwrap().get(0.0).unwrap().len();
+    let angle_resolution = (4.0 * PI / n_vertices as f64).sqrt();
+    let dihedral_angles = arange(0.0..2.0 * PI, angle_resolution).collect_vec();
+    let distances = arange(rmin..rmax, dr).collect_vec();
+    let n_total = distances.len() * dihedral_angles.len() * n_vertices * n_vertices;
 
     info!(
         "6D table: 𝑅({}) x 𝜔({}) x 𝜃𝜑({}) x 𝜃𝜑({}) = {} poses 💃🕺 ({:.1} MB)",
         distances.len(),
         dihedral_angles.len(),
-        n_points,
-        n_points,
-        total,
+        n_vertices,
+        n_vertices,
+        n_total,
         table.get_heap_size() as f64 / 1e6
     );
 
@@ -117,19 +117,25 @@ pub fn do_icoscan(
             calc_energy(*r, *omega);
         });
 
-    // Calculate partition function
+    // Partition function contribution for single (r, omega) point
+    // i.e. averaged over 4D angular space
+    let calc_partition_func = |r: f64, omega: f64| {
+        table.get_icospheres(r, omega).unwrap().flat_iter().fold(
+            Sample::default(),
+            |sum, (_vertex_a, vertex_b)| {
+                let energy = vertex_b.data.get().unwrap();
+                sum + Sample::new(*energy, *temperature)
+            },
+        )
+    };
+
+    // Calculate partition function as function of r only
     let mut samples: Vec<(Vector3, Sample)> = Vec::default();
     for r in &distances {
-        let mut partition_func = Sample::default();
-        for omega in &dihedral_angles {
-            let r_and_omega = table.get(*r).unwrap().get(*omega).unwrap();
-            for vertex_a in r_and_omega.vertices.iter() {
-                for vertex_b in vertex_a.data.get().unwrap().vertices.iter() {
-                    let energy = vertex_b.data.get().unwrap();
-                    partition_func = partition_func + Sample::new(*energy, *temperature);
-                }
-            }
-        }
+        let partition_func = dihedral_angles
+            .iter()
+            .map(|omega| calc_partition_func(*r, *omega))
+            .sum();
         samples.push((Vector3::new(0.0, 0.0, *r), partition_func));
     }
 
