@@ -106,7 +106,7 @@ impl Structure {
         let masses = nxyz
             .iter()
             .map(|(name, _)| atomkinds.iter().find(|i| i.name() == name).unwrap().mass())
-            .collect::<Vec<f64>>();
+            .collect();
 
         let charges = nxyz
             .iter()
@@ -156,9 +156,9 @@ impl Structure {
                 atomkinds
                     .iter()
                     .position(|j| j.name() == i.name)
-                    .unwrap_or_else(|| panic!("Unknown atom name in AAM file: {}", i.name))
+                    .ok_or_else(|| anyhow::anyhow!("Unknown atom name in AAM file: {}", i.name))
             })
-            .collect();
+            .try_collect()?;
 
         let mut structure = Self {
             pos: aam.iter().map(|i| i.pos).collect(),
