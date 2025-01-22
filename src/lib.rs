@@ -18,17 +18,16 @@ pub mod energy;
 pub mod icoscan;
 pub mod icotable;
 pub mod report;
+mod sample;
 pub mod structure;
 pub mod table;
 mod virial;
+pub use sample::Sample;
 pub use virial::VirialCoeff;
 extern crate pretty_env_logger;
 #[macro_use]
 extern crate log;
-use physical_constants::MOLAR_GAS_CONSTANT;
 use std::f64::consts::PI;
-use std::iter::Sum;
-use std::ops::{Add, AddAssign, Neg};
 
 extern crate flate2;
 
@@ -55,96 +54,6 @@ pub fn rmsd_angle(q1: &UnitQuaternion<f64>, q2: &UnitQuaternion<f64>) -> f64 {
 pub fn rmsd2(Q: &UnitQuaternion<f64>, inertia: &Matrix3<f64>, total_mass: f64) -> f64 {
     let q = Q.vector();
     4.0 / total_mass * (q.transpose() * inertia * q)[0]
-}
-
-/// Structure to store energy samples
-#[derive(Debug, Default, Clone)]
-pub struct Sample {
-    /// Number of samples
-    n: u64,
-    /// Thermal energy, RT in kJ/mol
-    pub thermal_energy: f64,
-    /// Boltzmann weighted energy, U * exp(-U/kT)
-    pub mean_energy: f64,
-    /// Boltzmann weighted squared energy, U^2 * exp(-U/kT)
-    pub mean_energy2: f64,
-    /// Boltzmann factored energy, exp(-U/kT)
-    pub exp_energy: f64,
-}
-
-impl Sample {
-    /// New from energy in kJ/mol and temperature in K
-    pub fn new(energy: f64, temperature: f64) -> Self {
-        const KJ_PER_J: f64 = 1e-3;
-        let thermal_energy = MOLAR_GAS_CONSTANT * temperature * KJ_PER_J; // kJ/mol
-        let exp_energy = (-energy / thermal_energy).exp();
-        Self {
-            n: 1,
-            thermal_energy,
-            mean_energy: energy * exp_energy,
-            mean_energy2: energy.powi(2) * exp_energy,
-            exp_energy,
-        }
-    }
-    /// Mean energy (kJ/mol)
-    pub fn mean_energy(&self) -> f64 {
-        self.mean_energy / self.exp_energy
-    }
-    /// Mean squared energy (kJ/mol)^2
-    pub fn mean_squared_energy(&self) -> f64 {
-        self.mean_energy2 / self.exp_energy
-    }
-    /// Heat capacity C/R
-    pub fn heat_capacity(&self) -> f64 {
-        (self.mean_squared_energy() - self.mean_energy().powi(2)) / self.thermal_energy.powi(2)
-    }
-    /// Free energy (kJ / mol)
-    pub fn free_energy(&self) -> f64 {
-        (self.exp_energy / self.n as f64).ln().neg() * self.thermal_energy
-    }
-}
-
-impl std::fmt::Display for Sample {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(
-            f,
-            "n: {}, ⟨U⟩: {:.3} kJ/mol, C/𝑘𝐵: {:.3}, -𝑘𝑇⟨exp(-𝛽U)⟩: {:.3} kJ/mol",
-            self.n,
-            self.mean_energy(),
-            self.heat_capacity(),
-            self.free_energy(),
-        )
-    }
-}
-
-impl Sum for Sample {
-    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        iter.fold(Sample::default(), |sum, s| sum + s)
-    }
-}
-
-impl Add for Sample {
-    type Output = Self;
-
-    fn add(self, other: Self) -> Self {
-        Self {
-            n: self.n + other.n,
-            thermal_energy: f64::max(self.thermal_energy, other.thermal_energy),
-            mean_energy: self.mean_energy + other.mean_energy,
-            mean_energy2: self.mean_energy2 + other.mean_energy2,
-            exp_energy: self.exp_energy + other.exp_energy,
-        }
-    }
-}
-
-impl AddAssign for Sample {
-    fn add_assign(&mut self, other: Self) {
-        self.n += other.n;
-        self.mean_energy += other.mean_energy;
-        self.mean_energy2 += other.mean_energy2;
-        self.exp_energy += other.exp_energy;
-        self.thermal_energy = f64::max(self.thermal_energy, other.thermal_energy);
-    }
 }
 
 /// Converts Cartesian coordinates to spherical coordinates (r, theta, phi)
