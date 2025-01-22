@@ -7,17 +7,17 @@ fn main() {
 
     println!("Indices: {:?}", indices);
 
-    println!("Vertices:");
+    println!("\nVertices:");
     for (i, vertex) in vertices.iter().enumerate() {
         println!("{} [{}, {}, {}]", i, vertex.x, vertex.y, vertex.z);
     }
 
-    println!("Faces by index:");
+    println!("\nFaces by index:");
     for (i, triangle) in indices.chunks(3).enumerate() {
         println!("{} [{}, {}, {}]", i, triangle[0], triangle[1], triangle[2],);
     }
-    hexasphere::AdjacencyBuilder::new(1).add_indices(&indices);
-    //     .build()
-    //     .unwrap()
-    //     .print();
+    let mut ab = hexasphere::AdjacencyBuilder::new(vertices.len());
+    ab.add_indices(&indices);
+    let adjency = ab.finish();
+    println!("\nVertex neighborlist:\n(The result preserves winding: the resulting array is wound around the center vertex in the same way that the source triangles were wound.):\n {:?}", adjency);
 }
