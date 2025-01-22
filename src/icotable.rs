@@ -20,6 +20,7 @@ use hexasphere::{shapes::IcoSphereBase, AdjacencyBuilder, Subdivided};
 use itertools::Itertools;
 use nalgebra::Matrix3;
 use std::io::Write;
+use std::path::Path;
 use std::sync::OnceLock;
 
 /// A icotable where each vertex holds an icotable of floats
@@ -119,6 +120,32 @@ pub struct IcoTable<T: Clone + GetSize> {
     pub vertices: Vec<Vertex<T>>,
 }
 
+/// Draw icosahedron to a Visual Molecular Dynamics (VMD) TCL script
+/// Visialize with: `vmd -e script.vmd`
+pub(crate) fn vmd_draw(
+    path: &Path,
+    icosphere: Subdivided<(), IcoSphereBase>,
+    color: &str,
+    scale: Option<f32>,
+) -> anyhow::Result<()> {
+    let num_faces = icosphere.get_all_indices().len() / 3;
+    let path = path.with_extension(format!("faces{}.vmd", num_faces));
+    let mut stream = std::fs::File::create(path)?;
+    icosphere.get_all_indices().chunks(3).try_for_each(|c| {
+        let scale = scale.unwrap_or(1.0);
+        let a = icosphere.raw_points()[c[0] as usize] * scale;
+        let b = icosphere.raw_points()[c[1] as usize] * scale;
+        let c = icosphere.raw_points()[c[2] as usize] * scale;
+        writeln!(stream, "draw color {}", color)?;
+        writeln!(
+            stream,
+            "draw triangle {{{:.3} {:.3} {:.3}}} {{{:.3} {:.3} {:.3}}} {{{:.3} {:.3} {:.3}}}",
+            a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z
+        )
+    })?;
+    Ok(())
+}
+
 impl<T: Clone + GetSize> IcoTable<T> {
     /// Generate table based on an existing subdivided icosaedron
     pub fn from_icosphere_without_data(icosphere: Subdivided<(), IcoSphereBase>) -> Self {
@@ -131,6 +158,8 @@ impl<T: Clone + GetSize> IcoTable<T> {
             .iter()
             .map(|p| Vector3::new(p.x as f64, p.y as f64, p.z as f64))
             .collect();
+
+        vmd_draw(Path::new("icosphere.vmd"), icosphere, "green", Some(10.0)).unwrap();
 
         let vertices = (0..vertex_positions.len())
             .map(|i| {
@@ -431,23 +460,6 @@ impl IcoTableOfSpheres {
         });
         (bary_a.transpose() * data_ab * bary_b).to_scalar()
     }
-}
-
-/// Draw a triangle in VMD format
-fn _vmd_draw_triangle(
-    stream: &mut impl Write,
-    a: &Vector3,
-    b: &Vector3,
-    c: &Vector3,
-    color: &str,
-) -> Result<()> {
-    writeln!(stream, "draw color {}", color)?;
-    writeln!(
-        stream,
-        "draw triangle {{{:.3} {:.3} {:.3}}} {{{:.3} {:.3} {:.3}}} {{{:.3} {:.3} {:.3}}}",
-        a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z
-    )?;
-    Ok(())
 }
 
 #[cfg(test)]

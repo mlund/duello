@@ -51,7 +51,7 @@ pub fn report_pmf(
     let virial = VirialCoeff::from_pmf(pmf_data.iter().cloned(), None)?;
 
     // Let's also write B2 etc. to a YAML file
-    let mut json_file = File::create(path.with_extension("json")).unwrap();
+    let mut json_file = File::create(path.with_extension("json")).expect("Cannot open JSON output");
     writeln!(json_file, "{}", serde_json::to_string(&virial)?)?;
 
     info!(
