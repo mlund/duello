@@ -159,7 +159,9 @@ impl<T: Clone + GetSize> IcoTable<T> {
             .map(|p| Vector3::new(p.x as f64, p.y as f64, p.z as f64))
             .collect();
 
-        vmd_draw(Path::new("icosphere.vmd"), icosphere, "green", Some(10.0)).unwrap();
+        if log::log_enabled!(log::Level::Debug) {
+            vmd_draw(Path::new("icosphere.vmd"), icosphere, "green", Some(10.0)).unwrap();
+        }
 
         let vertices = (0..vertex_positions.len())
             .map(|i| {
