@@ -62,7 +62,7 @@ impl<T: Clone + GetSize> IcoTable<T> {
             .collect();
 
         if log::log_enabled!(log::Level::Debug) {
-            vmd_draw(Path::new("icosphere.vmd"), &icosphere, "green", Some(10.0)).unwrap();
+            vmd_draw(Path::new("icosphere.vmd"), icosphere, "green", Some(10.0)).unwrap();
         }
 
         let vertices = (0..vertex_positions.len())
@@ -75,14 +75,14 @@ impl<T: Clone + GetSize> IcoTable<T> {
             .collect();
 
         Self {
-            vertex_ptr: Arc::new(Mutex::new(make_vertex_vec(&icosphere))),
+            vertex_ptr: Arc::new(Mutex::new(make_vertex_vec(icosphere))),
             data: vertices,
         }
     }
 
     /// Generate table based on an existing subdivided icosaedron
     pub fn from_icosphere(icosphere: &Subdivided<(), IcoSphereBase>, default_data: T) -> Self {
-        let table = Self::from_icosphere_without_data(&icosphere);
+        let table = Self::from_icosphere_without_data(icosphere);
         table.set_vertex_data(|_, _| default_data.clone()).unwrap();
         table
     }
