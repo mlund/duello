@@ -39,15 +39,31 @@ pub type Face = [u16; 3];
 pub struct IcoTable<T: Clone + GetSize> {
     /// Reference counted pointer to vertex positions and neighbors
     #[get_size(size = 3)]
-    pub vertex_ptr: Arc<Vec<OnceLock<VertexPosAndNeighbors>>>,
+    pub vertex_ptr: Arc<OnceLock<Vec<VertexPosAndNeighbors>>>,
     /// Vertex information (position, data, neighbors)
     pub data: Vec<DataOnVertex<T>>,
 }
 
 impl<T: Clone + GetSize> IcoTable<T> {
-    /// Get i'th vertex position and neighborlist
-    pub fn get_vertex(&self, index: usize) -> &VertexPosAndNeighbors {
-        &self.vertex_ptr[index].get().unwrap()
+    /// Get i'th vertex position
+    pub fn get_pos(&self, index: usize) -> &Vector3 {
+        &self.vertex_ptr.get().unwrap()[index].pos
+    }
+    /// Get i'th data
+    pub fn get_data(&self, index: usize) -> &T {
+        self.data[index].data.get().unwrap()
+    }
+    /// Get i'th neighbors
+    pub fn get_neighbors(&self, index: usize) -> &[u16] {
+        &self.vertex_ptr.get().unwrap()[index].neighbors
+    }
+    /// Get i'th vertex position; neighborlist; and data
+    pub fn get_vertex(&self, index: usize) -> (&Vector3, &[u16], &T) {
+        (
+            &self.vertex_ptr.get().unwrap()[index].pos,
+            &self.vertex_ptr.get().unwrap()[index].neighbors,
+            self.get_data(index),
+        )
     }
 
     /// Generate table based on an existing subdivided icosaedron
@@ -75,18 +91,11 @@ impl<T: Clone + GetSize> IcoTable<T> {
             })
             .collect();
 
-        let llvec: Vec<_> = make_vertex_vec(icosphere)
-            .iter()
-            .cloned()
-            .map(|d| {
-                let ol = OnceLock::new();
-                ol.set(d).unwrap();
-                return ol;
-            })
-            .collect();
+        let ol = OnceLock::new();
+        ol.set(make_vertex_vec(icosphere)).unwrap();
 
         Self {
-            vertex_ptr: Arc::new(llvec),
+            vertex_ptr: Arc::new(ol),
             data: vertices,
         }
     }
