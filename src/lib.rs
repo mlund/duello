@@ -21,8 +21,10 @@ pub mod report;
 mod sample;
 pub mod structure;
 pub mod table;
+mod vertex;
 mod virial;
 pub use sample::Sample;
+pub use vertex::*;
 pub use virial::VirialCoeff;
 extern crate pretty_env_logger;
 #[macro_use]
