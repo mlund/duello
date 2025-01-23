@@ -45,6 +45,10 @@ pub struct IcoTable<T: Clone + GetSize> {
 }
 
 impl<T: Clone + GetSize> IcoTable<T> {
+    /// Iterator over vertices (positions and neighbors)
+    pub fn iter_vertices(&self) -> impl Iterator<Item = &VertexPosAndNeighbors> {
+        self.vertex_ptr.get().unwrap().iter()
+    }
     /// Get i'th vertex position
     pub fn get_pos(&self, index: usize) -> &Vector3 {
         &self.vertex_ptr.get().unwrap()[index].pos
@@ -58,12 +62,16 @@ impl<T: Clone + GetSize> IcoTable<T> {
         &self.vertex_ptr.get().unwrap()[index].neighbors
     }
     /// Get i'th vertex position; neighborlist; and data
-    pub fn get_vertex(&self, index: usize) -> (&Vector3, &[u16], &T) {
+    pub fn get(&self, index: usize) -> (&Vector3, &[u16], &T) {
         (
             &self.vertex_ptr.get().unwrap()[index].pos,
             &self.vertex_ptr.get().unwrap()[index].neighbors,
             self.get_data(index),
         )
+    }
+    /// Iterate over vertex positions; neighborlists; and data
+    pub fn iter(&self) -> impl Iterator<Item = (&Vector3, &[u16], &T)> {
+        (0..self.data.len()).map(move |i| self.get(i))
     }
 
     /// Generate table based on an existing subdivided icosaedron
@@ -236,9 +244,9 @@ impl<T: Clone + GetSize> IcoTable<T> {
     /// Get the three vertices of a face
     pub fn face_positions(&self, face: &Face) -> (&Vector3, &Vector3, &Vector3) {
         (
-            &self.data[face[0] as usize].pos,
-            &self.data[face[1] as usize].pos,
-            &self.data[face[2] as usize].pos,
+            &self.get_pos(face[0] as usize),
+            &self.get_pos(face[1] as usize),
+            &self.get_pos(face[2] as usize),
         )
     }
 
@@ -252,8 +260,7 @@ impl<T: Clone + GetSize> IcoTable<T> {
     /// - https://stackoverflow.com/questions/11947813/subdivided-icosahedron-how-to-find-the-nearest-vertex-to-an-arbitrary-point
     /// - Binary Space Partitioning: https://en.wikipedia.org/wiki/Binary_space_partitioning
     pub fn nearest_vertex(&self, point: &Vector3) -> usize {
-        self.data
-            .iter()
+        self.iter_vertices()
             .map(|v| (v.pos - point).norm_squared())
             .enumerate()
             .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
@@ -269,11 +276,11 @@ impl<T: Clone + GetSize> IcoTable<T> {
     pub fn nearest_face(&self, point: &Vector3) -> Face {
         let point = point.normalize();
         let nearest = self.nearest_vertex(&point);
-        let face: Face = self.data[nearest]
-            .neighbors // neighbors to nearest
+        let face: Face = self
+            .get_neighbors(nearest)
             .iter()
             .cloned()
-            .map(|i| (i, (self.data[i as usize].pos - point).norm_squared()))
+            .map(|i| (i, (self.get_pos(i as usize) - point).norm_squared()))
             .sorted_by(|a, b| a.1.partial_cmp(&b.1).unwrap()) // sort ascending
             .map(|(i, _)| i) // keep only indices
             .take(2) // take two next nearest distances
@@ -295,17 +302,12 @@ impl<T: Clone + GetSize> IcoTable<T> {
 impl std::fmt::Display for IcoTable<f64> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "# x y z θ φ data")?;
-        for vertex in self.data.iter() {
-            let (_r, theta, phi) = crate::to_spherical(&vertex.pos);
+        for (pos, _, data) in self.iter() {
+            let (_r, theta, phi) = crate::to_spherical(&pos);
             writeln!(
                 f,
                 "{} {} {} {} {} {}",
-                vertex.pos.x,
-                vertex.pos.y,
-                vertex.pos.z,
-                theta,
-                phi,
-                vertex.data.get().unwrap()
+                pos.x, pos.y, pos.z, theta, phi, data
             )?;
         }
         Ok(())
