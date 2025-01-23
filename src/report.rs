@@ -31,8 +31,8 @@ pub fn report_pmf(
     let mut mean_energy_data = Vec::<(f32, f32)>::new();
     writeln!(pmf_file, "# R/Å F/kT U/kT C/R")?;
     samples.iter().for_each(|(r, sample)| {
-        let mean_energy = sample.mean_energy() / sample.thermal_energy;
-        let free_energy = sample.free_energy() / sample.thermal_energy;
+        let mean_energy = sample.mean_energy() / sample.thermal_energy();
+        let free_energy = sample.free_energy() / sample.thermal_energy();
         let heat_capacity = sample.heat_capacity();
         if mean_energy.is_finite() && free_energy.is_finite() {
             pmf_data.push((r.norm() as f32, free_energy as f32));

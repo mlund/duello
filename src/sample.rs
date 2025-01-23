@@ -22,13 +22,13 @@ pub struct Sample {
     /// Number of samples
     n: u64,
     /// Thermal energy, RT in kJ/mol
-    pub thermal_energy: f64,
+    thermal_energy: f64,
     /// Boltzmann weighted energy, U * exp(-U/kT)
-    pub mean_energy: f64,
+    mean_energy: f64,
     /// Boltzmann weighted squared energy, U^2 * exp(-U/kT)
-    pub mean_energy2: f64,
+    mean_energy2: f64,
     /// Boltzmann factored energy, exp(-U/kT)
-    pub exp_energy: f64,
+    exp_energy: f64,
 }
 
 impl Sample {
@@ -44,6 +44,10 @@ impl Sample {
             mean_energy2: energy.powi(2) * exp_energy,
             exp_energy,
         }
+    }
+    /// Thermal energy (kJ/mol)
+    pub fn thermal_energy(&self) -> f64 {
+        self.thermal_energy
     }
     /// Mean energy (kJ/mol)
     pub fn mean_energy(&self) -> f64 {
