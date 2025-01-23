@@ -23,6 +23,19 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::OnceLock;
 
+/// Icosphere table
+///
+/// This is used to store data on the vertices of an icosphere.
+/// It includes barycentric interpolation and nearest face search.
+///
+/// https://en.wikipedia.org/wiki/Geodesic_polyhedron
+/// 12 vertices will always have 5 neighbors; the rest will have 6.
+#[derive(Clone, GetSize)]
+pub struct IcoTable<T: Clone + GetSize> {
+    /// Vertex information (position, data, neighbors)
+    pub vertices: Vec<Vertex<T>>,
+}
+
 /// A icotable where each vertex holds an icotable of floats
 pub type IcoTableOfSpheres = IcoTable<IcoTable<f64>>;
 
@@ -105,19 +118,6 @@ impl<T: Clone + GetSize> Vertex<T> {
             neighbors,
         }
     }
-}
-
-/// Icosphere table
-///
-/// This is used to store data on the vertices of an icosphere.
-/// It includes barycentric interpolation and nearest face search.
-///
-/// https://en.wikipedia.org/wiki/Geodesic_polyhedron
-/// 12 vertices will always have 5 neighbors; the rest will have 6.
-#[derive(Clone, GetSize)]
-pub struct IcoTable<T: Clone + GetSize> {
-    /// Vertex information (position, data, neighbors)
-    pub vertices: Vec<Vertex<T>>,
 }
 
 /// Draw icosahedron to a Visual Molecular Dynamics (VMD) TCL script
