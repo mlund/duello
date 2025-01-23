@@ -81,7 +81,7 @@ impl<T: Clone + GetSize> IcoTable<T> {
     }
 
     /// Generate table based on an existing subdivided icosaedron
-    pub fn from_icosphere(icosphere: Subdivided<(), IcoSphereBase>, default_data: T) -> Self {
+    pub fn from_icosphere(icosphere: &Subdivided<(), IcoSphereBase>, default_data: T) -> Self {
         let table = Self::from_icosphere_without_data(&icosphere);
         table.set_vertex_data(|_, _| default_data.clone()).unwrap();
         table
@@ -313,7 +313,7 @@ impl IcoTableOfSpheres {
     /// Generate table based on a minimum number of vertices on the subdivided icosaedron
     pub fn from_min_points(min_points: usize, default_data: IcoTable<f64>) -> Result<Self> {
         let icosphere = make_icosphere(min_points)?;
-        Ok(Self::from_icosphere(icosphere, default_data))
+        Ok(Self::from_icosphere(&icosphere, default_data))
     }
 
     /// Interpolate data between two faces
