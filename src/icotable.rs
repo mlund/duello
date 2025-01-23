@@ -23,6 +23,9 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
+/// Represents indices of a face
+pub type Face = [u16; 3];
+
 /// Icosphere table
 ///
 /// This is used to store data on the vertices of an icosphere.
@@ -35,110 +38,15 @@ pub struct IcoTable<T: Clone + GetSize> {
     /// Reference counted pointer to vertex positions and neighbors
     pub vertex_ptr: Arc<Vec<VertexPosAndNeighbors>>,
     /// Vertex information (position, data, neighbors)
-    pub vertex_data: Vec<VertexData<T>>,
-}
-
-/// A icotable where each vertex holds an icotable of floats
-pub type IcoTableOfSpheres = IcoTable<IcoTable<f64>>;
-
-impl IcoTableOfSpheres {
-    /// Get flat iterator that runs over all pairs of (vertex_a, vertex_b)
-    pub fn flat_iter(
-        &self,
-    ) -> impl Iterator<Item = (&VertexData<IcoTable<f64>>, &VertexData<f64>)> {
-        self.vertex_data.iter().flat_map(|vertex_a| {
-            vertex_a
-                .data
-                .get()
-                .unwrap()
-                .vertex_data
-                .iter()
-                .map(move |vertex_b| (vertex_a, vertex_b))
-        })
-    }
-    /// Generate table based on a minimum number of vertices on the subdivided icosaedron
-    pub fn from_min_points(min_points: usize, default_data: IcoTable<f64>) -> Result<Self> {
-        let icosphere = make_icosphere(min_points)?;
-        Ok(Self::from_icosphere(icosphere, default_data))
-    }
-
-    /// Interpolate data between two faces
-    pub fn interpolate(
-        &self,
-        face_a: &Face,
-        face_b: &Face,
-        bary_a: &Vector3,
-        bary_b: &Vector3,
-    ) -> f64 {
-        let data_ab = Matrix3::<f64>::from_fn(|i, j| {
-            *self.vertex_data[face_a[i] as usize]
-                .data
-                .get()
-                .unwrap()
-                .vertex_data[face_b[j] as usize]
-                .data
-                .get()
-                .unwrap()
-        });
-        (bary_a.transpose() * data_ab * bary_b).to_scalar()
-    }
-}
-
-/// A 6D table for relative twobody orientations, R → 𝜔 → (𝜃𝜑) → (𝜃𝜑)
-///
-/// The first two dimensions are radial distances and dihedral angles.
-/// The last two dimensions are polar and azimuthal angles represented via icospheres.
-/// The final `f64` data is stored at vertices of the deepest icospheres.
-pub type Table6D = PaddedTable<PaddedTable<IcoTableOfSpheres>>;
-
-impl Table6D {
-    pub fn from_resolution(r_min: f64, r_max: f64, dr: f64, angle_resolution: f64) -> Result<Self> {
-        let n_points = (4.0 * PI / angle_resolution.powi(2)).round() as usize;
-        let table1 = IcoTable::<f64>::from_min_points(n_points)?; // B: 𝜃 and 𝜑
-                                                                  // update angular resolution according to icosphere
-        let angle_resolution = table1.angle_resolution();
-        let n_points = table1.vertex_data.len();
-        log::info!("Actual angle resolution = {:.2} radians", angle_resolution);
-        let table2 = IcoTableOfSpheres::from_min_points(n_points, table1)?; // A: 𝜃 and 𝜑
-        let table3 = PaddedTable::<IcoTableOfSpheres>::new(0.0, 2.0 * PI, angle_resolution, table2); // 𝜔
-        Ok(Self::new(r_min, r_max, dr, table3)) // R
-    }
-    /// Get remaining 4D space (icotables) at (r, omega)
-    pub fn get_icospheres(&self, r: f64, omega: f64) -> Result<&IcoTableOfSpheres> {
-        self.get(r)?.get(omega)
-    }
-}
-
-/// Represents indices of a face
-pub type Face = [u16; 3];
-
-/// Draw icosahedron to a Visual Molecular Dynamics (VMD) TCL script
-/// Visialize with: `vmd -e script.vmd`
-pub(crate) fn vmd_draw(
-    path: &Path,
-    icosphere: Subdivided<(), IcoSphereBase>,
-    color: &str,
-    scale: Option<f32>,
-) -> anyhow::Result<()> {
-    let num_faces = icosphere.get_all_indices().len() / 3;
-    let path = path.with_extension(format!("faces{}.vmd", num_faces));
-    let mut stream = std::fs::File::create(path)?;
-    icosphere.get_all_indices().chunks(3).try_for_each(|c| {
-        let scale = scale.unwrap_or(1.0);
-        let a = icosphere.raw_points()[c[0] as usize] * scale;
-        let b = icosphere.raw_points()[c[1] as usize] * scale;
-        let c = icosphere.raw_points()[c[2] as usize] * scale;
-        writeln!(stream, "draw color {}", color)?;
-        writeln!(
-            stream,
-            "draw triangle {{{:.3} {:.3} {:.3}}} {{{:.3} {:.3} {:.3}}} {{{:.3} {:.3} {:.3}}}",
-            a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z
-        )
-    })?;
-    Ok(())
+    pub data: Vec<VertexData<T>>,
 }
 
 impl<T: Clone + GetSize> IcoTable<T> {
+    /// Get i'th vertex position and neighborlist
+    pub fn get_vertex(&self, index: usize) -> &VertexPosAndNeighbors {
+        &self.vertex_ptr[index]
+    }
+
     /// Generate table based on an existing subdivided icosaedron
     pub fn from_icosphere_without_data(icosphere: Subdivided<(), IcoSphereBase>) -> Self {
         let indices = icosphere.get_all_indices();
@@ -166,7 +74,7 @@ impl<T: Clone + GetSize> IcoTable<T> {
 
         Self {
             vertex_ptr: Arc::new(Vec::default()),
-            vertex_data: vertices,
+            data: vertices,
         }
     }
 
@@ -178,56 +86,53 @@ impl<T: Clone + GetSize> IcoTable<T> {
     }
 
     pub fn angle_resolution(&self) -> f64 {
-        let n_points = self.vertex_data.len();
+        let n_points = self.data.len();
         (4.0 * std::f64::consts::PI / n_points as f64).sqrt()
     }
 
     /// Number of vertices in the table
     pub fn len(&self) -> usize {
-        self.vertex_data.len()
+        self.data.len()
     }
 
     /// Check if the table is empty, i.e. has no vertices
     pub fn is_empty(&self) -> bool {
-        self.vertex_data.is_empty()
+        self.data.is_empty()
     }
 
     /// Set data associated with each vertex using a generator function
     /// The function takes the index of the vertex and its position
     /// Due to the `OnceLock` wrap, this can be done only once!
     pub fn set_vertex_data(&self, f: impl Fn(usize, &Vector3) -> T) -> anyhow::Result<()> {
-        if self.vertex_data.iter().any(|v| v.data.get().is_some()) {
+        if self.data.iter().any(|v| v.data.get().is_some()) {
             anyhow::bail!("Data already set for some vertices")
         }
-        self.vertex_data
-            .iter()
-            .enumerate()
-            .try_for_each(|(i, vertex)| {
-                let value = f(i, &vertex.pos);
-                if vertex.data.set(value).is_err() {
-                    anyhow::bail!("Data already set for vertex {}", i);
-                }
-                Ok(())
-            })
+        self.data.iter().enumerate().try_for_each(|(i, vertex)| {
+            let value = f(i, &vertex.pos);
+            if vertex.data.set(value).is_err() {
+                anyhow::bail!("Data already set for vertex {}", i);
+            }
+            Ok(())
+        })
     }
 
     /// Discard data associated with each vertex
     ///
     /// After this call, `set_vertex_data` can be called again.
     pub fn clear_vertex_data(&mut self) {
-        for vertex in self.vertex_data.iter_mut() {
+        for vertex in self.data.iter_mut() {
             vertex.data = OnceLock::new();
         }
     }
 
     /// Get data associated with each vertex
     pub fn vertex_data(&self) -> impl Iterator<Item = &T> {
-        self.vertex_data.iter().map(|v| v.data.get().unwrap())
+        self.data.iter().map(|v| v.data.get().unwrap())
     }
 
     /// Transform vertex positions using a function
     pub fn transform_vertex_positions(&mut self, f: impl Fn(&Vector3) -> Vector3) {
-        self.vertex_data.iter_mut().for_each(|v| v.pos = f(&v.pos));
+        self.data.iter_mut().for_each(|v| v.pos = f(&v.pos));
     }
 
     /// Get projected barycentric coordinate for an arbitrary point
@@ -309,9 +214,9 @@ impl<T: Clone + GetSize> IcoTable<T> {
     /// Get the three vertices of a face
     pub fn face_positions(&self, face: &Face) -> (&Vector3, &Vector3, &Vector3) {
         (
-            &self.vertex_data[face[0] as usize].pos,
-            &self.vertex_data[face[1] as usize].pos,
-            &self.vertex_data[face[2] as usize].pos,
+            &self.data[face[0] as usize].pos,
+            &self.data[face[1] as usize].pos,
+            &self.data[face[2] as usize].pos,
         )
     }
 
@@ -325,7 +230,7 @@ impl<T: Clone + GetSize> IcoTable<T> {
     /// - https://stackoverflow.com/questions/11947813/subdivided-icosahedron-how-to-find-the-nearest-vertex-to-an-arbitrary-point
     /// - Binary Space Partitioning: https://en.wikipedia.org/wiki/Binary_space_partitioning
     pub fn nearest_vertex(&self, point: &Vector3) -> usize {
-        self.vertex_data
+        self.data
             .iter()
             .map(|v| (v.pos - point).norm_squared())
             .enumerate()
@@ -342,11 +247,11 @@ impl<T: Clone + GetSize> IcoTable<T> {
     pub fn nearest_face(&self, point: &Vector3) -> Face {
         let point = point.normalize();
         let nearest = self.nearest_vertex(&point);
-        let face: Face = self.vertex_data[nearest]
+        let face: Face = self.data[nearest]
             .neighbors // neighbors to nearest
             .iter()
             .cloned()
-            .map(|i| (i, (self.vertex_data[i as usize].pos - point).norm_squared()))
+            .map(|i| (i, (self.data[i as usize].pos - point).norm_squared()))
             .sorted_by(|a, b| a.1.partial_cmp(&b.1).unwrap()) // sort ascending
             .map(|(i, _)| i) // keep only indices
             .take(2) // take two next nearest distances
@@ -368,7 +273,7 @@ impl<T: Clone + GetSize> IcoTable<T> {
 impl std::fmt::Display for IcoTable<f64> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "# x y z θ φ data")?;
-        for vertex in self.vertex_data.iter() {
+        for vertex in self.data.iter() {
             let (_r, theta, phi) = crate::to_spherical(&vertex.pos);
             writeln!(
                 f,
@@ -383,6 +288,99 @@ impl std::fmt::Display for IcoTable<f64> {
         }
         Ok(())
     }
+}
+
+/// A icotable where each vertex holds an icotable of floats
+pub type IcoTableOfSpheres = IcoTable<IcoTable<f64>>;
+
+impl IcoTableOfSpheres {
+    /// Get flat iterator that runs over all pairs of (vertex_a, vertex_b)
+    pub fn flat_iter(
+        &self,
+    ) -> impl Iterator<Item = (&VertexData<IcoTable<f64>>, &VertexData<f64>)> {
+        self.data.iter().flat_map(|vertex_a| {
+            vertex_a
+                .data
+                .get()
+                .unwrap()
+                .data
+                .iter()
+                .map(move |vertex_b| (vertex_a, vertex_b))
+        })
+    }
+    /// Generate table based on a minimum number of vertices on the subdivided icosaedron
+    pub fn from_min_points(min_points: usize, default_data: IcoTable<f64>) -> Result<Self> {
+        let icosphere = make_icosphere(min_points)?;
+        Ok(Self::from_icosphere(icosphere, default_data))
+    }
+
+    /// Interpolate data between two faces
+    pub fn interpolate(
+        &self,
+        face_a: &Face,
+        face_b: &Face,
+        bary_a: &Vector3,
+        bary_b: &Vector3,
+    ) -> f64 {
+        let data_ab = Matrix3::<f64>::from_fn(|i, j| {
+            *self.data[face_a[i] as usize].data.get().unwrap().data[face_b[j] as usize]
+                .data
+                .get()
+                .unwrap()
+        });
+        (bary_a.transpose() * data_ab * bary_b).to_scalar()
+    }
+}
+
+/// A 6D table for relative twobody orientations, R → 𝜔 → (𝜃𝜑) → (𝜃𝜑)
+///
+/// The first two dimensions are radial distances and dihedral angles.
+/// The last two dimensions are polar and azimuthal angles represented via icospheres.
+/// The final `f64` data is stored at vertices of the deepest icospheres.
+pub type Table6D = PaddedTable<PaddedTable<IcoTableOfSpheres>>;
+
+impl Table6D {
+    pub fn from_resolution(r_min: f64, r_max: f64, dr: f64, angle_resolution: f64) -> Result<Self> {
+        let n_points = (4.0 * PI / angle_resolution.powi(2)).round() as usize;
+        let table1 = IcoTable::<f64>::from_min_points(n_points)?; // B: 𝜃 and 𝜑
+                                                                  // update angular resolution according to icosphere
+        let angle_resolution = table1.angle_resolution();
+        let n_points = table1.data.len();
+        log::info!("Actual angle resolution = {:.2} radians", angle_resolution);
+        let table2 = IcoTableOfSpheres::from_min_points(n_points, table1)?; // A: 𝜃 and 𝜑
+        let table3 = PaddedTable::<IcoTableOfSpheres>::new(0.0, 2.0 * PI, angle_resolution, table2); // 𝜔
+        Ok(Self::new(r_min, r_max, dr, table3)) // R
+    }
+    /// Get remaining 4D space (icotables) at (r, omega)
+    pub fn get_icospheres(&self, r: f64, omega: f64) -> Result<&IcoTableOfSpheres> {
+        self.get(r)?.get(omega)
+    }
+}
+
+/// Draw icosahedron to a Visual Molecular Dynamics (VMD) TCL script
+/// Visialize with: `vmd -e script.vmd`
+pub(crate) fn vmd_draw(
+    path: &Path,
+    icosphere: Subdivided<(), IcoSphereBase>,
+    color: &str,
+    scale: Option<f32>,
+) -> anyhow::Result<()> {
+    let num_faces = icosphere.get_all_indices().len() / 3;
+    let path = path.with_extension(format!("faces{}.vmd", num_faces));
+    let mut stream = std::fs::File::create(path)?;
+    icosphere.get_all_indices().chunks(3).try_for_each(|c| {
+        let scale = scale.unwrap_or(1.0);
+        let a = icosphere.raw_points()[c[0] as usize] * scale;
+        let b = icosphere.raw_points()[c[1] as usize] * scale;
+        let c = icosphere.raw_points()[c[2] as usize] * scale;
+        writeln!(stream, "draw color {}", color)?;
+        writeln!(
+            stream,
+            "draw triangle {{{:.3} {:.3} {:.3}}} {{{:.3} {:.3} {:.3}}} {{{:.3} {:.3} {:.3}}}",
+            a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z
+        )
+    })?;
+    Ok(())
 }
 
 /// Get list of all faces from an icosphere
@@ -403,9 +401,9 @@ impl IcoTable<f64> {
     pub fn interpolate(&self, point: &Vector3) -> f64 {
         let face = self.nearest_face(point);
         let bary = self.barycentric(point, &face);
-        bary[0] * self.vertex_data[face[0] as usize].data.get().unwrap()
-            + bary[1] * self.vertex_data[face[1] as usize].data.get().unwrap()
-            + bary[2] * self.vertex_data[face[2] as usize].data.get().unwrap()
+        bary[0] * self.data[face[0] as usize].data.get().unwrap()
+            + bary[1] * self.data[face[1] as usize].data.get().unwrap()
+            + bary[2] * self.data[face[2] as usize].data.get().unwrap()
     }
     /// Generate table based on a minimum number of vertices on the subdivided icosaedron
     ///
@@ -426,9 +424,9 @@ mod tests {
     fn test_icosphere_table() {
         let icosphere = make_icosphere(3).unwrap();
         let icotable = IcoTable::<f64>::from_icosphere(icosphere, 0.0);
-        assert_eq!(icotable.vertex_data.len(), 12);
+        assert_eq!(icotable.data.len(), 12);
 
-        let point = icotable.vertex_data[0].pos;
+        let point = icotable.data[0].pos;
 
         assert_relative_eq!(point.x, 0.0);
         assert_relative_eq!(point.y, 1.0);
@@ -443,7 +441,7 @@ mod tests {
         assert_relative_eq!(bary[2], 0.0);
 
         // Nearest face to slightly displaced vertex 0
-        let point = (icotable.vertex_data[0].pos + Vector3::new(1e-3, 0.0, 0.0)).normalize();
+        let point = (icotable.data[0].pos + Vector3::new(1e-3, 0.0, 0.0)).normalize();
         let face = icotable.nearest_face(&point);
         let bary = icotable.barycentric(&point, &face);
         assert_eq!(face, [0, 1, 5]);
@@ -452,7 +450,7 @@ mod tests {
         assert_relative_eq!(bary[2], 0.0);
 
         // find nearest vertex and face to vertex 2
-        let point = icotable.vertex_data[2].pos;
+        let point = icotable.data[2].pos;
         let face = icotable.nearest_face(&point);
         let bary = icotable.barycentric(&point, &face);
         assert_eq!(face, [0, 1, 2]);
@@ -461,7 +459,7 @@ mod tests {
         assert_relative_eq!(bary[2], 1.0);
 
         // Midpoint on edge between vertices 0 and 2
-        let point = point + (icotable.vertex_data[0].pos - point) * 0.5;
+        let point = point + (icotable.data[0].pos - point) * 0.5;
         let bary = icotable.barycentric(&point, &face);
         assert_relative_eq!(bary[0], 0.5);
         assert_relative_eq!(bary[1], 0.0);
@@ -508,14 +506,9 @@ mod tests {
     fn test_table_of_spheres() {
         let icotable = IcoTable::<f64>::from_min_points(42).unwrap();
         let icotable_of_spheres = IcoTableOfSpheres::from_min_points(42, icotable).unwrap();
-        assert_eq!(icotable_of_spheres.vertex_data.len(), 42);
+        assert_eq!(icotable_of_spheres.data.len(), 42);
         assert_eq!(
-            icotable_of_spheres.vertex_data[0]
-                .data
-                .get()
-                .unwrap()
-                .vertex_data
-                .len(),
+            icotable_of_spheres.data[0].data.get().unwrap().data.len(),
             42
         );
     }

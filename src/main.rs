@@ -231,11 +231,11 @@ fn do_dipole(cmd: &Commands) -> Result<()> {
     let distances: Vec<f64> = iter_num_tools::arange(*rmin..*rmax, *dr).collect();
     let n_points = (4.0 * PI / resolution.powi(2)).round() as usize;
     let mut icotable = IcoTable::<f64>::from_min_points(n_points)?;
-    let resolution = (4.0 * PI / icotable.vertex_data.len() as f64).sqrt();
+    let resolution = (4.0 * PI / icotable.data.len() as f64).sqrt();
     log::info!(
         "Requested {} points on a sphere; got {} -> new resolution = {:.3}",
         n_points,
-        icotable.vertex_data.len(),
+        icotable.data.len(),
         resolution
     );
 
@@ -283,7 +283,7 @@ fn do_dipole(cmd: &Commands) -> Result<()> {
         for q in &quaternions {
             rotated_icosphere.transform_vertex_positions(|v| q.transform_vector(v));
             partition_func_interpolated += rotated_icosphere
-                .vertex_data
+                .data
                 .iter()
                 .map(|v| icotable.interpolate(&v.pos))
                 .sum::<f64>()
@@ -345,7 +345,7 @@ fn do_potential(cmd: &Commands) -> Result<()> {
 
     // Make PQR file illustrating the electric potential at each vertex
     let mut pqr_file = File::create("potential.pqr")?;
-    for (vertex, data) in std::iter::zip(&icotable.vertex_data, icotable.vertex_data()) {
+    for (vertex, data) in std::iter::zip(&icotable.data, icotable.vertex_data()) {
         pqr_write_atom(&mut pqr_file, 1, &vertex.pos.scale(*radius), *data, 2.0)?;
     }
 
