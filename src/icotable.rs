@@ -39,9 +39,9 @@ pub type Face = [u16; 3];
 pub struct IcoTable<T: Clone + GetSize> {
     /// Reference counted pointer to vertex positions and neighbors
     #[get_size(size = 3)]
-    pub vertex_ptr: Arc<OnceLock<Vec<VertexPosAndNeighbors>>>,
+    vertex_ptr: Arc<OnceLock<Vec<VertexPosAndNeighbors>>>,
     /// Vertex information (position, data, neighbors)
-    pub data: Vec<DataOnVertex<T>>,
+    data: Vec<DataOnVertex<T>>,
 }
 
 impl<T: Clone + GetSize> IcoTable<T> {
@@ -68,6 +68,10 @@ impl<T: Clone + GetSize> IcoTable<T> {
             &self.vertex_ptr.get().unwrap()[index].neighbors,
             self.get_data(index),
         )
+    }
+    /// Iterate over vertex positions
+    pub fn iter_positions(&self) -> impl Iterator<Item = &Vector3> {
+        self.iter_vertices().map(|v| &v.pos)
     }
     /// Iterate over vertex positions; neighborlists; and data
     pub fn iter(&self) -> impl Iterator<Item = (&Vector3, &[u16], &T)> {
@@ -122,7 +126,7 @@ impl<T: Clone + GetSize> IcoTable<T> {
 
     /// Number of vertices in the table
     pub fn len(&self) -> usize {
-        self.data.len()
+        self.vertex_ptr.get().unwrap().len()
     }
 
     /// Check if the table is empty, i.e. has no vertices
@@ -244,9 +248,9 @@ impl<T: Clone + GetSize> IcoTable<T> {
     /// Get the three vertices of a face
     pub fn face_positions(&self, face: &Face) -> (&Vector3, &Vector3, &Vector3) {
         (
-            &self.get_pos(face[0] as usize),
-            &self.get_pos(face[1] as usize),
-            &self.get_pos(face[2] as usize),
+            self.get_pos(face[0] as usize),
+            self.get_pos(face[1] as usize),
+            self.get_pos(face[2] as usize),
         )
     }
 
@@ -303,7 +307,7 @@ impl std::fmt::Display for IcoTable<f64> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "# x y z θ φ data")?;
         for (pos, _, data) in self.iter() {
-            let (_r, theta, phi) = crate::to_spherical(&pos);
+            let (_r, theta, phi) = crate::to_spherical(pos);
             writeln!(
                 f,
                 "{} {} {} {} {} {}",
@@ -347,10 +351,9 @@ impl IcoTableOfSpheres {
         bary_b: &Vector3,
     ) -> f64 {
         let data_ab = Matrix3::<f64>::from_fn(|i, j| {
-            *self.data[face_a[i] as usize].data.get().unwrap().data[face_b[j] as usize]
-                .data
-                .get()
-                .unwrap()
+            *self
+                .get_data(face_a[i] as usize)
+                .get_data(face_b[j] as usize)
         });
         (bary_a.transpose() * data_ab * bary_b).to_scalar()
     }
