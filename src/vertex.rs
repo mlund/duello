@@ -16,11 +16,21 @@ use super::anglescan::*;
 use get_size::GetSize;
 use std::sync::OnceLock;
 
+/// Structure for storing vertex positions and neighbors
+#[derive(Clone, GetSize)]
+pub struct VertexPosAndNeighbors {
+    /// 3D coordinates of the vertex on a unit sphere
+    #[get_size(size = 24)]
+    pub pos: Vector3,
+    /// Indices of neighboring vertices
+    pub neighbors: Vec<u16>,
+}
+
 /// Struct representing a vertex in the icosphere
 ///
 /// Interior mutability of vertex associated data is enabled using `std::sync::OnceLock`.
 #[derive(Clone, GetSize)]
-pub struct Vertex<T: Clone + GetSize> {
+pub struct VertexData<T: Clone + GetSize> {
     /// 3D coordinates of the vertex on a unit sphere
     #[get_size(size = 24)]
     pub pos: Vector3,
@@ -35,7 +45,7 @@ fn oncelock_size_helper<T: GetSize>(value: &OnceLock<T>) -> usize {
     std::mem::size_of::<OnceLock<T>>() + value.get().map(|v| v.get_heap_size()).unwrap_or(0)
 }
 
-impl<T: Clone + GetSize> Vertex<T> {
+impl<T: Clone + GetSize> VertexData<T> {
     /// Construct a new vertex where data is *locked* to fixed value
     pub fn with_fixed_data(pos: Vector3, data: T, neighbors: Vec<u16>) -> Self {
         let vertex = Self::without_data(pos, neighbors);
