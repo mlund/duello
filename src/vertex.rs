@@ -14,6 +14,8 @@
 
 use super::anglescan::*;
 use get_size::GetSize;
+use hexasphere::{shapes::IcoSphereBase, AdjacencyBuilder, Subdivided};
+use itertools::Itertools;
 use std::sync::OnceLock;
 
 /// Structure for storing vertex positions and neighbors
@@ -24,6 +26,27 @@ pub struct VertexPosAndNeighbors {
     pub pos: Vector3,
     /// Indices of neighboring vertices
     pub neighbors: Vec<u16>,
+}
+
+pub fn make_vertex_vec(icosphere: Subdivided<(), IcoSphereBase>) -> Vec<VertexPosAndNeighbors> {
+    let indices = icosphere.get_all_indices();
+    let mut builder = AdjacencyBuilder::new(icosphere.raw_points().len());
+    builder.add_indices(indices.as_slice());
+    let neighbors = builder.finish().iter().map(|i| i.to_vec()).collect_vec();
+    let vertex_positions = icosphere
+        .raw_points()
+        .iter()
+        .map(|p| Vector3::new(p.x as f64, p.y as f64, p.z as f64));
+
+    assert!(vertex_positions.len() == neighbors.len());
+
+    vertex_positions
+        .zip(neighbors)
+        .map(|(pos, neighbors)| VertexPosAndNeighbors {
+            pos,
+            neighbors: neighbors.iter().map(|i| *i as u16).collect_vec(),
+        })
+        .collect()
 }
 
 /// Struct representing a vertex in the icosphere
