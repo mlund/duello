@@ -12,7 +12,7 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
-use super::{anglescan::*, table::PaddedTable, VertexData, VertexPosAndNeighbors};
+use super::{anglescan::*, table::PaddedTable, DataOnVertex, VertexPosAndNeighbors};
 use anyhow::Result;
 use core::f64::consts::PI;
 use get_size::GetSize;
@@ -38,7 +38,7 @@ pub struct IcoTable<T: Clone + GetSize> {
     /// Reference counted pointer to vertex positions and neighbors
     pub vertex_ptr: Arc<Vec<VertexPosAndNeighbors>>,
     /// Vertex information (position, data, neighbors)
-    pub data: Vec<VertexData<T>>,
+    pub data: Vec<DataOnVertex<T>>,
 }
 
 impl<T: Clone + GetSize> IcoTable<T> {
@@ -65,7 +65,7 @@ impl<T: Clone + GetSize> IcoTable<T> {
 
         let vertices = (0..vertex_positions.len())
             .map(|i| {
-                VertexData::without_data(
+                DataOnVertex::without_data(
                     vertex_positions[i],
                     neighbors[i].iter().map(|i| *i as u16).collect_vec(),
                 )
@@ -297,7 +297,7 @@ impl IcoTableOfSpheres {
     /// Get flat iterator that runs over all pairs of (vertex_a, vertex_b)
     pub fn flat_iter(
         &self,
-    ) -> impl Iterator<Item = (&VertexData<IcoTable<f64>>, &VertexData<f64>)> {
+    ) -> impl Iterator<Item = (&DataOnVertex<IcoTable<f64>>, &DataOnVertex<f64>)> {
         self.data.iter().flat_map(|vertex_a| {
             vertex_a
                 .data
