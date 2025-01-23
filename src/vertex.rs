@@ -28,7 +28,7 @@ pub struct VertexPosAndNeighbors {
     pub neighbors: Vec<u16>,
 }
 
-pub fn make_vertex_vec(icosphere: Subdivided<(), IcoSphereBase>) -> Vec<VertexPosAndNeighbors> {
+pub fn make_vertex_vec(icosphere: &Subdivided<(), IcoSphereBase>) -> Vec<VertexPosAndNeighbors> {
     let indices = icosphere.get_all_indices();
     let mut builder = AdjacencyBuilder::new(icosphere.raw_points().len());
     builder.add_indices(indices.as_slice());

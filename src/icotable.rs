@@ -12,7 +12,9 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
-use super::{anglescan::*, table::PaddedTable, DataOnVertex, VertexPosAndNeighbors};
+use super::{
+    anglescan::*, make_vertex_vec, table::PaddedTable, DataOnVertex, VertexPosAndNeighbors,
+};
 use anyhow::Result;
 use core::f64::consts::PI;
 use get_size::GetSize;
@@ -48,7 +50,7 @@ impl<T: Clone + GetSize> IcoTable<T> {
     }
 
     /// Generate table based on an existing subdivided icosaedron
-    pub fn from_icosphere_without_data(icosphere: Subdivided<(), IcoSphereBase>) -> Self {
+    pub fn from_icosphere_without_data(icosphere: &Subdivided<(), IcoSphereBase>) -> Self {
         let indices = icosphere.get_all_indices();
         let mut builder = AdjacencyBuilder::new(icosphere.raw_points().len());
         builder.add_indices(indices.as_slice());
@@ -60,7 +62,7 @@ impl<T: Clone + GetSize> IcoTable<T> {
             .collect();
 
         if log::log_enabled!(log::Level::Debug) {
-            vmd_draw(Path::new("icosphere.vmd"), icosphere, "green", Some(10.0)).unwrap();
+            vmd_draw(Path::new("icosphere.vmd"), &icosphere, "green", Some(10.0)).unwrap();
         }
 
         let vertices = (0..vertex_positions.len())
@@ -73,14 +75,14 @@ impl<T: Clone + GetSize> IcoTable<T> {
             .collect();
 
         Self {
-            vertex_ptr: Arc::new(Vec::default()),
+            vertex_ptr: Arc::new(make_vertex_vec(&icosphere)),
             data: vertices,
         }
     }
 
     /// Generate table based on an existing subdivided icosaedron
     pub fn from_icosphere(icosphere: Subdivided<(), IcoSphereBase>, default_data: T) -> Self {
-        let table = Self::from_icosphere_without_data(icosphere);
+        let table = Self::from_icosphere_without_data(&icosphere);
         table.set_vertex_data(|_, _| default_data.clone()).unwrap();
         table
     }
@@ -361,7 +363,7 @@ impl Table6D {
 /// Visialize with: `vmd -e script.vmd`
 pub(crate) fn vmd_draw(
     path: &Path,
-    icosphere: Subdivided<(), IcoSphereBase>,
+    icosphere: &Subdivided<(), IcoSphereBase>,
     color: &str,
     scale: Option<f32>,
 ) -> anyhow::Result<()> {
@@ -410,7 +412,7 @@ impl IcoTable<f64> {
     /// Vertex data is left empty and can/should be set later
     pub fn from_min_points(min_points: usize) -> Result<Self> {
         let icosphere = make_icosphere(min_points)?;
-        Ok(Self::from_icosphere_without_data(icosphere))
+        Ok(Self::from_icosphere_without_data(&icosphere))
     }
 }
 
