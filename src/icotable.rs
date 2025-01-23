@@ -23,7 +23,7 @@ use itertools::Itertools;
 use nalgebra::Matrix3;
 use std::io::Write;
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Represents indices of a face
 pub type Face = [u16; 3];
@@ -38,15 +38,15 @@ pub type Face = [u16; 3];
 #[derive(Clone, GetSize)]
 pub struct IcoTable<T: Clone + GetSize> {
     /// Reference counted pointer to vertex positions and neighbors
-    pub vertex_ptr: Arc<Vec<VertexPosAndNeighbors>>,
+    pub vertex_ptr: Arc<Mutex<Vec<VertexPosAndNeighbors>>>,
     /// Vertex information (position, data, neighbors)
     pub data: Vec<DataOnVertex<T>>,
 }
 
 impl<T: Clone + GetSize> IcoTable<T> {
     /// Get i'th vertex position and neighborlist
-    pub fn get_vertex(&self, index: usize) -> &VertexPosAndNeighbors {
-        &self.vertex_ptr[index]
+    pub fn get_vertex(&self, index: usize) -> VertexPosAndNeighbors {
+        self.vertex_ptr.lock().unwrap()[index].clone()
     }
 
     /// Generate table based on an existing subdivided icosaedron
@@ -75,7 +75,7 @@ impl<T: Clone + GetSize> IcoTable<T> {
             .collect();
 
         Self {
-            vertex_ptr: Arc::new(make_vertex_vec(&icosphere)),
+            vertex_ptr: Arc::new(Mutex::new(make_vertex_vec(&icosphere))),
             data: vertices,
         }
     }
