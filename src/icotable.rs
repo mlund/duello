@@ -23,7 +23,7 @@ use itertools::Itertools;
 use nalgebra::Matrix3;
 use std::io::Write;
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 
 /// Represents indices of a face
 pub type Face = [u16; 3];
@@ -38,15 +38,16 @@ pub type Face = [u16; 3];
 #[derive(Clone, GetSize)]
 pub struct IcoTable<T: Clone + GetSize> {
     /// Reference counted pointer to vertex positions and neighbors
-    pub vertex_ptr: Arc<Mutex<Vec<VertexPosAndNeighbors>>>,
+    #[get_size(size = 3)]
+    pub vertex_ptr: Arc<Vec<LazyLock<VertexPosAndNeighbors>>>,
     /// Vertex information (position, data, neighbors)
     pub data: Vec<DataOnVertex<T>>,
 }
 
 impl<T: Clone + GetSize> IcoTable<T> {
     /// Get i'th vertex position and neighborlist
-    pub fn get_vertex(&self, index: usize) -> VertexPosAndNeighbors {
-        self.vertex_ptr.lock().unwrap()[index].clone()
+    pub fn get_vertex(&self, index: usize) -> &VertexPosAndNeighbors {
+        &self.vertex_ptr[index]
     }
 
     /// Generate table based on an existing subdivided icosaedron
@@ -74,8 +75,14 @@ impl<T: Clone + GetSize> IcoTable<T> {
             })
             .collect();
 
+        // let lazy_lock_vec: Vec<LazyLock<VertexPosAndNeighbors>> = make_vertex_vec(icosphere)
+        //     .iter()
+        //     .cloned()
+        //     .map(|d| LazyLock::new(|| d))
+        //     .collect();
+
         Self {
-            vertex_ptr: Arc::new(Mutex::new(make_vertex_vec(icosphere))),
+            vertex_ptr: Arc::new(Vec::default()),
             data: vertices,
         }
     }
@@ -425,7 +432,7 @@ mod tests {
     #[test]
     fn test_icosphere_table() {
         let icosphere = make_icosphere(3).unwrap();
-        let icotable = IcoTable::<f64>::from_icosphere(icosphere, 0.0);
+        let icotable = IcoTable::<f64>::from_icosphere(&icosphere, 0.0);
         assert_eq!(icotable.data.len(), 12);
 
         let point = icotable.data[0].pos;
@@ -472,7 +479,7 @@ mod tests {
     fn test_face_face_interpolation() {
         let n_points = 12;
         let icosphere = make_icosphere(n_points).unwrap();
-        let icotable = IcoTable::<f64>::from_icosphere_without_data(icosphere);
+        let icotable = IcoTable::<f64>::from_icosphere_without_data(&icosphere);
         icotable.set_vertex_data(|i, _| i as f64).unwrap();
         let icotable_of_spheres = IcoTableOfSpheres::from_min_points(n_points, icotable).unwrap();
 
