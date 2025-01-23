@@ -368,21 +368,6 @@ impl<T: Clone + GetSize> IcoTable<T> {
         assert_eq!(face.iter().unique().count(), 3);
         face
     }
-
-    // /// Save a VMD script to illustrate the icosphere
-    // pub fn save_vmd(&self, path: impl AsRef<Path>, scale: Option<f64>) -> Result<()> {
-    //     let mut file = std::fs::File::create(path)?;
-    //     let s = scale.unwrap_or(1.0);
-    //     writeln!(file, "draw delete all")?;
-    //     for face in &self.faces {
-    //         let a = &self.vertices[face[0]].pos.scale(s);
-    //         let b = &self.vertices[face[1]].pos.scale(s);
-    //         let c = &self.vertices[face[2]].pos.scale(s);
-    //         let color = "red";
-    //         vmd_draw_triangle(&mut file, a, b, c, color)?;
-    //     }
-    //     Ok(())
-    // }
 }
 
 impl std::fmt::Display for IcoTable<f64> {
