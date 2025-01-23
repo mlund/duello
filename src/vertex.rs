@@ -19,7 +19,7 @@ use itertools::Itertools;
 use std::sync::OnceLock;
 
 /// Structure for storing vertex positions and neighbors
-#[derive(Clone, GetSize)]
+#[derive(Clone, GetSize, Debug)]
 pub struct VertexPosAndNeighbors {
     /// 3D coordinates of the vertex on a unit sphere
     #[get_size(size = 24)]

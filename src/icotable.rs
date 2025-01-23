@@ -23,7 +23,7 @@ use itertools::Itertools;
 use nalgebra::Matrix3;
 use std::io::Write;
 use std::path::Path;
-use std::sync::{Arc, LazyLock, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 /// Represents indices of a face
 pub type Face = [u16; 3];
@@ -39,7 +39,7 @@ pub type Face = [u16; 3];
 pub struct IcoTable<T: Clone + GetSize> {
     /// Reference counted pointer to vertex positions and neighbors
     #[get_size(size = 3)]
-    pub vertex_ptr: Arc<Vec<LazyLock<VertexPosAndNeighbors>>>,
+    pub vertex_ptr: Arc<Vec<OnceLock<VertexPosAndNeighbors>>>,
     /// Vertex information (position, data, neighbors)
     pub data: Vec<DataOnVertex<T>>,
 }
@@ -47,7 +47,7 @@ pub struct IcoTable<T: Clone + GetSize> {
 impl<T: Clone + GetSize> IcoTable<T> {
     /// Get i'th vertex position and neighborlist
     pub fn get_vertex(&self, index: usize) -> &VertexPosAndNeighbors {
-        &self.vertex_ptr[index]
+        &self.vertex_ptr[index].get().unwrap()
     }
 
     /// Generate table based on an existing subdivided icosaedron
@@ -75,14 +75,18 @@ impl<T: Clone + GetSize> IcoTable<T> {
             })
             .collect();
 
-        // let lazy_lock_vec: Vec<LazyLock<VertexPosAndNeighbors>> = make_vertex_vec(icosphere)
-        //     .iter()
-        //     .cloned()
-        //     .map(|d| LazyLock::new(|| d))
-        //     .collect();
+        let llvec: Vec<_> = make_vertex_vec(icosphere)
+            .iter()
+            .cloned()
+            .map(|d| {
+                let ol = OnceLock::new();
+                ol.set(d).unwrap();
+                return ol;
+            })
+            .collect();
 
         Self {
-            vertex_ptr: Arc::new(Vec::default()),
+            vertex_ptr: Arc::new(llvec),
             data: vertices,
         }
     }
