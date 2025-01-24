@@ -219,7 +219,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
 fn do_dipole(cmd: &Commands) -> Result<()> {
     let Commands::Dipole {
         output,
-        mu,
+        mu: dipole_moment,
         resolution,
         rmin,
         rmax,
@@ -251,8 +251,8 @@ fn do_dipole(cmd: &Commands) -> Result<()> {
         let exact_exp_energy = |_, p: &Vector3| {
             let (_r, theta, _phi) = to_spherical(p);
             let field = bjerrum_len * charge / radius.powi(2);
-            let u = field * mu * theta.cos();
-            (-u).exp()
+            let energy_in_kt = field * dipole_moment * theta.cos();
+            energy_in_kt.neg().exp()
         };
         icotable.clear_vertex_data();
         icotable.set_vertex_data(exact_exp_energy)?;
@@ -262,13 +262,15 @@ fn do_dipole(cmd: &Commands) -> Result<()> {
 
         // analytical solution to angular average of exp(-βu)
         let field = -bjerrum_len * charge / radius.powi(2);
-        let exact_free_energy = ((field * mu).sinh() / (field * mu)).ln().neg();
+        let exact_free_energy = ((field * dipole_moment).sinh() / (field * dipole_moment))
+            .ln()
+            .neg();
 
         // rotations to apply to vertices of a new icosphere used for sampling interpolated points
         let mut rng = rand::thread_rng();
         let quaternions: Vec<UnitQuaternion> = (0..20)
             .map(|_| {
-                let point: Vector3 = faunus::transform::random_unit_vector(&mut rng);
+                let point = faunus::transform::random_unit_vector(&mut rng);
                 UnitQuaternion::from_axis_angle(
                     &nalgebra::Unit::new_normalize(point),
                     rng.gen_range(0.0..PI),
