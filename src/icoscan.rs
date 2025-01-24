@@ -94,11 +94,11 @@ pub fn do_icoscan(
             .get_icospheres(r, omega) // remaining 4D
             .expect("invalid (r, omega) value")
             .flat_iter()
-            .for_each(|(vertex_a, vertex_b)| {
+            .for_each(|(pos_a, pos_b, data_b)| {
                 let (oriented_a, oriented_b) =
-                    orient_structures(r, omega, vertex_a.pos, vertex_b.pos, &ref_a, &ref_b);
+                    orient_structures(r, omega, *pos_a, *pos_b, &ref_a, &ref_b);
                 let energy = pair_matrix.sum_energy(&oriented_a, &oriented_b);
-                vertex_b.data.set(energy).unwrap();
+                data_b.set(energy).unwrap();
             });
     };
 
@@ -122,8 +122,8 @@ pub fn do_icoscan(
     let calc_partition_func = |r: f64, omega: f64| {
         table.get_icospheres(r, omega).unwrap().flat_iter().fold(
             Sample::default(),
-            |sum, (_vertex_a, vertex_b)| {
-                let energy = vertex_b.data.get().unwrap();
+            |sum, (_, _, data_b)| {
+                let energy = data_b.get().unwrap();
                 sum + Sample::new(*energy, *temperature)
             },
         )

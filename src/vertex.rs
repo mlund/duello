@@ -54,9 +54,6 @@ pub fn make_vertex_vec(icosphere: &Subdivided<(), IcoSphereBase>) -> Vec<VertexP
 /// Interior mutability of vertex associated data is enabled using `std::sync::OnceLock`.
 #[derive(Clone, GetSize)]
 pub struct DataOnVertex<T: Clone + GetSize> {
-    /// 3D coordinates of the vertex on a unit sphere
-    #[get_size(size = 24)]
-    pub pos: Vector3,
     /// Data associated with the vertex
     #[get_size(size_fn = oncelock_size_helper)]
     pub data: OnceLock<T>,
@@ -68,17 +65,17 @@ fn oncelock_size_helper<T: GetSize>(value: &OnceLock<T>) -> usize {
 
 impl<T: Clone + GetSize> DataOnVertex<T> {
     /// Construct a new vertex where data is *locked* to fixed value
-    pub fn with_fixed_data(pos: Vector3, data: T) -> Self {
-        let vertex = Self::without_data(pos);
-        let _ = vertex.data.set(data);
-        vertex
-    }
-
-    /// Construct a new vertex; write-once data is left empty and can/should be set later
-    pub fn without_data(pos: Vector3) -> Self {
+    pub fn from(data: T) -> Self {
         Self {
-            pos,
-            data: OnceLock::<T>::new(),
+            data: OnceLock::from(data),
+        }
+    }
+}
+
+impl<T: Clone + GetSize> core::default::Default for DataOnVertex<T> {
+    fn default() -> Self {
+        Self {
+            data: OnceLock::new(),
         }
     }
 }

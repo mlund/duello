@@ -18,7 +18,7 @@ use super::{
 use anyhow::Result;
 use core::f64::consts::PI;
 use get_size::GetSize;
-use hexasphere::{shapes::IcoSphereBase, AdjacencyBuilder, Subdivided};
+use hexasphere::{shapes::IcoSphereBase, Subdivided};
 use itertools::Itertools;
 use nalgebra::Matrix3;
 use std::io::Write;
@@ -38,6 +38,7 @@ pub type Face = [u16; 3];
 #[derive(Clone, GetSize)]
 pub struct IcoTable<T: Clone + GetSize> {
     /// Reference counted pointer to vertex positions and neighbors
+    /// We want only *one* copy of this, hence the ref. counted, thread-safe pointer
     #[get_size(size = 3)]
     vertex_ptr: Arc<OnceLock<Vec<VertexPosAndNeighbors>>>,
     /// Vertex information (position, data, neighbors)
@@ -80,29 +81,12 @@ impl<T: Clone + GetSize> IcoTable<T> {
 
     /// Generate table based on an existing subdivided icosaedron
     pub fn from_icosphere_without_data(icosphere: &Subdivided<(), IcoSphereBase>) -> Self {
-        let indices = icosphere.get_all_indices();
-        let mut builder = AdjacencyBuilder::new(icosphere.raw_points().len());
-        builder.add_indices(indices.as_slice());
-        let vertex_positions: Vec<Vector3> = icosphere
-            .raw_points()
-            .iter()
-            .map(|p| Vector3::new(p.x as f64, p.y as f64, p.z as f64))
-            .collect();
-
         if log::log_enabled!(log::Level::Debug) {
             vmd_draw(Path::new("icosphere.vmd"), icosphere, "green", Some(10.0)).unwrap();
         }
-
-        let vertices = (0..vertex_positions.len())
-            .map(|i| DataOnVertex::without_data(vertex_positions[i]))
-            .collect();
-
-        let ol = OnceLock::new();
-        ol.set(make_vertex_vec(icosphere)).unwrap();
-
         Self {
-            vertex_ptr: Arc::new(ol),
-            data: vertices,
+            vertex_ptr: Arc::new(OnceLock::from(make_vertex_vec(icosphere))),
+            data: vec![DataOnVertex::default(); icosphere.raw_points().len()],
         }
     }
 
@@ -135,9 +119,9 @@ impl<T: Clone + GetSize> IcoTable<T> {
         if self.data.iter().any(|v| v.data.get().is_some()) {
             anyhow::bail!("Data already set for some vertices")
         }
-        self.data.iter().enumerate().try_for_each(|(i, vertex)| {
-            let value = f(i, &vertex.pos);
-            if vertex.data.set(value).is_err() {
+        self.iter().enumerate().try_for_each(|(i, (pos, _, data))| {
+            let value = f(i, pos);
+            if data.set(value).is_err() {
                 anyhow::bail!("Data already set for vertex {}", i);
             }
             Ok(())
@@ -159,8 +143,9 @@ impl<T: Clone + GetSize> IcoTable<T> {
     }
 
     /// Transform vertex positions using a function
-    pub fn transform_vertex_positions(&mut self, f: impl Fn(&Vector3) -> Vector3) {
-        self.data.iter_mut().for_each(|v| v.pos = f(&v.pos));
+    pub fn transform_vertex_positions(&mut self, _f: impl Fn(&Vector3) -> Vector3) {
+        todo!("unimplemented");
+        // self.data.iter_mut().for_each(|v| v.pos = f(&v.pos));
     }
 
     /// Get projected barycentric coordinate for an arbitrary point
@@ -316,18 +301,14 @@ impl std::fmt::Display for IcoTable<f64> {
 pub type IcoTableOfSpheres = IcoTable<IcoTable<f64>>;
 
 impl IcoTableOfSpheres {
-    /// Get flat iterator that runs over all pairs of (vertex_a, vertex_b)
-    pub fn flat_iter(
-        &self,
-    ) -> impl Iterator<Item = (&DataOnVertex<IcoTable<f64>>, &DataOnVertex<f64>)> {
-        self.data.iter().flat_map(|vertex_a| {
-            vertex_a
-                .data
+    /// Get flat iterator that runs over all pairs of (&pos_a, &pos_b, &OnceLockf64)
+    pub fn flat_iter(&self) -> impl Iterator<Item = (&Vector3, &Vector3, &OnceLock<f64>)> {
+        self.iter().flat_map(|(pos_a, _, data_a)| {
+            data_a
                 .get()
                 .unwrap()
-                .data
                 .iter()
-                .map(move |vertex_b| (vertex_a, vertex_b))
+                .map(move |(pos_b, _, data_b)| (pos_a, pos_b, data_b))
         })
     }
     /// Generate table based on a minimum number of vertices on the subdivided icosaedron
@@ -451,7 +432,7 @@ mod tests {
         let icotable = IcoTable::<f64>::from_icosphere(&icosphere, 0.0);
         assert_eq!(icotable.data.len(), 12);
 
-        let point = icotable.data[0].pos;
+        let point = icotable.get_pos(0);
 
         assert_relative_eq!(point.x, 0.0);
         assert_relative_eq!(point.y, 1.0);
@@ -466,7 +447,7 @@ mod tests {
         assert_relative_eq!(bary[2], 0.0);
 
         // Nearest face to slightly displaced vertex 0
-        let point = (icotable.data[0].pos + Vector3::new(1e-3, 0.0, 0.0)).normalize();
+        let point = (icotable.get_pos(0) + Vector3::new(1e-3, 0.0, 0.0)).normalize();
         let face = icotable.nearest_face(&point);
         let bary = icotable.barycentric(&point, &face);
         assert_eq!(face, [0, 1, 5]);
@@ -475,7 +456,7 @@ mod tests {
         assert_relative_eq!(bary[2], 0.0);
 
         // find nearest vertex and face to vertex 2
-        let point = icotable.data[2].pos;
+        let point = icotable.get_pos(2);
         let face = icotable.nearest_face(&point);
         let bary = icotable.barycentric(&point, &face);
         assert_eq!(face, [0, 1, 2]);
@@ -484,7 +465,7 @@ mod tests {
         assert_relative_eq!(bary[2], 1.0);
 
         // Midpoint on edge between vertices 0 and 2
-        let point = point + (icotable.data[0].pos - point) * 0.5;
+        let point = point + (icotable.get_pos(0) - point) * 0.5;
         let bary = icotable.barycentric(&point, &face);
         assert_relative_eq!(bary[0], 0.5);
         assert_relative_eq!(bary[1], 0.0);
