@@ -55,6 +55,7 @@ pub fn make_vertices(icosphere: &IcoSphere) -> Vec<Vertices> {
 /// Struct representing data stored at vertices on an icosphere
 ///
 /// Interior mutability of vertex associated data is enabled using `std::sync::OnceLock`.
+/// This allows for data to be set once and then read multiple times.
 #[derive(Clone, GetSize)]
 pub struct DataOnVertex<T: Clone + GetSize> {
     /// Data associated with the vertex
