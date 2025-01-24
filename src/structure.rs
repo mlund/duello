@@ -26,7 +26,7 @@ use std::{
 #[derive(Debug, Default)]
 pub struct AminoAcidModelRecord {
     pub name: String,
-    pub pos: Vector3<f64>,
+    pub pos: Vector3,
     pub charge: f64,
     pub mass: f64,
     pub radius: f64,
@@ -54,7 +54,7 @@ impl AminoAcidModelRecord {
 #[derive(Debug, Clone)]
 pub struct Structure {
     /// Particle positions
-    pub pos: Vec<Vector3<f64>>,
+    pub pos: Vec<Vector3>,
     /// Particle masses
     pub masses: Vec<f64>,
     /// Particle charges
@@ -66,7 +66,7 @@ pub struct Structure {
 }
 
 /// Parse a single line from an XYZ file
-fn from_xyz_line(line: &str) -> anyhow::Result<(String, Vector3<f64>)> {
+fn from_xyz_line(line: &str) -> anyhow::Result<(String, Vector3)> {
     if let Some([name, x, y, z]) = line.split_whitespace().collect_array() {
         Ok((
             name.to_string(),
@@ -80,7 +80,7 @@ fn from_xyz_line(line: &str) -> anyhow::Result<(String, Vector3<f64>)> {
 impl Structure {
     /// Constructs a new structure from an XYZ file, centering the structure at the origin
     pub fn from_xyz(path: &PathBuf, atomkinds: &[AtomKind]) -> anyhow::Result<Self> {
-        let nxyz: Vec<(String, Vector3<f64>)> = std::fs::read_to_string(path)
+        let nxyz: Vec<(String, Vector3)> = std::fs::read_to_string(path)
             .or_else(|e| {
                 anyhow::bail!(
                     "Could not read XYZ file {}: {}",
@@ -185,7 +185,7 @@ impl Structure {
             .positions()
             .iter()
             .map(to_vector3)
-            .collect::<Vec<Vector3<f64>>>();
+            .collect::<Vec<Vector3>>();
         let atom_ids = frame
             .iter_atoms()
             .map(|atom| {
@@ -208,22 +208,22 @@ impl Structure {
     }
 
     /// Returns the center of mass of the structure
-    pub fn mass_center(&self) -> Vector3<f64> {
+    pub fn mass_center(&self) -> Vector3 {
         let total_mass: f64 = self.masses.iter().sum();
         self.pos
             .iter()
             .zip(&self.masses)
             .map(|(pos, mass)| pos.scale(*mass))
-            .fold(Vector3::<f64>::zeros(), |sum, i| sum + i)
+            .fold(Vector3::zeros(), |sum, i| sum + i)
             / total_mass
     }
     /// Translates the coordinates by a displacement vector
-    pub fn translate(&mut self, displacement: &Vector3<f64>) {
+    pub fn translate(&mut self, displacement: &Vector3) {
         self.transform(|pos| pos + displacement);
     }
 
     /// Transform the coordinates using a function
-    pub fn transform(&mut self, f: impl Fn(Vector3<f64>) -> Vector3<f64>) {
+    pub fn transform(&mut self, f: impl Fn(Vector3) -> Vector3) {
         self.pos.iter_mut().for_each(|pos| *pos = f(*pos));
     }
 
@@ -259,11 +259,11 @@ impl Structure {
 /// The mass center is computed from positions, 𝒑₁,…,𝒑ₙ, as 𝑪 = ∑ mᵢ𝒑ᵢ / ∑ mᵢ.
 ///
 pub fn mass_center(
-    positions: impl IntoIterator<Item = Vector3<f64>>,
+    positions: impl IntoIterator<Item = Vector3>,
     masses: impl IntoIterator<Item = f64>,
-) -> Vector3<f64> {
+) -> Vector3 {
     let mut total_mass: f64 = 0.0;
-    let mut c = Vector3::<f64>::zeros();
+    let mut c = Vector3::zeros();
     for (r, m) in positions.into_iter().zip(masses) {
         total_mass += m;
         c += m * r;
@@ -306,20 +306,20 @@ pub fn mass_center(
 /// - <https://en.wikipedia.org/wiki/Moment_of_inertia#Inertia_tensor>
 ///
 pub fn inertia_tensor(
-    positions: impl IntoIterator<Item = Vector3<f64>>,
+    positions: impl IntoIterator<Item = Vector3>,
     masses: impl IntoIterator<Item = f64>,
-    center: Option<Vector3<f64>>,
+    center: Option<Vector3>,
 ) -> Matrix3<f64> {
     positions
         .into_iter()
-        .map(|r| r - center.unwrap_or(Vector3::<f64>::zeros()))
+        .map(|r| r - center.unwrap_or(Vector3::zeros()))
         .zip(masses)
         .map(|(r, m)| m * (r.norm_squared() * Matrix3::<f64>::identity() - r * r.transpose()))
         .sum()
 }
 
 /// Principal moments of inertia from the inertia tensor
-pub fn principal_moments_of_inertia(inertia: &Matrix3<f64>) -> Vector3<f64> {
+pub fn principal_moments_of_inertia(inertia: &Matrix3<f64>) -> Vector3 {
     inertia.symmetric_eigenvalues()
 }
 
@@ -334,8 +334,8 @@ pub fn principal_moments_of_inertia(inertia: &Matrix3<f64>) -> Vector3<f64> {
 ///
 /// - <https://en.wikipedia.org/wiki/Gyration_tensor>
 ///
-pub fn gyration_tensor(positions: impl IntoIterator<Item = Vector3<f64>> + Clone) -> Matrix3<f64> {
-    let c: Vector3<f64> = positions.clone().into_iter().sum();
+pub fn gyration_tensor(positions: impl IntoIterator<Item = Vector3> + Clone) -> Matrix3<f64> {
+    let c: Vector3 = positions.clone().into_iter().sum();
     positions
         .into_iter()
         .map(|p| p - c)
@@ -357,6 +357,6 @@ impl Display for Structure {
 }
 
 /// Converts a slice of f64 to a nalgebra Vector3
-fn to_vector3(pos: &[f64; 3]) -> Vector3<f64> {
-    Vector3::<f64>::new(pos[0], pos[1], pos[2])
+fn to_vector3(pos: &[f64; 3]) -> Vector3 {
+    Vector3::new(pos[0], pos[1], pos[2])
 }

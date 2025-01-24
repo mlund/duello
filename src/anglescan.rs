@@ -18,7 +18,7 @@ use crate::{
     energy::{self, PairMatrix},
     report::report_pmf,
     structure::Structure,
-    Sample,
+    Sample, UnitQuaternion, Vector3,
 };
 use anyhow::{Context, Result};
 #[cfg(test)]
@@ -38,9 +38,6 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
 };
-
-pub type Vector3 = nalgebra::Vector3<f64>;
-pub type UnitQuaternion = nalgebra::UnitQuaternion<f64>;
 
 /// Struct to exhaust all possible 6D relative orientations between two rigid bodies.
 ///
@@ -201,27 +198,6 @@ impl TwobodyAngles {
     }
 }
 
-/// Generates n points uniformly distributed on a unit sphere
-///
-/// Related information:
-/// - <https://stackoverflow.com/questions/9600801/evenly-distributing-n-points-on-a-sphere>
-/// - <https://en.wikipedia.org/wiki/Geodesic_polyhedron>
-/// - c++: <https://github.com/caosdoar/spheres>
-pub fn make_fibonacci_sphere(n_points: usize) -> Vec<Vector3> {
-    assert!(n_points > 1, "n_points must be greater than 1");
-    let phi = PI * (3.0 - (5.0f64).sqrt()); // golden angle in radians
-    let make_ith_point = |i: usize| -> Vector3 {
-        let mut p = Vector3::zeros();
-        p.y = 1.0 - 2.0 * (i as f64 / (n_points - 1) as f64); // y goes from 1 to -1
-        let radius = (1.0 - p.y * p.y).sqrt(); // radius at y
-        let theta = phi * i as f64; // golden angle increment
-        p.x = theta.cos() * radius;
-        p.z = theta.sin() * radius;
-        p.normalize()
-    };
-    (0..n_points).map(make_ith_point).collect()
-}
-
 /// Make icosphere with at least `min_points` surface points (vertices).
 ///
 /// This is done by iteratively subdividing the faces of an icosahedron
@@ -354,18 +330,5 @@ mod tests {
         assert_relative_eq!(pairs[n - 1].1.coords.z, 0.050594, epsilon = 1e-5);
         assert_relative_eq!(pairs[n - 1].1.coords.w, -0.705294, epsilon = 1e-5);
         println!("{}", twobody_angles);
-    }
-
-    #[test]
-    fn test_fibonacci_sphere() {
-        let samples = 1000;
-        let points_on_sphere = make_fibonacci_sphere(samples);
-        let mut center: Vector3 = Vector3::zeros();
-        assert_eq!(points_on_sphere.len(), samples);
-        for point in points_on_sphere {
-            assert_relative_eq!((point.norm() - 1.0).abs(), 0.0, epsilon = 1e-10);
-            center += point;
-        }
-        assert_relative_eq!(center.norm(), 0.0, epsilon = 1e-1);
     }
 }

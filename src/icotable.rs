@@ -13,6 +13,7 @@
 // limitations under the license.
 
 use super::{anglescan::*, make_vertices, table::PaddedTable, DataOnVertex, Vertices};
+use crate::Vector3;
 use anyhow::Result;
 use core::f64::consts::PI;
 use get_size::GetSize;
@@ -154,6 +155,8 @@ impl<T: Clone + GetSize> IcoTable<T> {
     }
 
     /// Transform vertex positions using a function
+    /// TODO: Better to use Mutex or RwLock for this? We normally do not want to
+    /// touch the vertices and this is used for testing interpolation schemes only
     pub fn transform_vertex_positions(&mut self, f: impl Fn(&Vector3) -> Vector3) {
         let new_vertices = self
             .iter_vertices()

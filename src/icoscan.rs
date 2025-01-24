@@ -17,7 +17,7 @@ use crate::{
     icotable::Table6D,
     report::report_pmf,
     structure::Structure,
-    Sample,
+    Sample, UnitQuaternion, Vector3,
 };
 use get_size::GetSize;
 use indicatif::ParallelProgressIterator;
@@ -26,8 +26,6 @@ use itertools::Itertools;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::{f64::consts::PI, path::PathBuf};
 
-pub type Vector3 = nalgebra::Vector3<f64>;
-pub type UnitQuaternion = nalgebra::UnitQuaternion<f64>;
 use nalgebra::UnitVector3;
 
 /// Orient two reference structures to given 6D point and return the two structures

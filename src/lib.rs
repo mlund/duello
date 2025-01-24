@@ -12,9 +12,9 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
-pub use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 pub mod anglescan;
 pub mod energy;
+mod fibonacci;
 pub mod icoscan;
 pub mod icotable;
 pub mod report;
@@ -23,6 +23,7 @@ pub mod structure;
 pub mod table;
 mod vertex;
 mod virial;
+pub use fibonacci::make_fibonacci_sphere;
 pub use sample::Sample;
 pub use vertex::*;
 pub use virial::VirialCoeff;
@@ -33,9 +34,11 @@ use std::f64::consts::PI;
 
 extern crate flate2;
 
-pub use anglescan::{
-    make_fibonacci_sphere, make_icosphere, make_icosphere_vertices, TwobodyAngles,
-};
+pub type Matrix3 = nalgebra::Matrix3<f64>;
+pub type Vector3 = nalgebra::Vector3<f64>;
+pub type UnitQuaternion = nalgebra::UnitQuaternion<f64>;
+
+pub use anglescan::{make_icosphere, make_icosphere_vertices, TwobodyAngles};
 
 /// RMSD angle between two quaternion rotations
 ///
@@ -46,14 +49,14 @@ pub use anglescan::{
 /// - <https://github.com/charnley/rmsd>
 /// - <https://onlinelibrary.wiley.com/doi/full/10.1002/jcc.20296>
 /// - <https://www.ams.stonybrook.edu/~coutsias/papers/2004-rmsd.pdf>
-pub fn rmsd_angle(q1: &UnitQuaternion<f64>, q2: &UnitQuaternion<f64>) -> f64 {
+pub fn rmsd_angle(q1: &UnitQuaternion, q2: &UnitQuaternion) -> f64 {
     // let q = q1 * q2.inverse();
     // q.angle().powi(2)
     q1.angle_to(q2).powi(2)
 }
 
 #[allow(non_snake_case)]
-pub fn rmsd2(Q: &UnitQuaternion<f64>, inertia: &Matrix3<f64>, total_mass: f64) -> f64 {
+pub fn rmsd2(Q: &UnitQuaternion, inertia: &Matrix3, total_mass: f64) -> f64 {
     let q = Q.vector();
     4.0 / total_mass * (q.transpose() * inertia * q)[0]
 }
@@ -63,7 +66,7 @@ pub fn rmsd2(Q: &UnitQuaternion<f64>, inertia: &Matrix3<f64>, total_mass: f64) -
 /// - r is the radius
 /// - theta is the polar angle (0..pi)
 /// - phi is the azimuthal angle (0..2pi)
-pub fn to_spherical(cartesian: &Vector3<f64>) -> (f64, f64, f64) {
+pub fn to_spherical(cartesian: &Vector3) -> (f64, f64, f64) {
     let r = cartesian.norm();
     let theta = (cartesian.z / r).acos();
     let phi = cartesian.y.atan2(cartesian.x);
@@ -79,7 +82,7 @@ pub fn to_spherical(cartesian: &Vector3<f64>) -> (f64, f64, f64) {
 /// - r is the radius
 /// - theta is the polar angle (0..pi)
 /// - phi is the azimuthal angle (0..2pi)
-pub fn to_cartesian(r: f64, theta: f64, phi: f64) -> Vector3<f64> {
+pub fn to_cartesian(r: f64, theta: f64, phi: f64) -> Vector3 {
     let (theta_sin, theta_cos) = theta.sin_cos();
     let (phi_sin, phi_cos) = phi.sin_cos();
     Vector3::new(

@@ -266,10 +266,10 @@ fn do_dipole(cmd: &Commands) -> Result<()> {
 
         // rotations to apply to vertices of a new icosphere used for sampling interpolated points
         let mut rng = rand::thread_rng();
-        let quaternions: Vec<UnitQuaternion<f64>> = (0..20)
+        let quaternions: Vec<UnitQuaternion> = (0..20)
             .map(|_| {
                 let point: Vector3 = faunus::transform::random_unit_vector(&mut rng);
-                UnitQuaternion::<f64>::from_axis_angle(
+                UnitQuaternion::from_axis_angle(
                     &nalgebra::Unit::new_normalize(point),
                     rng.gen_range(0.0..PI),
                 )
