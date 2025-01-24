@@ -16,12 +16,13 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use coulomb::{permittivity, DebyeLength, Medium, Salt, Vector3};
 use duello::{
-    anglescan::do_anglescan, energy, icoscan, icotable::IcoTable, structure::Structure,
+    energy, icoscan,
+    icotable::IcoTable,
+    structure::{pqr_write_atom, Structure},
     to_cartesian, to_spherical, UnitQuaternion,
 };
 use faunus::{energy::NonbondedMatrix, topology::Topology};
 // use indicatif::ProgressIterator;
-use itertools::Itertools;
 use std::{f64::consts::PI, fs::File, io::Write, ops::Neg, path::PathBuf};
 extern crate pretty_env_logger;
 #[macro_use]
@@ -115,9 +116,6 @@ enum Commands {
         /// Temperature in K
         #[arg(short = 'T', long, default_value = "298.15")]
         temperature: f64,
-        /// Use icosphere table
-        #[arg(long)]
-        icotable: bool,
         /// Optionally use fixed dielectric constant
         #[arg(long)]
         fixed_dielectric: Option<f64>,
@@ -140,7 +138,6 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         molarity,
         cutoff,
         temperature,
-        icotable,
         fixed_dielectric,
         pmf_file,
     } = cmd
@@ -185,41 +182,27 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         ref_b.total_mass(),
     );
 
-    // Scan over mass center distances
-    let distances = iter_num_tools::arange(*rmin..*rmax, *dr).collect_vec();
     info!(
         "COM range: [{:.1}, {:.1}) in {:.1} Å steps 🐾",
         rmin, rmax, dr
     );
-    if *icotable {
-        icoscan::do_icoscan(
-            *rmin,
-            *rmax,
-            *dr,
-            *resolution,
-            ref_a,
-            ref_b,
-            pair_matrix,
-            temperature,
-            pmf_file,
-        )
-    } else {
-        do_anglescan(
-            distances,
-            *resolution,
-            ref_a,
-            ref_b,
-            pair_matrix,
-            temperature,
-            pmf_file,
-        )
-    }
+    icoscan::do_icoscan(
+        *rmin,
+        *rmax,
+        *dr,
+        *resolution,
+        ref_a,
+        ref_b,
+        pair_matrix,
+        temperature,
+        pmf_file,
+    )
 }
 
 fn do_dipole(cmd: &Commands) -> Result<()> {
     let Commands::Dipole {
         output,
-        mu,
+        mu: dipole_moment,
         resolution,
         rmin,
         rmax,
@@ -231,11 +214,11 @@ fn do_dipole(cmd: &Commands) -> Result<()> {
     let distances: Vec<f64> = iter_num_tools::arange(*rmin..*rmax, *dr).collect();
     let n_points = (4.0 * PI / resolution.powi(2)).round() as usize;
     let mut icotable = IcoTable::<f64>::from_min_points(n_points)?;
-    let resolution = (4.0 * PI / icotable.vertices.len() as f64).sqrt();
+    let resolution = (4.0 * PI / icotable.len() as f64).sqrt();
     log::info!(
         "Requested {} points on a sphere; got {} -> new resolution = {:.3}",
         n_points,
-        icotable.vertices.len(),
+        icotable.len(),
         resolution
     );
 
@@ -251,8 +234,8 @@ fn do_dipole(cmd: &Commands) -> Result<()> {
         let exact_exp_energy = |_, p: &Vector3| {
             let (_r, theta, _phi) = to_spherical(p);
             let field = bjerrum_len * charge / radius.powi(2);
-            let u = field * mu * theta.cos();
-            (-u).exp()
+            let energy_in_kt = field * dipole_moment * theta.cos();
+            energy_in_kt.neg().exp()
         };
         icotable.clear_vertex_data();
         icotable.set_vertex_data(exact_exp_energy)?;
@@ -262,14 +245,16 @@ fn do_dipole(cmd: &Commands) -> Result<()> {
 
         // analytical solution to angular average of exp(-βu)
         let field = -bjerrum_len * charge / radius.powi(2);
-        let exact_free_energy = ((field * mu).sinh() / (field * mu)).ln().neg();
+        let exact_free_energy = ((field * dipole_moment).sinh() / (field * dipole_moment))
+            .ln()
+            .neg();
 
         // rotations to apply to vertices of a new icosphere used for sampling interpolated points
         let mut rng = rand::thread_rng();
-        let quaternions: Vec<UnitQuaternion<f64>> = (0..20)
+        let quaternions: Vec<UnitQuaternion> = (0..20)
             .map(|_| {
-                let point: Vector3 = faunus::transform::random_unit_vector(&mut rng);
-                UnitQuaternion::<f64>::from_axis_angle(
+                let point = faunus::transform::random_unit_vector(&mut rng);
+                UnitQuaternion::from_axis_angle(
                     &nalgebra::Unit::new_normalize(point),
                     rng.gen_range(0.0..PI),
                 )
@@ -283,9 +268,8 @@ fn do_dipole(cmd: &Commands) -> Result<()> {
         for q in &quaternions {
             rotated_icosphere.transform_vertex_positions(|v| q.transform_vector(v));
             partition_func_interpolated += rotated_icosphere
-                .vertices
                 .iter()
-                .map(|v| icotable.interpolate(&v.pos))
+                .map(|(pos, _, _)| icotable.interpolate(pos))
                 .sum::<f64>()
                 / rotated_icosphere.len() as f64;
         }
@@ -345,8 +329,8 @@ fn do_potential(cmd: &Commands) -> Result<()> {
 
     // Make PQR file illustrating the electric potential at each vertex
     let mut pqr_file = File::create("potential.pqr")?;
-    for (vertex, data) in std::iter::zip(&icotable.vertices, icotable.vertex_data()) {
-        pqr_write_atom(&mut pqr_file, 1, &vertex.pos.scale(*radius), *data, 2.0)?;
+    for (vertex_pos, data) in std::iter::zip(icotable.iter_positions(), icotable.vertex_data()) {
+        pqr_write_atom(&mut pqr_file, 1, &vertex_pos.scale(*radius), *data, 2.0)?;
     }
 
     // Compare interpolated and exact potential linearly in angular space
@@ -384,22 +368,7 @@ fn do_potential(cmd: &Commands) -> Result<()> {
     Ok(())
 }
 
-/// From single ATOM record in PQR file stream
-fn pqr_write_atom(
-    stream: &mut impl std::io::Write,
-    atom_id: usize,
-    pos: &Vector3,
-    charge: f64,
-    radius: f64,
-) -> Result<()> {
-    writeln!(
-        stream,
-        "ATOM  {:5} {:4.4} {:4.3}{:5}    {:8.3} {:8.3} {:8.3} {:.3} {:.3}",
-        atom_id, "A", "AAA", 1, pos.x, pos.y, pos.z, charge, radius
-    )?;
-    Ok(())
-}
-
+// Wrapper for main function to handle errors
 fn do_main() -> Result<()> {
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info");

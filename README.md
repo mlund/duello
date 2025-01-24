@@ -93,7 +93,6 @@ The program is written in Rust and attempts to use all available CPU cores.
 
 ```sh
 duello scan \
-    --icotable \
     --mol1 cppm-p18.xyz \
     --mol2 cppm-p18.xyz \
     --rmin 37 --rmax 50 --dr 0.5 \

@@ -17,7 +17,7 @@ use crate::{
     icotable::Table6D,
     report::report_pmf,
     structure::Structure,
-    Sample,
+    Sample, UnitQuaternion, Vector3,
 };
 use get_size::GetSize;
 use indicatif::ParallelProgressIterator;
@@ -26,8 +26,6 @@ use itertools::Itertools;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::{f64::consts::PI, path::PathBuf};
 
-pub type Vector3 = nalgebra::Vector3<f64>;
-pub type UnitQuaternion = nalgebra::UnitQuaternion<f64>;
 use nalgebra::UnitVector3;
 
 /// Orient two reference structures to given 6D point and return the two structures
@@ -94,11 +92,11 @@ pub fn do_icoscan(
             .get_icospheres(r, omega) // remaining 4D
             .expect("invalid (r, omega) value")
             .flat_iter()
-            .for_each(|(vertex_a, vertex_b)| {
+            .for_each(|(pos_a, pos_b, data_b)| {
                 let (oriented_a, oriented_b) =
-                    orient_structures(r, omega, vertex_a.pos, vertex_b.pos, &ref_a, &ref_b);
+                    orient_structures(r, omega, *pos_a, *pos_b, &ref_a, &ref_b);
                 let energy = pair_matrix.sum_energy(&oriented_a, &oriented_b);
-                vertex_b.data.set(energy).unwrap();
+                data_b.set(energy).unwrap();
             });
     };
 
@@ -122,8 +120,8 @@ pub fn do_icoscan(
     let calc_partition_func = |r: f64, omega: f64| {
         table.get_icospheres(r, omega).unwrap().flat_iter().fold(
             Sample::default(),
-            |sum, (_vertex_a, vertex_b)| {
-                let energy = vertex_b.data.get().unwrap();
+            |sum, (_, _, data_b)| {
+                let energy = data_b.get().unwrap();
                 sum + Sample::new(*energy, *temperature)
             },
         )

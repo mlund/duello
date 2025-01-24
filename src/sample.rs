@@ -16,19 +16,19 @@ use physical_constants::MOLAR_GAS_CONSTANT;
 use std::iter::Sum;
 use std::ops::{Add, AddAssign, Neg};
 
-/// Structure to store energy samples
+/// Structure to store energy samples and used mainly as a helper when integrating results
 #[derive(Debug, Default, Clone)]
 pub struct Sample {
     /// Number of samples
     n: u64,
     /// Thermal energy, RT in kJ/mol
-    pub thermal_energy: f64,
+    thermal_energy: f64,
     /// Boltzmann weighted energy, U * exp(-U/kT)
-    pub mean_energy: f64,
+    mean_energy: f64,
     /// Boltzmann weighted squared energy, U^2 * exp(-U/kT)
-    pub mean_energy2: f64,
+    mean_squared_energy: f64,
     /// Boltzmann factored energy, exp(-U/kT)
-    pub exp_energy: f64,
+    exp_energy: f64,
 }
 
 impl Sample {
@@ -41,9 +41,13 @@ impl Sample {
             n: 1,
             thermal_energy,
             mean_energy: energy * exp_energy,
-            mean_energy2: energy.powi(2) * exp_energy,
+            mean_squared_energy: energy.powi(2) * exp_energy,
             exp_energy,
         }
+    }
+    /// Thermal energy (kJ/mol)
+    pub fn thermal_energy(&self) -> f64 {
+        self.thermal_energy
     }
     /// Mean energy (kJ/mol)
     pub fn mean_energy(&self) -> f64 {
@@ -51,7 +55,7 @@ impl Sample {
     }
     /// Mean squared energy (kJ/mol)^2
     pub fn mean_squared_energy(&self) -> f64 {
-        self.mean_energy2 / self.exp_energy
+        self.mean_squared_energy / self.exp_energy
     }
     /// Heat capacity C/R
     pub fn heat_capacity(&self) -> f64 {
@@ -90,7 +94,7 @@ impl Add for Sample {
             n: self.n + other.n,
             thermal_energy: f64::max(self.thermal_energy, other.thermal_energy),
             mean_energy: self.mean_energy + other.mean_energy,
-            mean_energy2: self.mean_energy2 + other.mean_energy2,
+            mean_squared_energy: self.mean_squared_energy + other.mean_squared_energy,
             exp_energy: self.exp_energy + other.exp_energy,
         }
     }
@@ -100,7 +104,7 @@ impl AddAssign for Sample {
     fn add_assign(&mut self, other: Self) {
         self.n += other.n;
         self.mean_energy += other.mean_energy;
-        self.mean_energy2 += other.mean_energy2;
+        self.mean_squared_energy += other.mean_squared_energy;
         self.exp_energy += other.exp_energy;
         self.thermal_energy = f64::max(self.thermal_energy, other.thermal_energy);
     }
