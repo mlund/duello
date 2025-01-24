@@ -154,9 +154,16 @@ impl<T: Clone + GetSize> IcoTable<T> {
     }
 
     /// Transform vertex positions using a function
-    pub fn transform_vertex_positions(&mut self, _f: impl Fn(&Vector3) -> Vector3) {
-        todo!("unimplemented");
-        // self.data.iter_mut().for_each(|v| v.pos = f(&v.pos));
+    pub fn transform_vertex_positions(&mut self, f: impl Fn(&Vector3) -> Vector3) {
+        let new_vertices = self
+            .iter_vertices()
+            .map(|v| {
+                let pos = f(&v.pos);
+                let neighbors = v.neighbors.clone();
+                Vertices { pos, neighbors }
+            })
+            .collect_vec();
+        self.vertices = Arc::new(OnceLock::from(new_vertices));
     }
 
     /// Get projected barycentric coordinate for an arbitrary point
