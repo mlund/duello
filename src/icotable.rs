@@ -12,9 +12,7 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
-use super::{
-    anglescan::*, make_vertex_vec, table::PaddedTable, DataOnVertex, VertexPosAndNeighbors,
-};
+use super::{anglescan::*, make_vertices, table::PaddedTable, DataOnVertex, Vertices};
 use anyhow::Result;
 use core::f64::consts::PI;
 use get_size::GetSize;
@@ -40,19 +38,19 @@ pub struct IcoTable<T: Clone + GetSize> {
     /// Reference counted pointer to vertex positions and neighbors
     /// We want only *one* copy of this, hence the ref. counted, thread-safe pointer
     #[get_size(size = 3)]
-    vertex_ptr: Arc<OnceLock<Vec<VertexPosAndNeighbors>>>,
+    vertices: Arc<OnceLock<Vec<Vertices>>>,
     /// Vertex information (position, data, neighbors)
     data: Vec<DataOnVertex<T>>,
 }
 
 impl<T: Clone + GetSize> IcoTable<T> {
     /// Iterator over vertices (positions and neighbors)
-    pub fn iter_vertices(&self) -> impl Iterator<Item = &VertexPosAndNeighbors> {
-        self.vertex_ptr.get().unwrap().iter()
+    pub fn iter_vertices(&self) -> impl Iterator<Item = &Vertices> {
+        self.vertices.get().unwrap().iter()
     }
     /// Get i'th vertex position
     pub fn get_pos(&self, index: usize) -> &Vector3 {
-        &self.vertex_ptr.get().unwrap()[index].pos
+        &self.vertices.get().unwrap()[index].pos
     }
     /// Get i'th data or `None`` if uninitialized
     pub fn get_data(&self, index: usize) -> &OnceLock<T> {
@@ -60,13 +58,13 @@ impl<T: Clone + GetSize> IcoTable<T> {
     }
     /// Get i'th neighbors
     pub fn get_neighbors(&self, index: usize) -> &[u16] {
-        &self.vertex_ptr.get().unwrap()[index].neighbors
+        &self.vertices.get().unwrap()[index].neighbors
     }
     /// Get i'th vertex position; neighborlist; and data
     pub fn get(&self, index: usize) -> (&Vector3, &[u16], &OnceLock<T>) {
         (
-            &self.vertex_ptr.get().unwrap()[index].pos,
-            &self.vertex_ptr.get().unwrap()[index].neighbors,
+            &self.vertices.get().unwrap()[index].pos,
+            &self.vertices.get().unwrap()[index].neighbors,
             self.get_data(index),
         )
     }
@@ -79,18 +77,16 @@ impl<T: Clone + GetSize> IcoTable<T> {
         (0..self.data.len()).map(move |i| self.get(i))
     }
 
-    /// Generate table based on an existing vertex_ptr
-    pub fn from_vertex_ptr(
-        vertex_ptr: Arc<OnceLock<Vec<VertexPosAndNeighbors>>>,
-        data: Option<T>,
-    ) -> Self {
+    /// Generate table based on an existing vertices pointer and optionally set default data
+    pub fn from_vertices(vertices: Arc<OnceLock<Vec<Vertices>>>, data: Option<T>) -> Self {
+        let num_vertices = vertices.get().unwrap().len();
         let data = match data {
             Some(data) => DataOnVertex::from(data),
-            None => DataOnVertex::default(),
+            None => DataOnVertex::uninitialized(),
         };
         Self {
-            vertex_ptr: vertex_ptr.clone(),
-            data: vec![data; vertex_ptr.get().unwrap().len()],
+            vertices,
+            data: vec![data; num_vertices],
         }
     }
 
@@ -100,8 +96,8 @@ impl<T: Clone + GetSize> IcoTable<T> {
             vmd_draw(Path::new("icosphere.vmd"), icosphere, "green", Some(10.0)).unwrap();
         }
         Self {
-            vertex_ptr: Arc::new(OnceLock::from(make_vertex_vec(icosphere))),
-            data: vec![DataOnVertex::default(); icosphere.raw_points().len()],
+            vertices: Arc::new(OnceLock::from(make_vertices(icosphere))),
+            data: vec![DataOnVertex::uninitialized(); icosphere.raw_points().len()],
         }
     }
 
@@ -119,7 +115,7 @@ impl<T: Clone + GetSize> IcoTable<T> {
 
     /// Number of vertices in the table
     pub fn len(&self) -> usize {
-        self.vertex_ptr.get().unwrap().len()
+        self.vertices.get().unwrap().len()
     }
 
     /// Check if the table is empty, i.e. has no vertices
@@ -329,8 +325,8 @@ impl IcoTableOfSpheres {
     /// Generate table based on a minimum number of vertices on the subdivided icosaedron
     pub fn from_min_points(min_points: usize, default_data: IcoTable<f64>) -> Result<Self> {
         let icosphere = make_icosphere(min_points)?;
-        let vertex_ptr = Arc::new(OnceLock::from(make_vertex_vec(&icosphere)));
-        Ok(Self::from_vertex_ptr(vertex_ptr, Some(default_data)))
+        let vertices = Arc::new(OnceLock::from(make_vertices(&icosphere)));
+        Ok(Self::from_vertices(vertices, Some(default_data)))
     }
 
     /// Interpolate data between two faces
@@ -363,21 +359,23 @@ pub type Table6D = PaddedTable<PaddedTable<IcoTableOfSpheres>>;
 
 impl Table6D {
     pub fn from_resolution(r_min: f64, r_max: f64, dr: f64, angle_resolution: f64) -> Result<Self> {
+        // Generate icosphere with at least n vertices
         let n_points = (4.0 * PI / angle_resolution.powi(2)).round() as usize;
-
-        // Make exactly *one* copy of vertex positions and neighbors
-        // Data on the inner table3 is left empty and should be set later
         let icosphere = make_icosphere(n_points)?;
-        let vertices = Arc::new(OnceLock::from(make_vertex_vec(&icosphere)));
-        let table1 = IcoTable::<f64>::from_vertex_ptr(vertices.clone(), None);
 
-        // update angular resolution according to icosphere
-        let angle_resolution = table1.angle_resolution();
-        // let n_points = table1.data.len();
+        // Vertex positions and neighbors are shared across all tables w. smart pointer.
+        // Oncelocked data on the innermost table1 is left uninitialized and should be set later
+        let vertices = Arc::new(OnceLock::from(make_vertices(&icosphere)));
+        let table_b = IcoTable::<f64>::from_vertices(vertices.clone(), None); // B: 𝜃 and 𝜑
+
+        // We have a new angular resolution, depending on number of subdivisions
+        let angle_resolution = table_b.angle_resolution();
         log::info!("Actual angle resolution = {:.2} radians", angle_resolution);
-        let table2 = IcoTableOfSpheres::from_vertex_ptr(vertices, Some(table1)); // A: 𝜃 and 𝜑
-        let table3 = PaddedTable::<IcoTableOfSpheres>::new(0.0, 2.0 * PI, angle_resolution, table2); // 𝜔
-        Ok(Self::new(r_min, r_max, dr, table3)) // R
+
+        let table_a = IcoTableOfSpheres::from_vertices(vertices, Some(table_b)); // A: 𝜃 and 𝜑
+        let table_omega =
+            PaddedTable::<IcoTableOfSpheres>::new(0.0, 2.0 * PI, angle_resolution, table_a); // 𝜔
+        Ok(Self::new(r_min, r_max, dr, table_omega)) // R
     }
     /// Get remaining 4D space (icotables) at (r, omega)
     pub fn get_icospheres(&self, r: f64, omega: f64) -> Result<&IcoTableOfSpheres> {

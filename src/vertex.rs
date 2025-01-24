@@ -20,7 +20,7 @@ use std::sync::OnceLock;
 
 /// Structure for storing vertex positions and neighbors
 #[derive(Clone, GetSize, Debug)]
-pub struct VertexPosAndNeighbors {
+pub struct Vertices {
     /// 3D coordinates of the vertex on a unit sphere
     #[get_size(size = 24)]
     pub pos: Vector3,
@@ -28,7 +28,7 @@ pub struct VertexPosAndNeighbors {
     pub neighbors: Vec<u16>,
 }
 
-pub fn make_vertex_vec(icosphere: &Subdivided<(), IcoSphereBase>) -> Vec<VertexPosAndNeighbors> {
+pub fn make_vertices(icosphere: &Subdivided<(), IcoSphereBase>) -> Vec<Vertices> {
     let indices = icosphere.get_all_indices();
     let mut builder = AdjacencyBuilder::new(icosphere.raw_points().len());
     builder.add_indices(indices.as_slice());
@@ -42,7 +42,7 @@ pub fn make_vertex_vec(icosphere: &Subdivided<(), IcoSphereBase>) -> Vec<VertexP
 
     vertex_positions
         .zip(neighbors)
-        .map(|(pos, neighbors)| VertexPosAndNeighbors {
+        .map(|(pos, neighbors)| Vertices {
             pos,
             neighbors: neighbors.iter().map(|i| *i as u16).collect_vec(),
         })
@@ -70,10 +70,7 @@ impl<T: Clone + GetSize> DataOnVertex<T> {
             data: OnceLock::from(data),
         }
     }
-}
-
-impl<T: Clone + GetSize> core::default::Default for DataOnVertex<T> {
-    fn default() -> Self {
+    pub fn uninitialized() -> Self {
         Self {
             data: OnceLock::new(),
         }
