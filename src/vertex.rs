@@ -12,9 +12,9 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
-use crate::Vector3;
+use crate::{IcoSphere, Vector3};
 use get_size::GetSize;
-use hexasphere::{shapes::IcoSphereBase, AdjacencyBuilder, Subdivided};
+use hexasphere::AdjacencyBuilder;
 use itertools::Itertools;
 use std::sync::OnceLock;
 
@@ -29,7 +29,7 @@ pub struct Vertices {
 }
 
 /// Extract vertices and neightbourlists from an icosphere
-pub fn make_vertices(icosphere: &Subdivided<(), IcoSphereBase>) -> Vec<Vertices> {
+pub fn make_vertices(icosphere: &IcoSphere) -> Vec<Vertices> {
     let indices = icosphere.get_all_indices();
     let mut builder = AdjacencyBuilder::new(icosphere.raw_points().len());
     builder.add_indices(indices.as_slice());
