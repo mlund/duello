@@ -54,15 +54,15 @@ impl<T: Clone + GetSize> IcoTable<T> {
         &self.vertex_ptr.get().unwrap()[index].pos
     }
     /// Get i'th data or `None`` if uninitialized
-    pub fn get_data(&self, index: usize) -> Option<&T> {
-        self.data[index].data.get()
+    pub fn get_data(&self, index: usize) -> &OnceLock<T> {
+        &self.data[index].data
     }
     /// Get i'th neighbors
     pub fn get_neighbors(&self, index: usize) -> &[u16] {
         &self.vertex_ptr.get().unwrap()[index].neighbors
     }
     /// Get i'th vertex position; neighborlist; and data
-    pub fn get(&self, index: usize) -> (&Vector3, &[u16], Option<&T>) {
+    pub fn get(&self, index: usize) -> (&Vector3, &[u16], &OnceLock<T>) {
         (
             &self.vertex_ptr.get().unwrap()[index].pos,
             &self.vertex_ptr.get().unwrap()[index].neighbors,
@@ -74,7 +74,7 @@ impl<T: Clone + GetSize> IcoTable<T> {
         self.iter_vertices().map(|v| &v.pos)
     }
     /// Iterate over vertex positions; neighborlists; and data
-    pub fn iter(&self) -> impl Iterator<Item = (&Vector3, &[u16], Option<&T>)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&Vector3, &[u16], &OnceLock<T>)> {
         (0..self.data.len()).map(move |i| self.get(i))
     }
 
@@ -347,8 +347,10 @@ impl IcoTableOfSpheres {
         let data_ab = Matrix3::<f64>::from_fn(|i, j| {
             *self
                 .get_data(face_a[i] as usize)
+                .get()
                 .unwrap()
                 .get_data(face_b[j] as usize)
+                .get()
                 .unwrap()
         });
         (bary_a.transpose() * data_ab * bary_b).to_scalar()
