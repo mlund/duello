@@ -53,16 +53,16 @@ impl<T: Clone + GetSize> IcoTable<T> {
     pub fn get_pos(&self, index: usize) -> &Vector3 {
         &self.vertex_ptr.get().unwrap()[index].pos
     }
-    /// Get i'th data
-    pub fn get_data(&self, index: usize) -> &T {
-        self.data[index].data.get().unwrap()
+    /// Get i'th data or `None`` if uninitialized
+    pub fn get_data(&self, index: usize) -> Option<&T> {
+        self.data[index].data.get()
     }
     /// Get i'th neighbors
     pub fn get_neighbors(&self, index: usize) -> &[u16] {
         &self.vertex_ptr.get().unwrap()[index].neighbors
     }
     /// Get i'th vertex position; neighborlist; and data
-    pub fn get(&self, index: usize) -> (&Vector3, &[u16], &T) {
+    pub fn get(&self, index: usize) -> (&Vector3, &[u16], Option<&T>) {
         (
             &self.vertex_ptr.get().unwrap()[index].pos,
             &self.vertex_ptr.get().unwrap()[index].neighbors,
@@ -74,7 +74,7 @@ impl<T: Clone + GetSize> IcoTable<T> {
         self.iter_vertices().map(|v| &v.pos)
     }
     /// Iterate over vertex positions; neighborlists; and data
-    pub fn iter(&self) -> impl Iterator<Item = (&Vector3, &[u16], &T)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&Vector3, &[u16], Option<&T>)> {
         (0..self.data.len()).map(move |i| self.get(i))
     }
 
@@ -304,7 +304,7 @@ impl std::fmt::Display for IcoTable<f64> {
             let (_r, theta, phi) = crate::to_spherical(pos);
             writeln!(
                 f,
-                "{} {} {} {} {} {}",
+                "{} {} {} {} {} {:?}",
                 pos.x, pos.y, pos.z, theta, phi, data
             )?;
         }
@@ -347,7 +347,9 @@ impl IcoTableOfSpheres {
         let data_ab = Matrix3::<f64>::from_fn(|i, j| {
             *self
                 .get_data(face_a[i] as usize)
+                .unwrap()
                 .get_data(face_b[j] as usize)
+                .unwrap()
         });
         (bary_a.transpose() * data_ab * bary_b).to_scalar()
     }
