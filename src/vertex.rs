@@ -30,14 +30,16 @@ pub struct Vertices {
 
 /// Extract vertices and neightbourlists from an icosphere
 pub fn make_vertices(icosphere: &IcoSphere) -> Vec<Vertices> {
-    let indices = icosphere.get_all_indices();
-    let mut builder = AdjacencyBuilder::new(icosphere.raw_points().len());
-    builder.add_indices(indices.as_slice());
-    let neighbors = builder.finish().iter().map(|i| i.to_vec()).collect_vec();
     let vertex_positions = icosphere
         .raw_points()
         .iter()
         .map(|p| Vector3::new(p.x as f64, p.y as f64, p.z as f64));
+
+    // Get neighborlist for each vertex
+    let indices = icosphere.get_all_indices();
+    let mut builder = AdjacencyBuilder::new(icosphere.raw_points().len());
+    builder.add_indices(indices.as_slice());
+    let neighbors = builder.finish().iter().map(|i| i.to_vec()).collect_vec();
 
     assert!(vertex_positions.len() == neighbors.len());
 
