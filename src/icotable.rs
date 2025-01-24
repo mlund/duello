@@ -36,7 +36,7 @@ pub type Face = [u16; 3];
 /// 12 vertices will always have 5 neighbors; the rest will have 6.
 #[derive(Clone, GetSize)]
 pub struct IcoTable<T: Clone + GetSize> {
-    /// Reference counted pointer to vertex positions and neighbors
+    /// Reference counted pointer to vertex positions and neighbours
     /// We want only *one* copy of this, hence the ref. counted, thread-safe pointer
     #[get_size(size = 3)]
     vertices: Arc<OnceLock<Vec<Vertices>>>,
@@ -45,7 +45,7 @@ pub struct IcoTable<T: Clone + GetSize> {
 }
 
 impl<T: Clone + GetSize> IcoTable<T> {
-    /// Iterator over vertices (positions and neighbors)
+    /// Iterator over vertices `(positions, neighbors)`
     pub fn iter_vertices(&self) -> impl Iterator<Item = &Vertices> {
         self.vertices.get().unwrap().iter()
     }

@@ -49,14 +49,14 @@ pub use anglescan::{make_icosphere, make_icosphere_vertices, TwobodyAngles};
 /// - <https://github.com/charnley/rmsd>
 /// - <https://onlinelibrary.wiley.com/doi/full/10.1002/jcc.20296>
 /// - <https://www.ams.stonybrook.edu/~coutsias/papers/2004-rmsd.pdf>
-pub fn rmsd_angle(q1: &UnitQuaternion, q2: &UnitQuaternion) -> f64 {
+pub(crate) fn _rmsd_angle(q1: &UnitQuaternion, q2: &UnitQuaternion) -> f64 {
     // let q = q1 * q2.inverse();
     // q.angle().powi(2)
     q1.angle_to(q2).powi(2)
 }
 
 #[allow(non_snake_case)]
-pub fn rmsd2(Q: &UnitQuaternion, inertia: &Matrix3, total_mass: f64) -> f64 {
+pub(crate) fn _rmsd2(Q: &UnitQuaternion, inertia: &Matrix3, total_mass: f64) -> f64 {
     let q = Q.vector();
     4.0 / total_mass * (q.transpose() * inertia * q)[0]
 }

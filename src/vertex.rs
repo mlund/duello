@@ -28,6 +28,7 @@ pub struct Vertices {
     pub neighbors: Vec<u16>,
 }
 
+/// Extract vertices and neightbourlists from an icosphere
 pub fn make_vertices(icosphere: &Subdivided<(), IcoSphereBase>) -> Vec<Vertices> {
     let indices = icosphere.get_all_indices();
     let mut builder = AdjacencyBuilder::new(icosphere.raw_points().len());
@@ -49,7 +50,7 @@ pub fn make_vertices(icosphere: &Subdivided<(), IcoSphereBase>) -> Vec<Vertices>
         .collect()
 }
 
-/// Struct representing a vertex in the icosphere
+/// Struct representing data stored at vertices on an icosphere
 ///
 /// Interior mutability of vertex associated data is enabled using `std::sync::OnceLock`.
 #[derive(Clone, GetSize)]
@@ -70,6 +71,7 @@ impl<T: Clone + GetSize> DataOnVertex<T> {
             data: OnceLock::from(data),
         }
     }
+    /// Construct new uninitialized data
     pub fn uninitialized() -> Self {
         Self {
             data: OnceLock::new(),

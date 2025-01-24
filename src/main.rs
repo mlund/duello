@@ -16,7 +16,10 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use coulomb::{permittivity, DebyeLength, Medium, Salt, Vector3};
 use duello::{
-    anglescan::do_anglescan, energy, icoscan, icotable::IcoTable, structure::Structure,
+    anglescan::do_anglescan,
+    energy, icoscan,
+    icotable::IcoTable,
+    structure::{pqr_write_atom, Structure},
     to_cartesian, to_spherical, UnitQuaternion,
 };
 use faunus::{energy::NonbondedMatrix, topology::Topology};
@@ -115,8 +118,8 @@ enum Commands {
         /// Temperature in K
         #[arg(short = 'T', long, default_value = "298.15")]
         temperature: f64,
-        /// Use icosphere table
-        #[arg(long)]
+        /// Use icosphere table (default)
+        #[arg(long, default_value = "true")]
         icotable: bool,
         /// Optionally use fixed dielectric constant
         #[arg(long)]
@@ -204,6 +207,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
             pmf_file,
         )
     } else {
+        log::warn!("Using deprecated angle scanning; consider using --icotable");
         do_anglescan(
             distances,
             *resolution,
@@ -382,22 +386,6 @@ fn do_potential(cmd: &Commands) -> Result<()> {
             )?;
         }
     }
-    Ok(())
-}
-
-/// From single ATOM record in PQR file stream
-fn pqr_write_atom(
-    stream: &mut impl std::io::Write,
-    atom_id: usize,
-    pos: &Vector3,
-    charge: f64,
-    radius: f64,
-) -> Result<()> {
-    writeln!(
-        stream,
-        "ATOM  {:5} {:4.4} {:4.3}{:5}    {:8.3} {:8.3} {:8.3} {:.3} {:.3}",
-        atom_id, "A", "AAA", 1, pos.x, pos.y, pos.z, charge, radius
-    )?;
     Ok(())
 }
 

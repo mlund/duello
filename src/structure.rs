@@ -360,3 +360,19 @@ impl Display for Structure {
 fn to_vector3(pos: &[f64; 3]) -> Vector3 {
     Vector3::new(pos[0], pos[1], pos[2])
 }
+
+/// Write single ATOM record in PQR file stream
+pub fn pqr_write_atom(
+    stream: &mut impl std::io::Write,
+    atom_id: usize,
+    pos: &Vector3,
+    charge: f64,
+    radius: f64,
+) -> anyhow::Result<()> {
+    writeln!(
+        stream,
+        "ATOM  {:5} {:4.4} {:4.3}{:5}    {:8.3} {:8.3} {:8.3} {:.3} {:.3}",
+        atom_id, "A", "AAA", 1, pos.x, pos.y, pos.z, charge, radius
+    )?;
+    Ok(())
+}

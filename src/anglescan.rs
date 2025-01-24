@@ -43,6 +43,8 @@ use std::{
 ///
 /// Fibonacci sphere points are used to generate rotations around the z-axis.
 #[derive(Debug)]
+#[deprecated]
+
 pub struct TwobodyAngles {
     /// Rotations of the first body
     pub q1: Vec<UnitQuaternion>,

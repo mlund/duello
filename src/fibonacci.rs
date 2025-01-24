@@ -24,14 +24,14 @@ use std::f64::consts::PI;
 pub fn make_fibonacci_sphere(n_points: usize) -> Vec<Vector3> {
     assert!(n_points > 1, "n_points must be greater than 1");
     let phi = PI * (3.0 - f64::sqrt(5.0)); // golden angle in radians
-    let make_ith_point = |i: usize| -> Vector3 {
+    let make_point = |i: usize| -> Vector3 {
         let y = 1.0 - 2.0 * (i as f64 / (n_points - 1) as f64); // y goes from 1 to -1
         let radius = (1.0 - y * y).sqrt(); // radius at y
         let theta = phi * i as f64; // golden angle increment
         let (z, x) = theta.sin_cos();
         Vector3::new(x * radius, y, z * radius).normalize()
     };
-    (0..n_points).map(make_ith_point).collect()
+    (0..n_points).map(make_point).collect()
 }
 
 #[test]
