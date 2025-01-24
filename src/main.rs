@@ -16,7 +16,6 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use coulomb::{permittivity, DebyeLength, Medium, Salt, Vector3};
 use duello::{
-    anglescan::do_anglescan,
     energy, icoscan,
     icotable::IcoTable,
     structure::{pqr_write_atom, Structure},
@@ -24,7 +23,6 @@ use duello::{
 };
 use faunus::{energy::NonbondedMatrix, topology::Topology};
 // use indicatif::ProgressIterator;
-use itertools::Itertools;
 use std::{f64::consts::PI, fs::File, io::Write, ops::Neg, path::PathBuf};
 extern crate pretty_env_logger;
 #[macro_use]
@@ -143,7 +141,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         molarity,
         cutoff,
         temperature,
-        icotable,
+        icotable: _icotable,
         fixed_dielectric,
         pmf_file,
     } = cmd
@@ -188,36 +186,21 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         ref_b.total_mass(),
     );
 
-    // Scan over mass center distances
-    let distances = iter_num_tools::arange(*rmin..*rmax, *dr).collect_vec();
     info!(
         "COM range: [{:.1}, {:.1}) in {:.1} Å steps 🐾",
         rmin, rmax, dr
     );
-    if *icotable {
-        icoscan::do_icoscan(
-            *rmin,
-            *rmax,
-            *dr,
-            *resolution,
-            ref_a,
-            ref_b,
-            pair_matrix,
-            temperature,
-            pmf_file,
-        )
-    } else {
-        log::warn!("Using deprecated angle scanning; consider using --icotable");
-        do_anglescan(
-            distances,
-            *resolution,
-            ref_a,
-            ref_b,
-            pair_matrix,
-            temperature,
-            pmf_file,
-        )
-    }
+    icoscan::do_icoscan(
+        *rmin,
+        *rmax,
+        *dr,
+        *resolution,
+        ref_a,
+        ref_b,
+        pair_matrix,
+        temperature,
+        pmf_file,
+    )
 }
 
 fn do_dipole(cmd: &Commands) -> Result<()> {

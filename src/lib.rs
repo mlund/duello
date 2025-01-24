@@ -12,10 +12,10 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
-pub mod anglescan;
 pub mod energy;
 mod fibonacci;
 pub mod icoscan;
+mod icosphere;
 pub mod icotable;
 pub mod report;
 mod sample;
@@ -34,11 +34,12 @@ use std::f64::consts::PI;
 
 extern crate flate2;
 
+pub type IcoSphere = hexasphere::Subdivided<(), hexasphere::shapes::IcoSphereBase>;
 pub type Matrix3 = nalgebra::Matrix3<f64>;
 pub type Vector3 = nalgebra::Vector3<f64>;
 pub type UnitQuaternion = nalgebra::UnitQuaternion<f64>;
 
-pub use anglescan::{make_icosphere, make_icosphere_vertices, TwobodyAngles};
+pub use icosphere::*;
 
 /// RMSD angle between two quaternion rotations
 ///

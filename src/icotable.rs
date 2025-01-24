@@ -12,12 +12,12 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
-use super::{anglescan::*, make_vertices, table::PaddedTable, DataOnVertex, Vertices};
-use crate::Vector3;
+use crate::{
+    make_icosphere, make_vertices, table::PaddedTable, DataOnVertex, IcoSphere, Vector3, Vertices,
+};
 use anyhow::Result;
 use core::f64::consts::PI;
 use get_size::GetSize;
-use hexasphere::{shapes::IcoSphereBase, Subdivided};
 use itertools::Itertools;
 use nalgebra::Matrix3;
 use std::io::Write;
@@ -92,7 +92,7 @@ impl<T: Clone + GetSize> IcoTable<T> {
     }
 
     /// Generate table based on an existing subdivided icosaedron
-    fn from_icosphere_without_data(icosphere: &Subdivided<(), IcoSphereBase>) -> Self {
+    fn from_icosphere_without_data(icosphere: &IcoSphere) -> Self {
         if log::log_enabled!(log::Level::Debug) {
             vmd_draw(Path::new("icosphere.vmd"), icosphere, "green", Some(10.0)).unwrap();
         }
@@ -103,7 +103,7 @@ impl<T: Clone + GetSize> IcoTable<T> {
     }
 
     /// Generate table based on an existing subdivided icosaedron
-    pub fn from_icosphere(icosphere: &Subdivided<(), IcoSphereBase>, default_data: T) -> Self {
+    pub fn from_icosphere(icosphere: &IcoSphere, default_data: T) -> Self {
         let table = Self::from_icosphere_without_data(icosphere);
         table.set_vertex_data(|_, _| default_data.clone()).unwrap();
         table
@@ -397,7 +397,7 @@ impl Table6D {
 /// Visialize with: `vmd -e script.vmd`
 pub(crate) fn vmd_draw(
     path: &Path,
-    icosphere: &Subdivided<(), IcoSphereBase>,
+    icosphere: &IcoSphere,
     color: &str,
     scale: Option<f32>,
 ) -> anyhow::Result<()> {
@@ -420,7 +420,7 @@ pub(crate) fn vmd_draw(
 }
 
 /// Get list of all faces from an icosphere
-fn _get_faces_from_icosphere<T>(icosphere: Subdivided<T, IcoSphereBase>) -> Vec<Face> {
+fn _get_faces_from_icosphere<T>(icosphere: IcoSphere) -> Vec<Face> {
     icosphere
         .get_all_indices()
         .chunks(3)
@@ -453,7 +453,7 @@ impl IcoTable<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anglescan::make_icosphere;
+    use crate::make_icosphere;
     use approx::assert_relative_eq;
 
     #[test]

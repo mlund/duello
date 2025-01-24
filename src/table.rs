@@ -15,7 +15,7 @@
 use anyhow::Result;
 use get_size::GetSize;
 
-/// Periodic table that emulate periodicity by padding edges
+/// Periodic and equidistiant table that emulates periodicity by padding edges
 #[derive(Debug, Clone, GetSize)]
 pub struct PaddedTable<T: Clone> {
     /// Minimum key value
