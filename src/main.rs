@@ -116,9 +116,6 @@ enum Commands {
         /// Temperature in K
         #[arg(short = 'T', long, default_value = "298.15")]
         temperature: f64,
-        /// Use icosphere table (default)
-        #[arg(long, default_value = "true")]
-        icotable: bool,
         /// Optionally use fixed dielectric constant
         #[arg(long)]
         fixed_dielectric: Option<f64>,
@@ -141,7 +138,6 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         molarity,
         cutoff,
         temperature,
-        icotable: _icotable,
         fixed_dielectric,
         pmf_file,
     } = cmd
@@ -372,6 +368,7 @@ fn do_potential(cmd: &Commands) -> Result<()> {
     Ok(())
 }
 
+// Wrapper for main function to handle errors
 fn do_main() -> Result<()> {
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info");
