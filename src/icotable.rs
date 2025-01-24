@@ -83,7 +83,6 @@ impl<T: Clone + GetSize> IcoTable<T> {
         let indices = icosphere.get_all_indices();
         let mut builder = AdjacencyBuilder::new(icosphere.raw_points().len());
         builder.add_indices(indices.as_slice());
-        let neighbors = builder.finish().iter().map(|i| i.to_vec()).collect_vec();
         let vertex_positions: Vec<Vector3> = icosphere
             .raw_points()
             .iter()
@@ -95,12 +94,7 @@ impl<T: Clone + GetSize> IcoTable<T> {
         }
 
         let vertices = (0..vertex_positions.len())
-            .map(|i| {
-                DataOnVertex::without_data(
-                    vertex_positions[i],
-                    neighbors[i].iter().map(|i| *i as u16).collect_vec(),
-                )
-            })
+            .map(|i| DataOnVertex::without_data(vertex_positions[i]))
             .collect();
 
         let ol = OnceLock::new();
