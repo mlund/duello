@@ -79,8 +79,23 @@ impl<T: Clone + GetSize> IcoTable<T> {
         (0..self.data.len()).map(move |i| self.get(i))
     }
 
+    /// Generate table based on an existing vertex_ptr
+    pub fn from_vertex_ptr(
+        vertex_ptr: Arc<OnceLock<Vec<VertexPosAndNeighbors>>>,
+        data: Option<T>,
+    ) -> Self {
+        let data = match data {
+            Some(data) => DataOnVertex::from(data),
+            None => DataOnVertex::default(),
+        };
+        Self {
+            vertex_ptr: vertex_ptr.clone(),
+            data: vec![data; vertex_ptr.get().unwrap().len()],
+        }
+    }
+
     /// Generate table based on an existing subdivided icosaedron
-    pub fn from_icosphere_without_data(icosphere: &Subdivided<(), IcoSphereBase>) -> Self {
+    fn from_icosphere_without_data(icosphere: &Subdivided<(), IcoSphereBase>) -> Self {
         if log::log_enabled!(log::Level::Debug) {
             vmd_draw(Path::new("icosphere.vmd"), icosphere, "green", Some(10.0)).unwrap();
         }
@@ -314,7 +329,8 @@ impl IcoTableOfSpheres {
     /// Generate table based on a minimum number of vertices on the subdivided icosaedron
     pub fn from_min_points(min_points: usize, default_data: IcoTable<f64>) -> Result<Self> {
         let icosphere = make_icosphere(min_points)?;
-        Ok(Self::from_icosphere(&icosphere, default_data))
+        let vertex_ptr = Arc::new(OnceLock::from(make_vertex_vec(&icosphere)));
+        Ok(Self::from_vertex_ptr(vertex_ptr, Some(default_data)))
     }
 
     /// Interpolate data between two faces
@@ -348,12 +364,18 @@ pub type Table6D = PaddedTable<PaddedTable<IcoTableOfSpheres>>;
 impl Table6D {
     pub fn from_resolution(r_min: f64, r_max: f64, dr: f64, angle_resolution: f64) -> Result<Self> {
         let n_points = (4.0 * PI / angle_resolution.powi(2)).round() as usize;
-        let table1 = IcoTable::<f64>::from_min_points(n_points)?; // B: 𝜃 and 𝜑
-                                                                  // update angular resolution according to icosphere
+
+        // Make exactly *one* copy of vertex positions and neighbors
+        // Data on the inner table3 is left empty and should be set later
+        let icosphere = make_icosphere(n_points)?;
+        let vertices = Arc::new(OnceLock::from(make_vertex_vec(&icosphere)));
+        let table1 = IcoTable::<f64>::from_vertex_ptr(vertices.clone(), None);
+
+        // update angular resolution according to icosphere
         let angle_resolution = table1.angle_resolution();
-        let n_points = table1.data.len();
+        // let n_points = table1.data.len();
         log::info!("Actual angle resolution = {:.2} radians", angle_resolution);
-        let table2 = IcoTableOfSpheres::from_min_points(n_points, table1)?; // A: 𝜃 and 𝜑
+        let table2 = IcoTableOfSpheres::from_vertex_ptr(vertices, Some(table1)); // A: 𝜃 and 𝜑
         let table3 = PaddedTable::<IcoTableOfSpheres>::new(0.0, 2.0 * PI, angle_resolution, table2); // 𝜔
         Ok(Self::new(r_min, r_max, dr, table3)) // R
     }

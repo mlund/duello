@@ -3,8 +3,9 @@
 example=$(basename "$0" .sh)
 
 cd examples/${example}
-RUST_LOG="Info" cargo run --release \
-    -- scan \
+#RUST_LOG="Info" cargo run --release \
+RUST_LOG="Info" duello \
+    scan \
     -1 cppm-p18.xyz \
     -2 cppm-p18.xyz \
     --icotable \
