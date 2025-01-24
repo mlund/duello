@@ -13,8 +13,6 @@
 // limitations under the license.
 
 use crate::Vector3;
-#[cfg(test)]
-use approx::assert_relative_eq;
 use std::f64::consts::PI;
 
 /// Generates n points uniformly distributed on a unit sphere
@@ -38,6 +36,7 @@ pub fn make_fibonacci_sphere(n_points: usize) -> Vec<Vector3> {
 
 #[test]
 fn test_fibonacci_sphere() {
+    use approx::assert_relative_eq;
     let samples = 1000;
     let points_on_sphere = make_fibonacci_sphere(samples);
     let mut center: Vector3 = Vector3::zeros();
