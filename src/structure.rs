@@ -13,6 +13,7 @@
 // limitations under the license.
 
 use crate::Vector3;
+use anyhow::Context;
 use chemfiles::Frame;
 use faunus::topology::AtomKind;
 use itertools::Itertools;
@@ -81,13 +82,7 @@ impl Structure {
     /// Constructs a new structure from an XYZ file, centering the structure at the origin
     pub fn from_xyz(path: &PathBuf, atomkinds: &[AtomKind]) -> anyhow::Result<Self> {
         let nxyz: Vec<(String, Vector3)> = std::fs::read_to_string(path)
-            .or_else(|e| {
-                anyhow::bail!(
-                    "Could not read XYZ file {}: {}",
-                    path.display(),
-                    e.to_string()
-                )
-            })?
+            .context(format!("Could not read XYZ file {}", path.display()))?
             .lines()
             .skip(2) // skip header
             .map(from_xyz_line)
@@ -105,8 +100,14 @@ impl Structure {
 
         let masses = nxyz
             .iter()
-            .map(|(name, _)| atomkinds.iter().find(|i| i.name() == name).unwrap().mass())
-            .collect();
+            .map(|(name, _)| {
+                atomkinds
+                    .iter()
+                    .find(|i| i.name() == name)
+                    .context(format!("Unknown atom name in XYZ file: {}", name))
+                    .and_then(|i| Ok(i.mass()))
+            })
+            .try_collect()?;
 
         let charges = nxyz
             .iter()
@@ -156,7 +157,7 @@ impl Structure {
                 atomkinds
                     .iter()
                     .position(|j| j.name() == i.name)
-                    .ok_or_else(|| anyhow::anyhow!("Unknown atom name in AAM file: {}", i.name))
+                    .context(format!("Unknown atom name in AAM file: {}", i.name))
             })
             .try_collect()?;
 
