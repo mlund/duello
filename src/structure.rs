@@ -15,41 +15,13 @@
 use crate::Vector3;
 use anyhow::Context;
 use chemfiles::Frame;
-use faunus::topology::AtomKind;
+use faunus::topology::{AtomKind, FindByName};
 use itertools::Itertools;
 use nalgebra::Matrix3;
 use std::{
     fmt::{self, Display, Formatter},
     path::PathBuf,
 };
-
-/// Ancient AAM file format from Faunus
-#[derive(Debug, Default)]
-pub struct AminoAcidModelRecord {
-    pub name: String,
-    pub pos: Vector3,
-    pub charge: f64,
-    pub mass: f64,
-    pub radius: f64,
-}
-
-impl AminoAcidModelRecord {
-    pub fn from_line(line: &str) -> anyhow::Result<Self> {
-        if let Some([name, _, x, y, z, charge, mass, radius]) =
-            line.split_whitespace().collect_array()
-        {
-            Ok(Self {
-                name: name.to_string(),
-                pos: Vector3::new(x.parse()?, y.parse()?, z.parse()?),
-                charge: charge.parse()?,
-                mass: mass.parse()?,
-                radius: radius.parse()?,
-            })
-        } else {
-            anyhow::bail!("Invalid AAM record: {}", line);
-        }
-    }
-}
 
 /// Ad hoc molecular structure containing atoms with positions, masses, charges, and radii
 #[derive(Debug, Clone)]
@@ -66,18 +38,6 @@ pub struct Structure {
     pub atom_ids: Vec<usize>,
 }
 
-/// Parse a single line from an XYZ file
-fn from_xyz_line(line: &str) -> anyhow::Result<(String, Vector3)> {
-    if let Some([name, x, y, z]) = line.split_whitespace().collect_array() {
-        Ok((
-            name.to_string(),
-            Vector3::new(x.parse()?, y.parse()?, z.parse()?),
-        ))
-    } else {
-        anyhow::bail!("'name x y z' expected in XYZ record: {}", line);
-    }
-}
-
 impl Structure {
     /// Constructs a new structure from an XYZ file, centering the structure at the origin
     pub fn from_xyz(path: &PathBuf, atomkinds: &[AtomKind]) -> anyhow::Result<Self> {
@@ -92,9 +52,9 @@ impl Structure {
             .iter()
             .map(|(name, _)| {
                 atomkinds
-                    .iter()
-                    .position(|j| j.name() == name)
-                    .ok_or_else(|| anyhow::anyhow!("Unknown atom name in XYZ file: {}", name))
+                    .find_name(name)
+                    .map(|kind| kind.id())
+                    .context(format!("Unknown atom name in structure file: {:?}", name))
             })
             .try_collect()?;
 
@@ -102,10 +62,9 @@ impl Structure {
             .iter()
             .map(|(name, _)| {
                 atomkinds
-                    .iter()
-                    .find(|i| i.name() == name)
+                    .find_name(name)
+                    .map(|kind| kind.mass())
                     .context(format!("Unknown atom name in XYZ file: {}", name))
-                    .and_then(|i| Ok(i.mass()))
             })
             .try_collect()?;
 
@@ -113,24 +72,21 @@ impl Structure {
             .iter()
             .map(|(name, _)| {
                 atomkinds
-                    .iter()
-                    .find(|i| i.name() == name)
-                    .unwrap()
-                    .charge()
+                    .find_name(name)
+                    .map(|i| i.charge())
+                    .context(format!("Unknown atom name in XYZ file: {}", name))
             })
-            .collect::<Vec<f64>>();
+            .try_collect()?;
 
         let radii = nxyz
             .iter()
             .map(|(name, _)| {
                 atomkinds
-                    .iter()
-                    .find(|i| i.name() == name)
-                    .unwrap()
-                    .sigma()
-                    .unwrap_or(0.0)
+                    .find_name(name)
+                    .map(|i| i.sigma().unwrap_or(0.0) * 0.5)
+                    .context(format!("Unknown atom name in XYZ file: {}", name))
             })
-            .collect();
+            .try_collect()?;
         let mut structure = Self {
             pos: nxyz.iter().map(|(_, pos)| *pos).collect(),
             masses,
@@ -155,9 +111,9 @@ impl Structure {
             .iter()
             .map(|i| {
                 atomkinds
-                    .iter()
-                    .position(|j| j.name() == i.name)
-                    .context(format!("Unknown atom name in AAM file: {}", i.name))
+                    .find_name(&i.name)
+                    .map(|kind| kind.id())
+                    .context(format!("Unknown atom name in structure file: {:?}", i.name))
             })
             .try_collect()?;
 
@@ -174,28 +130,25 @@ impl Structure {
     }
 
     /// Constructs a new structure from a chemfiles trajectory file
-    pub fn from_chemfiles(path: &PathBuf, atomkinds: &[AtomKind]) -> Self {
-        let mut traj = chemfiles::Trajectory::open(path, 'r').unwrap();
+    pub fn from_chemfiles(path: &PathBuf, atomkinds: &[AtomKind]) -> anyhow::Result<Self> {
+        let mut traj = chemfiles::Trajectory::open(path, 'r')
+            .context(format!("Could not open trajectory file {}", path.display()))?;
         let mut frame = Frame::new();
-        traj.read(&mut frame).unwrap();
-        let masses = frame
-            .iter_atoms()
-            .map(|atom| atom.mass())
-            .collect::<Vec<f64>>();
-        let positions = frame
-            .positions()
-            .iter()
-            .map(to_vector3)
-            .collect::<Vec<Vector3>>();
+        traj.read(&mut frame)?;
+        let masses = frame.iter_atoms().map(|atom| atom.mass()).collect();
+        let positions = frame.positions().iter().map(to_vector3).collect();
         let atom_ids = frame
             .iter_atoms()
             .map(|atom| {
                 atomkinds
-                    .iter()
-                    .position(|kind| kind.name() == atom.name())
-                    .unwrap_or_else(|| panic!("Unknown atom name in structure file: {:?}", atom))
+                    .find_name(&atom.name())
+                    .map(|kind| kind.id())
+                    .context(format!(
+                        "Unknown atom name in structure file: {:?}",
+                        atom.name()
+                    ))
             })
-            .collect::<Vec<usize>>();
+            .try_collect()?;
         let mut structure = Self {
             pos: positions,
             masses,
@@ -205,18 +158,17 @@ impl Structure {
         };
         let center = structure.mass_center();
         structure.translate(&-center);
-        structure
+        Ok(structure)
     }
 
     /// Returns the center of mass of the structure
     pub fn mass_center(&self) -> Vector3 {
-        let total_mass: f64 = self.masses.iter().sum();
         self.pos
             .iter()
             .zip(&self.masses)
             .map(|(pos, mass)| pos.scale(*mass))
             .fold(Vector3::zeros(), |sum, i| sum + i)
-            / total_mass
+            / self.total_mass()
     }
     /// Translates the coordinates by a displacement vector
     pub fn translate(&mut self, displacement: &Vector3) {
@@ -224,8 +176,8 @@ impl Structure {
     }
 
     /// Transform the coordinates using a function
-    pub fn transform(&mut self, f: impl Fn(Vector3) -> Vector3) {
-        self.pos.iter_mut().for_each(|pos| *pos = f(*pos));
+    pub fn transform(&mut self, func: impl Fn(Vector3) -> Vector3) {
+        self.pos.iter_mut().for_each(|pos| *pos = func(*pos));
     }
 
     /// Net charge of the structure
@@ -362,6 +314,18 @@ fn to_vector3(pos: &[f64; 3]) -> Vector3 {
     Vector3::new(pos[0], pos[1], pos[2])
 }
 
+/// Parse a single line from an XYZ file
+fn from_xyz_line(line: &str) -> anyhow::Result<(String, Vector3)> {
+    if let Some([name, x, y, z]) = line.split_whitespace().collect_array() {
+        Ok((
+            name.to_string(),
+            Vector3::new(x.parse()?, y.parse()?, z.parse()?),
+        ))
+    } else {
+        anyhow::bail!("'name x y z' expected in XYZ record: {}", line);
+    }
+}
+
 /// Write single ATOM record in PQR file stream
 pub fn pqr_write_atom(
     stream: &mut impl std::io::Write,
@@ -376,4 +340,32 @@ pub fn pqr_write_atom(
         atom_id, "A", "AAA", 1, pos.x, pos.y, pos.z, charge, radius
     )?;
     Ok(())
+}
+
+/// Ancient AAM file format from Faunus
+#[derive(Debug, Default)]
+pub struct AminoAcidModelRecord {
+    pub name: String,
+    pub pos: Vector3,
+    pub charge: f64,
+    pub mass: f64,
+    pub radius: f64,
+}
+
+impl AminoAcidModelRecord {
+    pub fn from_line(line: &str) -> anyhow::Result<Self> {
+        if let Some([name, _, x, y, z, charge, mass, radius]) =
+            line.split_whitespace().collect_array()
+        {
+            Ok(Self {
+                name: name.to_string(),
+                pos: Vector3::new(x.parse()?, y.parse()?, z.parse()?),
+                charge: charge.parse()?,
+                mass: mass.parse()?,
+                radius: radius.parse()?,
+            })
+        } else {
+            anyhow::bail!("Invalid AAM record: {}", line);
+        }
+    }
 }

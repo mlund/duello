@@ -15,6 +15,9 @@
 use anyhow::Result;
 use get_size::GetSize;
 
+pub type PaddedTable1D = PaddedTable<f64>;
+pub type PaddedTable2D = PaddedTable<PaddedTable1D>;
+
 /// Periodic and equidistiant table that emulates periodicity by padding edges
 #[derive(Debug, Clone, GetSize)]
 pub struct PaddedTable<T: Clone> {
@@ -105,9 +108,6 @@ impl<T: Clone> PaddedTable<T> {
         self.data.is_empty()
     }
 }
-
-pub type PaddedTable1D = PaddedTable<f64>;
-pub type PaddedTable2D = PaddedTable<PaddedTable1D>;
 
 #[cfg(test)]
 mod tests {

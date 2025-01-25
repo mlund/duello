@@ -13,6 +13,7 @@
 // limitations under the license.
 
 use crate::{Sample, VirialCoeff};
+use anyhow::Context;
 use coulomb::Vector3;
 use nu_ansi_term::Color::{Red, Yellow};
 use rgb::RGB8;
@@ -26,7 +27,7 @@ pub fn report_pmf(
     masses: Option<(f64, f64)>,
 ) -> anyhow::Result<()> {
     // File with F(R) and U(R)
-    let mut pmf_file = File::create(path).unwrap();
+    let mut pmf_file = File::create(path).context("Cannot create pmf file")?;
     let mut pmf_data = Vec::<(f32, f32)>::new();
     let mut mean_energy_data = Vec::<(f32, f32)>::new();
     writeln!(pmf_file, "# R/Å F/kT U/kT C/R")?;

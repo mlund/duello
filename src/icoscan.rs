@@ -68,7 +68,7 @@ pub fn do_icoscan(
     pmf_file: &PathBuf,
 ) -> std::result::Result<(), anyhow::Error> {
     let table = Table6D::from_resolution(rmin, rmax, dr, angle_resolution)?;
-    let n_vertices = table.get(rmin).unwrap().get(0.0).unwrap().len();
+    let n_vertices = table.get(rmin)?.get(0.0)?.len();
     let angle_resolution = (4.0 * PI / n_vertices as f64).sqrt();
     let dihedral_angles = arange(0.0..2.0 * PI, angle_resolution).collect_vec();
     let distances = arange(rmin..rmax, dr).collect_vec();
@@ -96,7 +96,7 @@ pub fn do_icoscan(
                 let (oriented_a, oriented_b) =
                     orient_structures(r, omega, *pos_a, *pos_b, &ref_a, &ref_b);
                 let energy = pair_matrix.sum_energy(&oriented_a, &oriented_b);
-                data_b.set(energy).unwrap();
+                data_b.set(energy).expect("Energy already calculated");
             });
     };
 

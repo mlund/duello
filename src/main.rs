@@ -147,6 +147,8 @@ fn do_scan(cmd: &Commands) -> Result<()> {
     assert!(rmin < rmax);
 
     let mut topology = Topology::from_file_partial(top_file)?;
+    topology.finalize_atoms()?;
+    topology.finalize_molecules()?;
     faunus::topology::set_missing_epsilon(topology.atomkinds_mut(), 2.479);
 
     // Either use fixed dielectric constant or calculate it from the medium

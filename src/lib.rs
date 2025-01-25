@@ -71,11 +71,9 @@ pub fn to_spherical(cartesian: &Vector3) -> (f64, f64, f64) {
     let r = cartesian.norm();
     let theta = (cartesian.z / r).acos();
     let phi = cartesian.y.atan2(cartesian.x);
-    if phi < 0.0 {
-        (r, theta, phi + 2.0 * PI)
-    } else {
-        (r, theta, phi)
-    }
+    // Ensure phi is in the range [0..2pi)
+    let phi = (phi + 2.0 * PI) % (2.0 * PI);
+    (r, theta, phi)
 }
 
 /// Converts spherical coordinates (r, theta, phi) to Cartesian coordinates

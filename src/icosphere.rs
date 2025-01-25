@@ -55,12 +55,12 @@ pub fn make_icosphere(min_points: usize) -> Result<IcoSphere> {
 /// assert_eq!(vertices.len(), 42);
 /// ~~~
 pub fn make_icosphere_vertices(min_points: usize) -> Result<Vec<Vector3>> {
-    let points = make_icosphere(min_points)?
+    let vertex_positions = make_icosphere(min_points)?
         .raw_points()
         .iter()
         .map(|p| Vector3::new(p.x as f64, p.y as f64, p.z as f64))
         .collect();
-    Ok(points)
+    Ok(vertex_positions)
 }
 
 #[cfg(test)]

@@ -24,6 +24,16 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
+/// A icotable where each vertex holds an icotable of floats
+pub type IcoTableOfSpheres = IcoTable<IcoTable<f64>>;
+
+/// A 6D table for relative twobody orientations, R → 𝜔 → (𝜃𝜑) → (𝜃𝜑)
+///
+/// The first two dimensions are radial distances and dihedral angles.
+/// The last two dimensions are polar and azimuthal angles represented via icospheres.
+/// The final `f64` data is stored at vertices of the deepest icospheres.
+pub type Table6D = PaddedTable<PaddedTable<IcoTableOfSpheres>>;
+
 /// Represents indices of a face
 pub type Face = [u16; 3];
 
@@ -318,9 +328,6 @@ impl std::fmt::Display for IcoTable<f64> {
     }
 }
 
-/// A icotable where each vertex holds an icotable of floats
-pub type IcoTableOfSpheres = IcoTable<IcoTable<f64>>;
-
 impl IcoTableOfSpheres {
     /// Get flat iterator that runs over all pairs of (&pos_a, &pos_b, &OnceLockf64)
     pub fn flat_iter(&self) -> impl Iterator<Item = (&Vector3, &Vector3, &OnceLock<f64>)> {
@@ -359,13 +366,6 @@ impl IcoTableOfSpheres {
         (bary_a.transpose() * data_ab * bary_b).to_scalar()
     }
 }
-
-/// A 6D table for relative twobody orientations, R → 𝜔 → (𝜃𝜑) → (𝜃𝜑)
-///
-/// The first two dimensions are radial distances and dihedral angles.
-/// The last two dimensions are polar and azimuthal angles represented via icospheres.
-/// The final `f64` data is stored at vertices of the deepest icospheres.
-pub type Table6D = PaddedTable<PaddedTable<IcoTableOfSpheres>>;
 
 impl Table6D {
     pub fn from_resolution(r_min: f64, r_max: f64, dr: f64, angle_resolution: f64) -> Result<Self> {
@@ -420,7 +420,7 @@ pub(crate) fn vmd_draw(
 }
 
 /// Get list of all faces from an icosphere
-fn _get_faces_from_icosphere<T>(icosphere: IcoSphere) -> Vec<Face> {
+fn _get_faces_from_icosphere(icosphere: IcoSphere) -> Vec<Face> {
     icosphere
         .get_all_indices()
         .chunks(3)
