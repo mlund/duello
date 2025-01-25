@@ -99,9 +99,9 @@ impl Structure {
                 atomkinds
                     .iter()
                     .position(|j| j.name() == name)
-                    .unwrap_or_else(|| panic!("Unknown atom name in XYZ file: {}", name))
+                    .ok_or_else(|| anyhow::anyhow!("Unknown atom name in XYZ file: {}", name))
             })
-            .collect();
+            .try_collect()?;
 
         let masses = nxyz
             .iter()
