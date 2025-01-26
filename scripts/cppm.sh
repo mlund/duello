@@ -7,7 +7,7 @@ RUST_LOG="Info" cargo run --release -- \
     scan \
     -1 cppm-p18.xyz \
     -2 cppm-p18.xyz \
-    --rmin 37 --rmax 121 --dr 0.5 \
+    --rmin 37 --rmax 121 --dr 2.0 \
     --top topology.yaml \
     --resolution 0.8 \
     --cutoff 1000 \

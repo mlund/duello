@@ -81,7 +81,7 @@ pub fn do_icoscan(
         n_vertices,
         n_vertices,
         n_total,
-        table.get_heap_size() as f64 / 1e6
+        table.get_size() as f64 / f64::powi(1024.0, 2)
     );
 
     // Calculate energy of all two-body poses for given mass center separation and dihedral angle

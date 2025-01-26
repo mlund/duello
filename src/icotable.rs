@@ -12,9 +12,7 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
-use crate::{
-    make_icosphere, make_vertices, table::PaddedTable, DataOnVertex, IcoSphere, Vector3, Vertices,
-};
+use crate::{make_icosphere, make_vertices, table::PaddedTable, IcoSphere, Vector3, Vertex};
 use anyhow::Result;
 use core::f64::consts::PI;
 use get_size::GetSize;
@@ -44,19 +42,28 @@ pub type Face = [u16; 3];
 ///
 /// https://en.wikipedia.org/wiki/Geodesic_polyhedron
 /// 12 vertices will always have 5 neighbors; the rest will have 6.
+///
+/// Vertex positions and neighbor information are available through a shared pointer.
+/// To enable concurrent write access, data is wrapped with `OnceLock` which allows
+/// setting data only once.
 #[derive(Clone, GetSize)]
 pub struct IcoTable<T: Clone + GetSize> {
     /// Reference counted pointer to vertex positions and neighbours
     /// We want only *one* copy of this, hence the ref. counted, thread-safe pointer
-    #[get_size(size = 3)]
-    vertices: Arc<OnceLock<Vec<Vertices>>>,
+    #[get_size(size = 8)]
+    vertices: Arc<OnceLock<Vec<Vertex>>>,
     /// Vertex information (position, data, neighbors)
-    data: Vec<DataOnVertex<T>>,
+    #[get_size(size_fn = oncelock_size_helper)]
+    data: Vec<OnceLock<T>>,
+}
+
+fn oncelock_size_helper<T: GetSize>(value: &Vec<OnceLock<T>>) -> usize {
+    value.get_size() + std::mem::size_of::<T>() * value.len()
 }
 
 impl<T: Clone + GetSize> IcoTable<T> {
     /// Iterator over vertices `(positions, neighbors)`
-    pub fn iter_vertices(&self) -> impl Iterator<Item = &Vertices> {
+    pub fn iter_vertices(&self) -> impl Iterator<Item = &Vertex> {
         self.vertices.get().unwrap().iter()
     }
     /// Get i'th vertex position
@@ -65,7 +72,7 @@ impl<T: Clone + GetSize> IcoTable<T> {
     }
     /// Get i'th data or `None`` if uninitialized
     pub fn get_data(&self, index: usize) -> &OnceLock<T> {
-        &self.data[index].data
+        &self.data[index]
     }
     /// Get i'th neighbors
     pub fn get_neighbors(&self, index: usize) -> &[u16] {
@@ -89,12 +96,9 @@ impl<T: Clone + GetSize> IcoTable<T> {
     }
 
     /// Generate table based on an existing vertices pointer and optionally set default data
-    pub fn from_vertices(vertices: Arc<OnceLock<Vec<Vertices>>>, data: Option<T>) -> Self {
+    pub fn from_vertices(vertices: Arc<OnceLock<Vec<Vertex>>>, data: Option<T>) -> Self {
         let num_vertices = vertices.get().unwrap().len();
-        let data = match data {
-            Some(data) => DataOnVertex::from(data),
-            None => DataOnVertex::uninitialized(),
-        };
+        let data = data.map(|d| OnceLock::from(d)).unwrap_or(OnceLock::new());
         Self {
             vertices,
             data: vec![data; num_vertices],
@@ -108,7 +112,7 @@ impl<T: Clone + GetSize> IcoTable<T> {
         }
         Self {
             vertices: Arc::new(OnceLock::from(make_vertices(icosphere))),
-            data: vec![DataOnVertex::uninitialized(); icosphere.raw_points().len()],
+            data: vec![OnceLock::new(); icosphere.raw_points().len()],
         }
     }
 
@@ -138,7 +142,7 @@ impl<T: Clone + GetSize> IcoTable<T> {
     /// The function takes the index of the vertex and its position
     /// Due to the `OnceLock` wrap, this can be done only once!
     pub fn set_vertex_data(&self, f: impl Fn(usize, &Vector3) -> T) -> anyhow::Result<()> {
-        if self.data.iter().any(|v| v.data.get().is_some()) {
+        if self.data.iter().any(|v| v.get().is_some()) {
             anyhow::bail!("Data already set for some vertices")
         }
         self.iter().enumerate().try_for_each(|(i, (pos, _, data))| {
@@ -154,14 +158,14 @@ impl<T: Clone + GetSize> IcoTable<T> {
     ///
     /// After this call, `set_vertex_data` can be called again.
     pub fn clear_vertex_data(&mut self) {
-        for vertex in self.data.iter_mut() {
-            vertex.data = OnceLock::new();
+        for data in self.data.iter_mut() {
+            *data = OnceLock::new();
         }
     }
 
     /// Get data associated with each vertex
     pub fn vertex_data(&self) -> impl Iterator<Item = &T> {
-        self.data.iter().map(|v| v.data.get().unwrap())
+        self.data.iter().map(|v| v.get().unwrap())
     }
 
     /// Transform vertex positions using a function
@@ -173,7 +177,7 @@ impl<T: Clone + GetSize> IcoTable<T> {
             .map(|v| {
                 let pos = f(&v.pos);
                 let neighbors = v.neighbors.clone();
-                Vertices { pos, neighbors }
+                Vertex { pos, neighbors }
             })
             .collect_vec();
         self.vertices = Arc::new(OnceLock::from(new_vertices));
@@ -437,9 +441,9 @@ impl IcoTable<f64> {
     pub fn interpolate(&self, point: &Vector3) -> f64 {
         let face = self.nearest_face(point);
         let bary = self.barycentric(point, &face);
-        bary[0] * self.data[face[0] as usize].data.get().unwrap()
-            + bary[1] * self.data[face[1] as usize].data.get().unwrap()
-            + bary[2] * self.data[face[2] as usize].data.get().unwrap()
+        bary[0] * self.data[face[0] as usize].get().unwrap()
+            + bary[1] * self.data[face[1] as usize].get().unwrap()
+            + bary[2] * self.data[face[2] as usize].get().unwrap()
     }
     /// Generate table based on a minimum number of vertices on the subdivided icosaedron
     ///

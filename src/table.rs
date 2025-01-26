@@ -20,7 +20,7 @@ pub type PaddedTable2D = PaddedTable<PaddedTable1D>;
 
 /// Periodic and equidistiant table that emulates periodicity by padding edges
 #[derive(Debug, Clone, GetSize)]
-pub struct PaddedTable<T: Clone> {
+pub struct PaddedTable<T: Clone + GetSize> {
     /// Minimum key value
     min: f64,
     /// Maximum key value
@@ -31,7 +31,7 @@ pub struct PaddedTable<T: Clone> {
     data: Vec<T>,
 }
 
-impl<T: Clone> PaddedTable<T> {
+impl<T: Clone + GetSize> PaddedTable<T> {
     pub fn new(min: f64, max: f64, step: f64, initial_value: T) -> PaddedTable<T> {
         assert!(min < max && step > 0.0);
         let n = ((max - min + 2.0 * step) / step + 0.5) as usize;
