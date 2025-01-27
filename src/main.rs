@@ -22,7 +22,7 @@ use duello::{
     SphericalCoord, UnitQuaternion,
 };
 use faunus::{energy::NonbondedMatrix, topology::Topology};
-// use indicatif::ProgressIterator;
+use std::process::ExitCode;
 use std::{f64::consts::PI, fs::File, io::Write, ops::Neg, path::PathBuf};
 extern crate pretty_env_logger;
 #[macro_use]
@@ -391,9 +391,11 @@ fn do_main() -> Result<()> {
     Ok(())
 }
 
-fn main() {
+fn main() -> ExitCode {
     if let Err(err) = do_main() {
         eprintln!("Error: {}", &err);
-        std::process::exit(1);
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }
