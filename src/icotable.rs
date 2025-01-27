@@ -323,11 +323,16 @@ impl std::fmt::Display for IcoTable2D<f64> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "# x y z θ φ data")?;
         for (pos, _, data) in self.iter() {
-            let (_r, theta, phi) = crate::to_spherical(pos);
+            let spherical = crate::SphericalCoord::from_cartesian(*pos);
             writeln!(
                 f,
                 "{} {} {} {} {} {:?}",
-                pos.x, pos.y, pos.z, theta, phi, data
+                pos.x,
+                pos.y,
+                pos.z,
+                spherical.theta(),
+                spherical.phi(),
+                data
             )?;
         }
         Ok(())

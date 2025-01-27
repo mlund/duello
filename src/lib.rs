@@ -19,18 +19,19 @@ mod icosphere;
 pub mod icotable;
 pub mod report;
 mod sample;
+mod spherical;
 pub mod structure;
 pub mod table;
 mod vertex;
 mod virial;
 pub use fibonacci::make_fibonacci_sphere;
 pub use sample::Sample;
+pub use spherical::SphericalCoord;
 pub use vertex::*;
 pub use virial::VirialCoeff;
 extern crate pretty_env_logger;
 #[macro_use]
 extern crate log;
-use std::f64::consts::PI;
 
 extern crate flate2;
 
@@ -60,50 +61,4 @@ pub(crate) fn _rmsd_angle(q1: &UnitQuaternion, q2: &UnitQuaternion) -> f64 {
 pub(crate) fn _rmsd2(Q: &UnitQuaternion, inertia: &Matrix3, total_mass: f64) -> f64 {
     let q = Q.vector();
     4.0 / total_mass * (q.transpose() * inertia * q)[0]
-}
-
-/// Converts Cartesian coordinates to spherical coordinates (r, theta, phi)
-/// where:
-/// - r is the radius
-/// - theta is the polar angle (0..pi)
-/// - phi is the azimuthal angle (0..2pi)
-pub fn to_spherical(cartesian: &Vector3) -> (f64, f64, f64) {
-    let r = cartesian.norm();
-    let theta = (cartesian.z / r).acos();
-    let phi = cartesian.y.atan2(cartesian.x);
-    // Ensure phi is in the range [0..2pi)
-    let phi = (phi + 2.0 * PI) % (2.0 * PI);
-    (r, theta, phi)
-}
-
-/// Converts spherical coordinates (r, theta, phi) to Cartesian coordinates
-/// where:
-/// - r is the radius
-/// - theta is the polar angle (0..pi)
-/// - phi is the azimuthal angle (0..2pi)
-pub fn to_cartesian(r: f64, theta: f64, phi: f64) -> Vector3 {
-    let (theta_sin, theta_cos) = theta.sin_cos();
-    let (phi_sin, phi_cos) = phi.sin_cos();
-    Vector3::new(theta_sin * phi_cos, theta_sin * phi_sin, theta_cos).scale(r)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use approx::assert_relative_eq;
-    use iter_num_tools::arange;
-
-    #[test]
-    fn test_spherical_cartesian_conversion() {
-        const ANGLE_TOL: f64 = 1e-6;
-        // Skip theta = 0 as phi is undefined
-        for theta in arange(0.00001..PI, 0.01) {
-            for phi in arange(0.0..2.0 * PI, 0.01) {
-                let cartesian = to_cartesian(1.0, theta, phi);
-                let (_, theta_converted, phi_converted) = to_spherical(&cartesian);
-                assert_relative_eq!(theta, theta_converted, epsilon = ANGLE_TOL);
-                assert_relative_eq!(phi, phi_converted, epsilon = ANGLE_TOL);
-            }
-        }
-    }
 }

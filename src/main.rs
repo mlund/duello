@@ -19,7 +19,7 @@ use duello::{
     energy, icoscan,
     icotable::IcoTable2D,
     structure::{pqr_write_atom, Structure},
-    to_cartesian, to_spherical, UnitQuaternion,
+    SphericalCoord, UnitQuaternion,
 };
 use faunus::{energy::NonbondedMatrix, topology::Topology};
 // use indicatif::ProgressIterator;
@@ -234,7 +234,7 @@ fn do_dipole(cmd: &Commands) -> Result<()> {
     for radius in distances {
         // exact exp. energy at a given point, exp(-βu)
         let exact_exp_energy = |_, p: &Vector3| {
-            let (_r, theta, _phi) = to_spherical(p);
+            let (_r, theta, _phi) = SphericalCoord::from_cartesian(*p).into();
             let field = bjerrum_len * charge / radius.powi(2);
             let energy_in_kt = field * dipole_moment * theta.cos();
             energy_in_kt.neg().exp()
@@ -341,8 +341,8 @@ fn do_potential(cmd: &Commands) -> Result<()> {
     writeln!(pot_angles_file, "# theta phi interpolated exact relerr")?;
     for theta in arange(0.0001..PI, resolution) {
         for phi in arange(0.0001..2.0 * PI, resolution) {
-            let point = &to_cartesian(1.0, theta, phi);
-            let interpolated = icotable.interpolate(point);
+            let point: Vector3 = SphericalCoord::new(1.0, theta, phi).into();
+            let interpolated = icotable.interpolate(&point);
             let exact = energy::electric_potential(&structure, &point.scale(*radius), &multipole);
             pqr_write_atom(&mut pqr_file, 1, &point.scale(*radius), exact, 2.0)?;
             let rel_err = (interpolated - exact) / exact;
@@ -356,8 +356,8 @@ fn do_potential(cmd: &Commands) -> Result<()> {
                     exact,
                     abs_err
                 );
-                let face = icotable.nearest_face(point);
-                let bary = icotable.naive_barycentric(point, &face);
+                let face = icotable.nearest_face(&point);
+                let bary = icotable.naive_barycentric(&point, &face);
                 log::debug!("Face: {:?} Barycentric: {:?}\n", face, bary);
             }
             writeln!(
@@ -395,26 +395,5 @@ fn main() {
     if let Err(err) = do_main() {
         eprintln!("Error: {}", &err);
         std::process::exit(1);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use approx::assert_relative_eq;
-    use std::f64::consts::PI;
-
-    #[test]
-    fn test_spherical_cartesian_conversion() {
-        const ANGLE_TOL: f64 = 1e-6;
-        // Skip theta = 0 as phi is undefined
-        for theta in arange(0.00001..PI, 0.01) {
-            for phi in arange(0.0..2.0 * PI, 0.01) {
-                let cartesian = to_cartesian(1.0, theta, phi);
-                let (_, theta_converted, phi_converted) = to_spherical(&cartesian);
-                assert_relative_eq!(theta, theta_converted, epsilon = ANGLE_TOL);
-                assert_relative_eq!(phi, phi_converted, epsilon = ANGLE_TOL);
-            }
-        }
     }
 }
