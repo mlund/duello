@@ -22,15 +22,15 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
-/// A icotable where each vertex holds an icotable of floats
-pub type IcoTableOfSpheres = IcoTable<IcoTable<f64>>;
+/// A 4D icotable where each vertex holds an icotable of floats
+pub type IcoTable4D = IcoTable2D<IcoTable2D<f64>>;
 
 /// A 6D table for relative twobody orientations, R → 𝜔 → (𝜃𝜑) → (𝜃𝜑)
 ///
 /// The first two dimensions are radial distances and dihedral angles.
 /// The last two dimensions are polar and azimuthal angles represented via icospheres.
 /// The final `f64` data is stored at vertices of the deepest icospheres.
-pub type Table6D = PaddedTable<PaddedTable<IcoTableOfSpheres>>;
+pub type Table6D = PaddedTable<PaddedTable<IcoTable4D>>;
 
 /// Represents vertex indices defining the three corners of a face
 pub type Face = [usize; 3];
@@ -47,9 +47,11 @@ pub type Face = [usize; 3];
 /// To enable concurrent write access, data is wrapped with `OnceLock` which allows
 /// setting data only once.
 #[derive(Clone, GetSize)]
-pub struct IcoTable<T: Clone + GetSize> {
+pub struct IcoTable2D<T: Clone + GetSize> {
     /// Reference counted pointer to vertex positions and neighbours
     /// We want only *one* copy of this, hence the ref. counted, thread-safe pointer
+    /// Each vertex corresponds to a position on the unit-sphere and can be converted
+    /// to a spherical coordinate (θ, φ), i.e. a 2D coordinate.
     #[get_size(size = 8)]
     vertices: Arc<OnceLock<Vec<Vertex>>>,
     /// Vertex information (position, data, neighbors)
@@ -61,7 +63,7 @@ fn oncelock_size_helper<T: GetSize>(value: &Vec<OnceLock<T>>) -> usize {
     value.get_size() + std::mem::size_of::<T>() * value.len()
 }
 
-impl<T: Clone + GetSize> IcoTable<T> {
+impl<T: Clone + GetSize> IcoTable2D<T> {
     /// Iterator over vertices `(positions, neighbors)`
     pub fn iter_vertices(&self) -> impl Iterator<Item = &Vertex> {
         self.vertices.get().unwrap().iter()
@@ -317,7 +319,7 @@ impl<T: Clone + GetSize> IcoTable<T> {
     }
 }
 
-impl std::fmt::Display for IcoTable<f64> {
+impl std::fmt::Display for IcoTable2D<f64> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "# x y z θ φ data")?;
         for (pos, _, data) in self.iter() {
@@ -332,7 +334,7 @@ impl std::fmt::Display for IcoTable<f64> {
     }
 }
 
-impl IcoTableOfSpheres {
+impl IcoTable4D {
     /// Get flat iterator that runs over all pairs of (&pos_a, &pos_b, &OnceLockf64)
     pub fn flat_iter(&self) -> impl Iterator<Item = (&Vector3, &Vector3, &OnceLock<f64>)> {
         self.iter().flat_map(|(pos_a, _, data_a)| {
@@ -344,7 +346,7 @@ impl IcoTableOfSpheres {
         })
     }
     /// Generate table based on a minimum number of vertices on the subdivided icosaedron
-    pub fn from_min_points(min_points: usize, default_data: IcoTable<f64>) -> Result<Self> {
+    pub fn from_min_points(min_points: usize, default_data: IcoTable2D<f64>) -> Result<Self> {
         let icosphere = make_icosphere(min_points)?;
         let vertices = Arc::new(OnceLock::from(make_vertices(&icosphere)));
         Ok(Self::from_vertices(vertices, Some(default_data)))
@@ -380,19 +382,18 @@ impl Table6D {
         // Vertex positions and neighbors are shared across all tables w. smart pointer.
         // Oncelocked data on the innermost table1 is left uninitialized and should be set later
         let vertices = Arc::new(OnceLock::from(make_vertices(&icosphere)));
-        let table_b = IcoTable::<f64>::from_vertices(vertices.clone(), None); // B: 𝜃 and 𝜑
+        let table_b = IcoTable2D::<f64>::from_vertices(vertices.clone(), None); // B: 𝜃 and 𝜑
 
         // We have a new angular resolution, depending on number of subdivisions
         let angle_resolution = table_b.angle_resolution();
         log::info!("Actual angle resolution = {:.2} radians", angle_resolution);
 
-        let table_a = IcoTableOfSpheres::from_vertices(vertices, Some(table_b)); // A: 𝜃 and 𝜑
-        let table_omega =
-            PaddedTable::<IcoTableOfSpheres>::new(0.0, 2.0 * PI, angle_resolution, table_a); // 𝜔
+        let table_a = IcoTable4D::from_vertices(vertices, Some(table_b)); // A: 𝜃 and 𝜑
+        let table_omega = PaddedTable::<IcoTable4D>::new(0.0, 2.0 * PI, angle_resolution, table_a); // 𝜔
         Ok(Self::new(r_min, r_max, dr, table_omega)) // R
     }
     /// Get remaining 4D space (icotables) at (r, omega)
-    pub fn get_icospheres(&self, r: f64, omega: f64) -> Result<&IcoTableOfSpheres> {
+    pub fn get_icospheres(&self, r: f64, omega: f64) -> Result<&IcoTable4D> {
         self.get(r)?.get(omega)
     }
 }
@@ -435,7 +436,7 @@ fn _get_faces_from_icosphere(icosphere: IcoSphere) -> Vec<Face> {
         .collect_vec()
 }
 
-impl IcoTable<f64> {
+impl IcoTable2D<f64> {
     /// Get data for a point on the surface using barycentric interpolation
     /// https://en.wikipedia.org/wiki/Barycentric_coordinate_system#Interpolation_on_a_triangular_unstructured_grid
     pub fn interpolate(&self, point: &Vector3) -> f64 {
@@ -463,7 +464,7 @@ mod tests {
     #[test]
     fn test_icosphere_table() {
         let icosphere = make_icosphere(3).unwrap();
-        let icotable = IcoTable::<f64>::from_icosphere(&icosphere, 0.0);
+        let icotable = IcoTable2D::<f64>::from_icosphere(&icosphere, 0.0);
         assert_eq!(icotable.data.len(), 12);
 
         let point = icotable.get_pos(0);
@@ -510,9 +511,9 @@ mod tests {
     fn test_face_face_interpolation() {
         let n_points = 12;
         let icosphere = make_icosphere(n_points).unwrap();
-        let icotable = IcoTable::<f64>::from_icosphere_without_data(&icosphere);
+        let icotable = IcoTable2D::<f64>::from_icosphere_without_data(&icosphere);
         icotable.set_vertex_data(|i, _| i as f64).unwrap();
-        let icotable_of_spheres = IcoTableOfSpheres::from_min_points(n_points, icotable).unwrap();
+        let icotable_of_spheres = IcoTable4D::from_min_points(n_points, icotable).unwrap();
 
         let face_a = [0, 1, 2];
         let face_b = [0, 1, 2];
@@ -544,8 +545,8 @@ mod tests {
 
     #[test]
     fn test_table_of_spheres() {
-        let icotable = IcoTable::<f64>::from_min_points(42).unwrap();
-        let icotable_of_spheres = IcoTableOfSpheres::from_min_points(42, icotable).unwrap();
+        let icotable = IcoTable2D::<f64>::from_min_points(42).unwrap();
+        let icotable_of_spheres = IcoTable4D::from_min_points(42, icotable).unwrap();
         assert_eq!(icotable_of_spheres.data.len(), 42);
         assert_eq!(icotable_of_spheres.data[0].get().unwrap().data.len(), 42);
     }

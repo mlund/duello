@@ -84,11 +84,7 @@ pub fn to_spherical(cartesian: &Vector3) -> (f64, f64, f64) {
 pub fn to_cartesian(r: f64, theta: f64, phi: f64) -> Vector3 {
     let (theta_sin, theta_cos) = theta.sin_cos();
     let (phi_sin, phi_cos) = phi.sin_cos();
-    Vector3::new(
-        r * theta_sin * phi_cos,
-        r * theta_sin * phi_sin,
-        r * theta_cos,
-    )
+    Vector3::new(theta_sin * phi_cos, theta_sin * phi_sin, theta_cos).scale(r)
 }
 
 #[cfg(test)]
