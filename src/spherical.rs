@@ -15,12 +15,12 @@
 use crate::Vector3;
 use std::f64::consts::PI;
 
-/// Cartesian coordinates (r, theta, phi)
+/// Cartesian coordinates (r, theta, phi) i.e. radius, polar angle, azimuthal angle.
 #[derive(Debug, Clone)]
 pub struct SphericalCoord {
-    /// Radius
+    /// Radius, r >=0
     r: f64,
-    /// Polar angle (0..pi)
+    /// Polar angle or inclination (0..pi)
     theta: f64,
     /// Azimuthal angle (0..2pi)
     phi: f64,
@@ -32,27 +32,31 @@ impl SphericalCoord {
     pub fn radius(&self) -> f64 {
         self.r
     }
-    /// Polar angle (0..pi)
+    /// Polar angle, theta (0..pi)
     #[inline(always)]
     pub fn theta(&self) -> f64 {
         self.theta
     }
-    /// Polar angle (0..pi)
+    /// Polar angle, theta (0..pi)
     #[inline(always)]
     pub fn polar_angle(&self) -> f64 {
         self.theta
     }
-    /// Azimuthal angle (0..2pi)
+    /// Azimuthal angle, phi (0..2pi)
     #[inline(always)]
     pub fn phi(&self) -> f64 {
         self.phi
     }
-    /// Azimuthal angle (0..2pi)
+    /// Azimuthal angle, phi (0..2pi)
     #[inline(always)]
     pub fn azimuthal_angle(&self) -> f64 {
         self.phi
     }
     pub fn new(r: f64, theta: f64, phi: f64) -> Self {
+        // Ensure phi is in the range [0..2pi)
+        let phi = (phi + 2.0 * PI) % (2.0 * PI);
+        // Ensure theta is in the range [0..pi]
+        let theta = (theta + PI) % PI;
         Self { r, theta, phi }
     }
     /// Create spherical coordinates from cartesian coordinates
