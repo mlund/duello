@@ -66,6 +66,8 @@ $$
 
 # Installation
 
+Binary packages are available for Linux and MacOS through PyPI.org:
+
 ```console
 pip install duello
 ```
@@ -78,6 +80,8 @@ git clone https://github.com/mlund/duello
 cd duello/
 cargo run --release -- <args...>
 ```
+
+If you have compilation issues, try updating Rust with `rustup toolchain update`.
 
 # Usage
 
@@ -141,7 +145,8 @@ always automatically added and should therefore _not_ be specified in the topolo
 
 # Development
 
-This is for development purposes only.
+This is for development purposes only and details how to create and publish a
+binary package on pipy.org.
 
 ## Create `pip` package using Maturin via a Docker image:
 
