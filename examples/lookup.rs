@@ -1,6 +1,8 @@
+use duello::IcoSphere;
+use hexasphere::AdjacencyBuilder;
 fn main() {
-    let divisions = 0;
-    let icosphere = hexasphere::shapes::IcoSphere::new(divisions, |_| ());
+    let n_divisions = 0;
+    let icosphere = IcoSphere::new(n_divisions, |_| ());
 
     let indices = icosphere.get_all_indices();
     let vertices = icosphere.raw_points();
@@ -16,7 +18,7 @@ fn main() {
     for (i, triangle) in indices.chunks(3).enumerate() {
         println!("{} [{}, {}, {}]", i, triangle[0], triangle[1], triangle[2],);
     }
-    let mut ab = hexasphere::AdjacencyBuilder::new(vertices.len());
+    let mut ab = AdjacencyBuilder::new(vertices.len());
     ab.add_indices(&indices);
     let adjency = ab.finish();
     println!("\nVertex neighborlist:\n(The result preserves winding: the resulting array is wound around the center vertex in the same way that the source triangles were wound.):\n {:?}", adjency);

@@ -107,13 +107,12 @@ mod tests {
     fn test_spherical_cartesian_conversion() {
         const TOL: f64 = 1e-6;
         // Skip theta = 0 as phi is undefined
-        for theta in arange(0.00001..PI, 0.01) {
-            for phi in arange(0.0..2.0 * PI, 0.01) {
+        for theta in arange(0.0000001..PI, 0.01) {
+            for phi in arange(-2.0..2.0 * PI, 0.01) {
                 // round-trip spherical -> cartesian -> spherical
                 let spherical1 = SphericalCoord::new(1.0, theta, phi);
-                let mut cartesian: Vector3 = spherical1.clone().into();
-                cartesian = cartesian.scale(2.0);
-                let spherical2: SphericalCoord = cartesian.into();
+                let cartesian = Vector3::from(spherical1.clone()).scale(2.0);
+                let spherical2 = SphericalCoord::from(cartesian);
                 assert_relative_eq!(spherical1.theta(), spherical2.theta(), epsilon = TOL);
                 assert_relative_eq!(spherical1.phi(), spherical2.phi(), epsilon = TOL);
                 assert_relative_eq!(
