@@ -1,29 +1,25 @@
-// Example how we can use lazy_static to create a static IcoSphere at run-time
+// Example how we can use lazy_static to create a static IcoSphere at runtime
+// Useful for globally sharing immutable data. Data is computed at runtime and stored in a static variable
+// upon first access.
 
-use duello::IcoSphere;
+use duello::{make_vertices, IcoSphere, Vertex};
 use lazy_static::lazy_static;
+
+type Vertices = Vec<Vertex>;
 
 lazy_static! {
     /// IcoSphere with 0 subdivisions -> icosahedron
     static ref ICOSAHEDRON: IcoSphere = IcoSphere::new(0, |_| ());
-    /// Array of IcoSpheres with different subdivisions
-    static ref SUBDIVIDED: [IcoSphere; 6] = [
-        IcoSphere::new(0, |_| ()),
-        IcoSphere::new(1, |_| ()),
-        IcoSphere::new(2, |_| ()),
-        IcoSphere::new(3, |_| ()),
-        IcoSphere::new(4, |_| ()),
-        IcoSphere::new(5, |_| ()),
-    ];
+    /// IcoSpheres with increasing subdivisions starting from 0
+    static ref VERTICES: Vec<Vertices> = make_subdivided_spheres(9);
+}
+
+fn make_subdivided_spheres(max_subdivisions: usize) -> Vec<Vertices> {
+    Vec::from_iter((0..=max_subdivisions).map(|i| make_vertices(&IcoSphere::new(i, |_| ()))))
 }
 
 fn main() {
-    // Print number of vertices for all elements in SUBDIVIDED
-    for (i, icosphere) in SUBDIVIDED.iter().enumerate() {
-        println!(
-            "Subdivisions: {}, Vertices: {}",
-            i,
-            icosphere.raw_points().len()
-        );
+    for (i, subdivided) in VERTICES.iter().enumerate() {
+        println!("Subdivisions: {}, Vertices: {}", i, subdivided.len());
     }
 }
