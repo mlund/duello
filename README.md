@@ -24,7 +24,7 @@
 
 # Introduction
 
-Duello is a tool to calculate the potential of mean force (PMF) between two ridig bodies, performing a
+Duello is a tool to calculate the potential of mean force (PMF) between two rigid bodies, performing a
 statistical mechanical average over inter-molecular orientations using subdivided icosahedrons.
 For each mass center separation, _R_, the static contribution to the partition function,
 $\mathcal{Z}(R) = \sum_{\mathbf{\Omega}} e^{-V(R,\mathbf{\Omega})/k_BT}$, is explicitly
