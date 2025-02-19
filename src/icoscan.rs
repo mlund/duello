@@ -66,6 +66,7 @@ pub fn do_icoscan(
     pair_matrix: energy::PairMatrix,
     temperature: &f64,
     pmf_file: &PathBuf,
+    disktable: &Option<PathBuf>,
 ) -> std::result::Result<(), anyhow::Error> {
     let table = Table6D::from_resolution(rmin, rmax, dr, angle_resolution)?;
     let n_vertices = table.get(rmin)?.get(0.0)?.len();
@@ -126,6 +127,14 @@ pub fn do_icoscan(
             },
         )
     };
+
+    // Save table to disk
+    if let Some(savetable) = disktable {
+        let mut stream = faunus::aux::open_compressed(savetable)?;
+        for r in distances.iter() {
+            table.stream_angular_space(*r, &mut stream)?;
+        }
+    }
 
     // Calculate partition function as function of r only
     let mut samples: Vec<(Vector3, Sample)> = Vec::default();

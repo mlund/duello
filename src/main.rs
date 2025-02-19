@@ -122,6 +122,9 @@ enum Commands {
         /// Output file for PMF
         #[arg(long = "pmf", default_value = "pmf.dat")]
         pmf_file: PathBuf,
+        /// Save table to disk (use .gz suffix for compression)
+        #[arg(long)]
+        savetable: Option<PathBuf>,
     },
 }
 
@@ -140,6 +143,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         temperature,
         fixed_dielectric,
         pmf_file,
+        savetable,
     } = cmd
     else {
         anyhow::bail!("Unknown command");
@@ -198,6 +202,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         pair_matrix,
         temperature,
         pmf_file,
+        savetable,
     )
 }
 
