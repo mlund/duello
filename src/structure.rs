@@ -13,7 +13,7 @@
 // limitations under the license.
 
 use crate::Vector3;
-use anyhow::Context;
+use anyhow::{Context, Result};
 use chemfiles::Frame;
 use faunus::topology::{AtomKind, FindByName};
 use itertools::Itertools;
@@ -40,7 +40,7 @@ pub struct Structure {
 
 impl Structure {
     /// Constructs a new structure from an XYZ file, centering the structure at the origin
-    pub fn from_xyz(path: &PathBuf, atomkinds: &[AtomKind]) -> anyhow::Result<Self> {
+    pub fn from_xyz(path: &PathBuf, atomkinds: &[AtomKind]) -> Result<Self> {
         let nxyz: Vec<(String, Vector3)> = std::fs::read_to_string(path)
             .context(format!("Could not read XYZ file {}", path.display()))?
             .lines()
@@ -100,7 +100,7 @@ impl Structure {
         Ok(structure)
     }
     /// Constructs a new structure from a Faunus AAM file
-    pub fn from_aam(path: &PathBuf, atomkinds: &[AtomKind]) -> anyhow::Result<Self> {
+    pub fn from_aam(path: &PathBuf, atomkinds: &[AtomKind]) -> Result<Self> {
         let aam: Vec<AminoAcidModelRecord> = std::fs::read_to_string(path)?
             .lines()
             .skip(1) // skip header
@@ -130,7 +130,7 @@ impl Structure {
     }
 
     /// Constructs a new structure from a chemfiles trajectory file
-    pub fn from_chemfiles(path: &PathBuf, atomkinds: &[AtomKind]) -> anyhow::Result<Self> {
+    pub fn from_chemfiles(path: &PathBuf, atomkinds: &[AtomKind]) -> Result<Self> {
         let mut traj = chemfiles::Trajectory::open(path, 'r')
             .context(format!("Could not open trajectory file {}", path.display()))?;
         let mut frame = Frame::new();
@@ -315,7 +315,7 @@ fn to_vector3(pos: &[f64; 3]) -> Vector3 {
 }
 
 /// Parse a single line from an XYZ file
-fn from_xyz_line(line: &str) -> anyhow::Result<(String, Vector3)> {
+fn from_xyz_line(line: &str) -> Result<(String, Vector3)> {
     if let Some([name, x, y, z]) = line.split_whitespace().collect_array() {
         Ok((
             name.to_string(),
@@ -333,7 +333,7 @@ pub fn pqr_write_atom(
     pos: &Vector3,
     charge: f64,
     radius: f64,
-) -> anyhow::Result<()> {
+) -> Result<()> {
     writeln!(
         stream,
         "ATOM  {:5} {:4.4} {:4.3}{:5}    {:8.3} {:8.3} {:8.3} {:.3} {:.3}",
@@ -353,7 +353,7 @@ pub struct AminoAcidModelRecord {
 }
 
 impl AminoAcidModelRecord {
-    pub fn from_line(line: &str) -> anyhow::Result<Self> {
+    pub fn from_line(line: &str) -> Result<Self> {
         if let Some([name, _, x, y, z, charge, mass, radius]) =
             line.split_whitespace().collect_array()
         {

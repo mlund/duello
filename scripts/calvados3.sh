@@ -7,8 +7,7 @@ RUST_LOG="Info" cargo run --release \
     -- scan \
     -1 4lzt.xyz \
     -2 4lzt.xyz \
-    --icotable \
-    --rmin 25 --rmax 100 --dr 1.0 \
+    --rmin 24 --rmax 50 --dr 1.0 \
     --top topology.yaml \
     --resolution 1.0 \
     --cutoff 1000 \

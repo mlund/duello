@@ -12,7 +12,9 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
-use crate::{make_icosphere, make_vertices, table::PaddedTable, IcoSphere, Vector3, Vertex};
+use crate::{
+    make_icosphere, make_vertices, table::PaddedTable, IcoSphere, SphericalCoord, Vector3, Vertex,
+};
 use anyhow::Result;
 use core::f64::consts::PI;
 use get_size::GetSize;
@@ -323,7 +325,7 @@ impl std::fmt::Display for IcoTable2D<f64> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "# x y z θ φ data")?;
         for (pos, _, data) in self.iter() {
-            let spherical = crate::SphericalCoord::from_cartesian(*pos);
+            let spherical = SphericalCoord::from_cartesian(*pos);
             writeln!(
                 f,
                 "{} {} {} {} {} {:?}",
@@ -400,6 +402,34 @@ impl Table6D {
     /// Get remaining 4D space (icotables) at (r, omega)
     pub fn get_icospheres(&self, r: f64, omega: f64) -> Result<&IcoTable4D> {
         self.get(r)?.get(omega)
+    }
+
+    /// Write 5D angular space and data to a stream, i.e for a single radial distance.
+    /// The column format is `r 𝜔 𝜃1 𝜑1 𝜃2 𝜑2 data`.
+    pub fn stream_angular_space(&self, r: f64, stream: &mut impl Write) -> Result<()> {
+        writeln!(stream, "# r 𝜔 𝜃1 𝜑1 𝜃2 𝜑2 data")?;
+        for (omega, angles) in self.get(r)?.iter() {
+            for (vertex1, vertex2, data) in angles.flat_iter() {
+                if let Some(data) = data.get() {
+                    let (s1, s2) = (
+                        SphericalCoord::from_cartesian(*vertex1),
+                        SphericalCoord::from_cartesian(*vertex2),
+                    );
+                    writeln!(
+                        stream,
+                        "{:.2} {:.3} {:.3} {:.3} {:.3} {:.3} {:.4e}",
+                        r,
+                        omega,
+                        s1.theta(),
+                        s1.phi(),
+                        s2.theta(),
+                        s2.phi(),
+                        data
+                    )?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 

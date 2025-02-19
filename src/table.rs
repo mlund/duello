@@ -43,6 +43,16 @@ impl<T: Clone + GetSize> PaddedTable<T> {
         }
     }
 
+    /// Iterate over (key, value) pairs
+    pub fn iter(&self) -> impl Iterator<Item = (f64, &T)> {
+        let min = self.min;
+        let res = self.res;
+        self.data
+            .iter()
+            .enumerate()
+            .map(move |(i, value)| (min + i as f64 * res, value))
+    }
+
     /// Get minimum key value (inclusive)
     pub fn min_key(&self) -> f64 {
         self.min + self.res
