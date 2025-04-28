@@ -15,7 +15,7 @@
 use crate::{
     make_icosphere, make_vertices, table::PaddedTable, IcoSphere, SphericalCoord, Vector3, Vertex,
 };
-use anyhow::Result;
+use anyhow::{bail, Result};
 use core::f64::consts::PI;
 use get_size::GetSize;
 use itertools::Itertools;
@@ -147,12 +147,12 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
     /// Due to the `OnceLock` wrap, this can be done only once!
     pub fn set_vertex_data(&self, f: impl Fn(usize, &Vector3) -> T) -> anyhow::Result<()> {
         if self.data.iter().any(|v| v.get().is_some()) {
-            anyhow::bail!("Data already set for some vertices")
+            bail!("Data already set for some vertices")
         }
         self.iter().enumerate().try_for_each(|(i, (pos, _, data))| {
             let value = f(i, pos);
             if data.set(value).is_err() {
-                anyhow::bail!("Data already set for vertex {}", i);
+                bail!("Data already set for vertex {}", i);
             }
             Ok(())
         })

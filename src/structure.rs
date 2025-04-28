@@ -13,7 +13,7 @@
 // limitations under the license.
 
 use crate::Vector3;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use chemfiles::Frame;
 use faunus::topology::{AtomKind, FindByName};
 use itertools::Itertools;
@@ -322,7 +322,7 @@ fn from_xyz_line(line: &str) -> Result<(String, Vector3)> {
             Vector3::new(x.parse()?, y.parse()?, z.parse()?),
         ))
     } else {
-        anyhow::bail!("'name x y z' expected in XYZ record: {}", line);
+        bail!("'name x y z' expected in XYZ record: {}", line);
     }
 }
 
@@ -365,7 +365,7 @@ impl AminoAcidModelRecord {
                 radius: radius.parse()?,
             })
         } else {
-            anyhow::bail!("Invalid AAM record: {}", line);
+            bail!("Invalid AAM record: {}", line);
         }
     }
 }

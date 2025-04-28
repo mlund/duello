@@ -13,7 +13,7 @@
 // limitations under the license.
 
 use crate::{Sample, VirialCoeff};
-use anyhow::Context;
+use anyhow::{bail, Context};
 use coulomb::Vector3;
 use nu_ansi_term::Color::{Red, Yellow};
 use rgb::RGB8;
@@ -47,7 +47,7 @@ pub fn report_pmf(
                 heat_capacity,
                 sample.mean_exp_energy_m1()
             )
-            .or_else(|e| anyhow::bail!("Error writing to file: {}", e))
+            .or_else(|e| bail!("Error writing to file: {}", e))
             .ok();
         }
     });

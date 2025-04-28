@@ -12,7 +12,7 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use coulomb::{permittivity, DebyeLength, Medium, Salt, Vector3};
 use duello::{
@@ -146,7 +146,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         savetable,
     } = cmd
     else {
-        anyhow::bail!("Unknown command");
+        bail!("Unknown command");
     };
     assert!(rmin < rmax);
 
@@ -390,7 +390,7 @@ fn do_main() -> Result<()> {
             Commands::Potential { .. } => do_potential(&cmd)?,
         },
         None => {
-            anyhow::bail!("No command given");
+            bail!("No command given");
         }
     };
     Ok(())
