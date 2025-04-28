@@ -543,6 +543,21 @@ mod tests {
     }
 
     #[test]
+    fn test_icosphere_interpolate() {
+        let icosphere = make_icosphere(3).unwrap();
+        let icotable = IcoTable2D::<f64>::from_icosphere_without_data(&icosphere);
+        icotable.set_vertex_data(|i, _| i as f64 + 1.0).unwrap();
+
+        let point = Vector3::new(0.5, 0.5, 0.5).normalize();
+        let data = icotable.interpolate(&point);
+        assert_relative_eq!(data, 2.59977558757542);
+
+        let point = Vector3::new(0.5, 1.0, -2.0).normalize();
+        let data = icotable.interpolate(&point);
+        assert_relative_eq!(data, 6.062167441678067);
+    }
+
+    #[test]
     fn test_face_face_interpolation() {
         let n_points = 12;
         let icosphere = make_icosphere(n_points).unwrap();

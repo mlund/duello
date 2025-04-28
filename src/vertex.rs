@@ -42,11 +42,20 @@ pub fn make_vertices(icosphere: &IcoSphere) -> Vec<Vertex> {
 
     assert!(vertex_positions.len() == neighbors.len());
 
-    vertex_positions
+    let vertices: Vec<_> = vertex_positions
         .zip(neighbors)
         .map(|(pos, neighbors)| Vertex {
             pos,
             neighbors: neighbors.iter().map(|i| *i as u16).collect_vec(),
         })
-        .collect()
+        .collect();
+
+    // Create list of faces
+    let _faces: Vec<[usize; 3]> = icosphere
+        .get_all_indices()
+        .chunks(3)
+        .map(|i| [i[0] as usize, i[1] as usize, i[2] as usize])
+        .collect::<Vec<_>>();
+
+    vertices
 }
