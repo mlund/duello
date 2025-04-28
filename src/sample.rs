@@ -29,6 +29,8 @@ pub struct Sample {
     mean_squared_energy: f64,
     /// Boltzmann factored energy, exp(-U/kT)
     exp_energy: f64,
+    /// Boltzmann factored energy minus one, exp(-U/kT) - 1
+    exp_energy_m1: f64,
 }
 
 impl Sample {
@@ -37,12 +39,14 @@ impl Sample {
         const KJ_PER_J: f64 = 1e-3;
         let thermal_energy = MOLAR_GAS_CONSTANT * temperature * KJ_PER_J; // kJ/mol
         let exp_energy = (-energy / thermal_energy).exp();
+        let exp_energy_m1 = (-energy / thermal_energy).exp_m1();
         Self {
             n: 1,
             thermal_energy,
             mean_energy: energy * exp_energy,
             mean_squared_energy: energy.powi(2) * exp_energy,
             exp_energy,
+            exp_energy_m1,
         }
     }
     /// Thermal energy (kJ/mol)
@@ -64,6 +68,14 @@ impl Sample {
     /// Free energy (kJ / mol)
     pub fn free_energy(&self) -> f64 {
         (self.exp_energy / self.n as f64).ln().neg() * self.thermal_energy
+    }
+    /// Mean <exp(-U/kT)-1>
+    pub fn mean_exp_energy_m1(&self) -> f64 {
+        self.exp_energy_m1 / self.n as f64
+    }
+    /// Number of samples
+    pub fn n(&self) -> u64 {
+        self.n
     }
 }
 
@@ -96,6 +108,7 @@ impl Add for Sample {
             mean_energy: self.mean_energy + other.mean_energy,
             mean_squared_energy: self.mean_squared_energy + other.mean_squared_energy,
             exp_energy: self.exp_energy + other.exp_energy,
+            exp_energy_m1: self.exp_energy_m1 + other.exp_energy_m1,
         }
     }
 }
@@ -106,6 +119,7 @@ impl AddAssign for Sample {
         self.mean_energy += other.mean_energy;
         self.mean_squared_energy += other.mean_squared_energy;
         self.exp_energy += other.exp_energy;
+        self.exp_energy_m1 += other.exp_energy_m1;
         self.thermal_energy = f64::max(self.thermal_energy, other.thermal_energy);
     }
 }

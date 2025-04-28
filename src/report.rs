@@ -30,7 +30,7 @@ pub fn report_pmf(
     let mut pmf_file = File::create(path).context("Cannot create pmf file")?;
     let mut pmf_data = Vec::<(f32, f32)>::new();
     let mut mean_energy_data = Vec::<(f32, f32)>::new();
-    writeln!(pmf_file, "# R/Å F/kT U/kT C/R")?;
+    writeln!(pmf_file, "# R/Å F/kT U/kT C/R <exp(-u/kT)-1>")?;
     samples.iter().for_each(|(r, sample)| {
         let mean_energy = sample.mean_energy() / sample.thermal_energy();
         let free_energy = sample.free_energy() / sample.thermal_energy();
@@ -40,11 +40,12 @@ pub fn report_pmf(
             mean_energy_data.push((r.norm() as f32, mean_energy as f32));
             writeln!(
                 pmf_file,
-                "{:.2} {:.4} {:.4e} {:.4e}",
+                "{:.2} {:.4} {:.4e} {:.4e} {:.4e}",
                 r.norm(),
                 free_energy,
                 mean_energy,
-                heat_capacity
+                heat_capacity,
+                sample.mean_exp_energy_m1()
             )
             .or_else(|e| anyhow::bail!("Error writing to file: {}", e))
             .ok();
