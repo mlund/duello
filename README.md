@@ -80,6 +80,8 @@ cargo install --git https://github.com/mlund/duello
 ```
 
 If you have compilation issues, try updating Rust with `rustup toolchain update`.
+See [here](https://github.com/chemfiles/chemfiles.rs/issues/49) if you encounter
+errors compiling `chemfiles-sys`.
 
 # Usage
 
