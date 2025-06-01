@@ -14,7 +14,6 @@ keywords = ["pairwise_interaction", "bioinformatics", "virial_coefficient", "dis
 [dependencies]
 anyhow = "1.0"
 approx = "0.5"
-chemfiles = "0.10"
 clap = { version = "4", features = ["derive"] }
 itertools = "0.14"
 itertools-num = "0.1"

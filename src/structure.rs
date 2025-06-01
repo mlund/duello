@@ -14,7 +14,6 @@
 
 use crate::Vector3;
 use anyhow::{bail, Context, Result};
-use chemfiles::Frame;
 use faunus::topology::{AtomKind, FindByName};
 use itertools::Itertools;
 use nalgebra::Matrix3;
@@ -126,38 +125,6 @@ impl Structure {
         };
         let center = structure.mass_center();
         structure.translate(&-center); // translate to 0,0,0
-        Ok(structure)
-    }
-
-    /// Constructs a new structure from a chemfiles trajectory file
-    pub fn from_chemfiles(path: &PathBuf, atomkinds: &[AtomKind]) -> Result<Self> {
-        let mut traj = chemfiles::Trajectory::open(path, 'r')
-            .context(format!("Could not open trajectory file {}", path.display()))?;
-        let mut frame = Frame::new();
-        traj.read(&mut frame)?;
-        let masses = frame.iter_atoms().map(|atom| atom.mass()).collect();
-        let positions = frame.positions().iter().map(to_vector3).collect();
-        let atom_ids = frame
-            .iter_atoms()
-            .map(|atom| {
-                atomkinds
-                    .find_name(&atom.name())
-                    .map(|kind| kind.id())
-                    .context(format!(
-                        "Unknown atom name in structure file: {:?}",
-                        atom.name()
-                    ))
-            })
-            .try_collect()?;
-        let mut structure = Self {
-            pos: positions,
-            masses,
-            charges: vec![0.0; frame.size()],
-            radii: vec![0.0; frame.size()],
-            atom_ids,
-        };
-        let center = structure.mass_center();
-        structure.translate(&-center);
         Ok(structure)
     }
 
@@ -307,11 +274,6 @@ impl Display for Structure {
             self.masses.iter().sum::<f64>()
         )
     }
-}
-
-/// Converts a slice of f64 to a nalgebra Vector3
-fn to_vector3(pos: &[f64; 3]) -> Vector3 {
-    Vector3::new(pos[0], pos[1], pos[2])
 }
 
 /// Parse a single line from an XYZ file

@@ -615,7 +615,6 @@ dependencies = [
  "anyhow",
  "approx",
  "average 0.15.1",
- "chemfiles",
  "clap",
  "coulomb",
  "faunus",
