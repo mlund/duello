@@ -76,12 +76,14 @@ If you have a [Rust toolchain](https://www.rust-lang.org/learn/get-started) inst
 you may alternatively build and install directly from the source code:
 
 ```sh
+export CMAKE_POLICY_VERSION_MINIMUM=3.16 # if you use C
 cargo install --git https://github.com/mlund/duello
 ```
 
 If you have compilation issues, try updating Rust with `rustup toolchain update`.
-See [here](https://github.com/chemfiles/chemfiles.rs/issues/49) if you encounter
-errors compiling `chemfiles-sys`.
+If you use CMake 4 or newer you may need to use
+`export CMAKE_POLICY_VERSION_MINIMUM=3.16` as explained
+[here](https://github.com/chemfiles/chemfiles.rs/issues/49).
 
 # Usage
 
