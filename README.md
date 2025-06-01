@@ -73,12 +73,10 @@ pip install duello
 ```
 
 If you have a [Rust toolchain](https://www.rust-lang.org/learn/get-started) installed,
-you may alternatively compile and run directly from the source code:
+you may alternatively build and install directly from the source code:
 
 ```sh
-git clone https://github.com/mlund/duello
-cd duello/
-cargo run --release -- <args...>
+cargo install --git https://github.com/mlund/duello
 ```
 
 If you have compilation issues, try updating Rust with `rustup toolchain update`.
@@ -165,4 +163,3 @@ maturin publish -u __token__ --target=x86_64-unknown-linux-gnu --zig
 MacOS targets can be generated without `--zig` using the targets
 `x86_64-apple-darwin` and `aarch64-apple-darwin`.
 See list of targets with `rustup target list`.
-
