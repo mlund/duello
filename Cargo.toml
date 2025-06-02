@@ -27,7 +27,7 @@ serde = { version = "1.0", features = ["derive"] }
 semver = { version = "1.0", features = ["serde"] }
 pretty_env_logger = "0.5"
 log = "0.4"
-average = "0.15"
+average = "0.16"
 iter_num_tools = "0.7"
 indicatif = {version = "*", features = ["rayon"]}
 flate2 = "1.0"
