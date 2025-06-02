@@ -83,11 +83,12 @@ impl std::fmt::Display for Sample {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "n: {}, ⟨U⟩: {:.3} kJ/mol, C/𝑘𝐵: {:.3}, -𝑘𝑇⟨exp(-𝛽U)⟩: {:.3} kJ/mol",
+            "n: {}, ⟨U⟩: {:.3} kJ/mol, C/𝑘𝐵: {:.3}, -𝑘𝑇⟨exp(-𝛽U)⟩: {:.3} kJ/mol, ⟨exp(-𝛽U)-1⟩: {:.3}",
             self.n,
             self.mean_energy(),
             self.heat_capacity(),
             self.free_energy(),
+            self.mean_exp_energy_m1()
         )
     }
 }
