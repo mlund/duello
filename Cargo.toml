@@ -36,7 +36,7 @@ rgb = "0.8"
 nu-ansi-term = "0.50"
 hexasphere = {version = "15.1", features = ["adjacency"]}
 num-traits = "0.2"
-rand = "0.8"
+rand = "0.9"
 get-size = {version = "0.1", features = ["derive"]}
 physical_constants = "0.5"
 serde_json = "1.0.137"
