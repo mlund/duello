@@ -35,21 +35,23 @@ pub fn report_pmf(
         let mean_energy = sample.mean_energy() / sample.thermal_energy();
         let free_energy = sample.free_energy() / sample.thermal_energy();
         let heat_capacity = sample.heat_capacity();
+
         if mean_energy.is_finite() && free_energy.is_finite() {
             pmf_data.push((r.norm() as f32, free_energy as f32));
             mean_energy_data.push((r.norm() as f32, mean_energy as f32));
-            writeln!(
-                pmf_file,
-                "{:.2} {:.4} {:.4e} {:.4e} {:.4e}",
-                r.norm(),
-                free_energy,
-                mean_energy,
-                heat_capacity,
-                sample.mean_exp_energy_m1()
-            )
-            .or_else(|e| bail!("Error writing to file: {}", e))
-            .ok();
         }
+
+        writeln!(
+            pmf_file,
+            "{:.2} {:.4} {:.4e} {:.4e} {:.4e}",
+            r.norm(),
+            free_energy,
+            mean_energy,
+            heat_capacity,
+            sample.mean_exp_energy_m1()
+        )
+        .or_else(|e| bail!("Error writing to file: {}", e))
+        .ok();
     });
 
     let virial = VirialCoeff::from_pmf(pmf_data.iter().cloned(), None)?;
