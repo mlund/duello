@@ -361,8 +361,8 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "coulomb"
-version = "0.2.0"
-source = "git+https://github.com/mlund/coulomb.git#c44f7165c17e63ee90d694a58963c2523e3469c2"
+version = "0.2.1"
+source = "git+https://github.com/mlund/coulomb.git#8720053af8d33a4362dab1eac114e308a5bed80d"
 dependencies = [
  "anyhow",
  "dyn-clone",
@@ -714,7 +714,7 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 [[package]]
 name = "faunus"
 version = "0.1.0"
-source = "git+https://github.com/mlund/faunus-rs.git#2779eb646a6b032fc1b7a2bbef9f0a07ff2d7c1b"
+source = "git+https://github.com/mlund/faunus-rs.git#da1d0ec284e7a7fde1403fcd6149ae764ae6fab9"
 dependencies = [
  "anyhow",
  "as-any",
@@ -1080,8 +1080,8 @@ dependencies = [
 
 [[package]]
 name = "interatomic"
-version = "0.2.1"
-source = "git+https://github.com/mlund/interatomic.git#5e1152209d33f05f36cdf61fa389ba1b982550c2"
+version = "0.3.0"
+source = "git+https://github.com/mlund/interatomic.git#d3dea5195cdd63ec62b568a71faa9cdc26ae8918"
 dependencies = [
  "anyhow",
  "coulomb",

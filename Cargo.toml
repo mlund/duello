@@ -20,8 +20,8 @@ itertools-num = "0.1"
 nalgebra = "0.33"
 rayon = "1.10"
 faunus = { git = "https://github.com/mlund/faunus-rs.git" }
-interatomic = { git = "https://github.com/mlund/interatomic.git", version = "0.2" }
-coulomb = { git = "https://github.com/mlund/coulomb.git", version = "0.2" }
+interatomic = { git = "https://github.com/mlund/interatomic.git", version = "0.3", features = ["serde"] }
+coulomb = { git = "https://github.com/mlund/coulomb.git", version = "0.2.1", features = ["serde"] }
 serde_yaml = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 semver = { version = "1.0", features = ["serde"] }
