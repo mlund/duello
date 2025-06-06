@@ -152,6 +152,21 @@ impl Structure {
         self.charges.iter().sum()
     }
 
+    /// Molecular dipole moment of the structure with respect to the mass center
+    ///
+    /// The dipole moment is calculated as
+    /// 𝒎 = ∑ 𝒓ᵢ𝑞ᵢ where 𝒓ᵢ = 𝒑ᵢ - 𝑪 and 𝑪 is the mass center.
+    /// Note that if the molecule is not neutral, the dipole moment depends on the
+    /// choice of origin, here the mass center.
+    pub fn dipole_moment(&self) -> Vector3 {
+        let center = self.mass_center();
+        self.pos
+            .iter()
+            .zip(&self.charges)
+            .map(|(pos, charge)| (pos - center).scale(*charge))
+            .fold(Vector3::zeros(), |sum, i| sum + i)
+    }
+
     /// Total mass of the structure
     pub fn total_mass(&self) -> f64 {
         self.masses.iter().sum()

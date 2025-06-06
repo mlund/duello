@@ -182,6 +182,14 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         ref_a.net_charge(),
         ref_b.net_charge(),
     );
+
+    const ELECTRON_ANGSTROM_TO_DEBYE: f64 = 4.80320425;
+    info! {
+        "Molecular dipole moments: [{:.2} D, {:.2} D]",
+        ref_a.dipole_moment().norm() * ELECTRON_ANGSTROM_TO_DEBYE,
+        ref_b.dipole_moment().norm() * ELECTRON_ANGSTROM_TO_DEBYE,
+    };
+
     info!(
         "Molecular masses (g/mol): [{:.2}e, {:.2}e]",
         ref_a.total_mass(),
