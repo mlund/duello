@@ -191,7 +191,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
     };
 
     info!(
-        "Molecular masses (g/mol): [{:.2}e, {:.2}e]",
+        "Molecular masses (g/mol): [{:.2}, {:.2}]",
         ref_a.total_mass(),
         ref_b.total_mass(),
     );
