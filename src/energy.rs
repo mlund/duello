@@ -17,7 +17,7 @@ use coulomb::pairwise::{MultipoleEnergy, MultipolePotential, Plain};
 use coulomb::permittivity::ConstantPermittivity;
 use faunus::{energy::NonbondedMatrix, topology::AtomKind};
 use interatomic::{
-    twobody::{IonIon, IsotropicTwobodyEnergy},
+    twobody::{IonIon, IonIonPolar, IsotropicTwobodyEnergy},
     Vector3,
 };
 use std::{cmp::PartialEq, fmt::Debug};
@@ -43,10 +43,12 @@ impl PairMatrix {
             .indexed_iter_mut()
             .for_each(|((i, j), pairpot)| {
                 let charge_product = atomkinds[i].charge() * atomkinds[j].charge();
-                let coulomb = Box::new(IonIon::<T>::new(
-                    charge_product,
-                    permittivity,
-                    coulomb_method.clone(),
+                let coulomb =
+                    IonIon::<T>::new(charge_product, permittivity, coulomb_method.clone());
+                let coulomb = Box::new(IonIonPolar::<T>::new(
+                    coulomb,
+                    50.0,
+                    (atomkinds[i].charge(), atomkinds[j].charge()),
                 )) as Box<dyn IsotropicTwobodyEnergy>;
                 let combined = coulomb + Box::new(pairpot.clone());
                 *pairpot = std::sync::Arc::new(combined);
