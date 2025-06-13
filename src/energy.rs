@@ -15,6 +15,7 @@
 use crate::structure::Structure;
 use coulomb::pairwise::{MultipoleEnergy, MultipolePotential, Plain};
 use coulomb::permittivity::ConstantPermittivity;
+use faunus::topology::CustomProperty;
 use faunus::{energy::NonbondedMatrix, topology::AtomKind};
 use interatomic::{
     twobody::{IonIon, IonIonPolar, IsotropicTwobodyEnergy},
@@ -42,15 +43,45 @@ impl PairMatrix {
             .get_potentials_mut()
             .indexed_iter_mut()
             .for_each(|((i, j), pairpot)| {
-                let charge_product = atomkinds[i].charge() * atomkinds[j].charge();
+                // Fetch excess polarizability for the two atom kinds from the
+                // custom "alpha" field, if it exists. Add to topology atoms like this:
+                // `custom: {alpha: 50.0}`
+                let get_alpha = |atom: &AtomKind| {
+                    atom.get_property("alpha").map_or(0.0, |v| {
+                        f64::try_from(v).expect("Failed to convert alpha to f64")
+                    })
+                };
+                let alpha1 = get_alpha(&atomkinds[i]);
+                let alpha2 = get_alpha(&atomkinds[j]);
+                let charge1 = atomkinds[i].charge();
+                let charge2 = atomkinds[j].charge();
+                let charge_product = charge1 * charge2;
+                let use_polarization =
+                    (alpha1 * charge2).abs() > 1e-6 || (alpha2 * charge1).abs() > 1e-6;
+
+                if use_polarization {
+                    log::debug!(
+                        "Adding ion-induced dipole term for atom pair ({}, {}). Alphas: {}, {}",
+                        i,
+                        j,
+                        alpha1,
+                        alpha2
+                    );
+                }
                 let coulomb =
                     IonIon::<T>::new(charge_product, permittivity, coulomb_method.clone());
-                let coulomb = Box::new(IonIonPolar::<T>::new(
-                    coulomb,
-                    50.0,
-                    (atomkinds[i].charge(), atomkinds[j].charge()),
+                let coulomb_polar = Box::new(IonIonPolar::<T>::new(
+                    coulomb.clone(),
+                    (charge1, charge2),
+                    (alpha1, alpha2),
                 )) as Box<dyn IsotropicTwobodyEnergy>;
-                let combined = coulomb + Box::new(pairpot.clone());
+                let combined = match use_polarization {
+                    true => coulomb_polar + Box::new(pairpot.clone()),
+                    false => {
+                        Box::new(coulomb) as Box<dyn IsotropicTwobodyEnergy>
+                            + Box::new(pairpot.clone())
+                    }
+                };
                 *pairpot = std::sync::Arc::new(combined);
             });
         Self { nonbonded }
