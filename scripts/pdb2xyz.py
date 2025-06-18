@@ -12,13 +12,25 @@ def convert_pdb(pdb_file, output_xyz_file):
     for res in traj.topology.residues:
         if not res.is_protein:
             continue
+
         cm = [0.0, 0.0, 0.0]  # residue mass center
         mw = 0.0  # residue weight
         for a in res.atoms:
+            # Add N-terminal
+            if res.index == 0 and a.index == 0 and a.name == "N":
+                print("Adding N-terminal bead")
+                residues.append(dict(name="NTR", cm=traj.xyz[0][a.index] * 10))
+
+            # Add C-terminal
+            if a.name == "OXT":
+                print("Adding C-terminal bead")
+                residues.append(dict(name="CTR", cm=traj.xyz[0][a.index] * 10))
+
+            # Add coarse grained bead
             cm = cm + a.element.mass * traj.xyz[0][a.index]
             mw = mw + a.element.mass
-        cm = cm / mw * 10.0
-        residues.append(dict(name=res.name, cm=cm))
+
+        residues.append(dict(name=res.name, cm=cm / mw * 10))
 
         if "sidechains" in sys.argv:
             side_chain = add_sidechains(traj, res)
@@ -27,7 +39,7 @@ def convert_pdb(pdb_file, output_xyz_file):
 
     with open(output_xyz_file, "w") as f:
         f.write(f"{len(residues)}\n")
-        f.write(f"Converted with Duello pdb2xyz.py using input file {pdb_file}\n");
+        f.write(f"Converted with Duello pdb2xyz.py using input file {pdb_file}\n")
         for i in residues:
             f.write(f"{i['name']} {i['cm'][0]:.3f} {i['cm'][1]:.3f} {i['cm'][2]:.3f}\n")
     print(f"Converted {pdb_file} -> {output_xyz_file} with {len(residues)} residues.")
