@@ -88,5 +88,13 @@
     },
     "rust-analyzer.showUnlinkedFileNotification": false,
     "rust-analyzer.cargo.noDefaultFeatures": false,
-    "rust-analyzer.checkOnSave": true
+    "rust-analyzer.checkOnSave": true,
+    "editor.tabCompletion": "on",
+    "python.languageServer": "Pylance",  // or "Default"
+    "python.autoComplete.addBrackets": true,
+    "editor.quickSuggestions": {
+        "other": true,
+        "comments": false,
+        "strings": true
+    }
 }
