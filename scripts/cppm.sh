@@ -13,4 +13,5 @@ RUST_LOG="Info" cargo run --release -- \
     --cutoff 1000 \
     --molarity 0.02 \
     --savetable table.dat.gz \
+    --xtcfile traj.xtc
     --temperature 330

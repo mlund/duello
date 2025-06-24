@@ -19,15 +19,19 @@ use crate::{
     structure::Structure,
     Sample, UnitQuaternion, Vector3,
 };
+use faunus::aux::open_compressed;
 use get_size::GetSize;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use iter_num_tools::arange;
 use itertools::Itertools;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use std::{f64::consts::PI, path::PathBuf};
-use xdrfile::Trajectory;
-
 use nalgebra::UnitVector3;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use std::{
+    f64::consts::PI,
+    io::{BufWriter, Write},
+    path::PathBuf,
+};
+use xdrfile::{Frame, Trajectory, XTCTrajectory};
 
 /// Orient two reference structures to given 6D point and return the two structures
 ///
@@ -120,14 +124,16 @@ pub fn do_icoscan(
 
     // Write oriented structures to trajectory file
     if let Some(xtcfile) = xtcfile {
-        log::info!("Writing trajectory file {}", xtcfile.display());
-        let mut traj = xdrfile::XTCTrajectory::open_write(xtcfile)?;
+        info!("Writing trajectory file {}", xtcfile.display());
+        let mut traj = XTCTrajectory::open_write(xtcfile)?;
+        let mut energy_file =
+            BufWriter::new(open_compressed(&xtcfile.with_extension("energy.dat.gz"))?);
         let mut frame_cnt: usize = 0;
+        let mut frame = Frame::new();
         let n = r_and_omega.len();
 
         // Create new XTC frame from two structures and append to trajectory
-        let mut write_frame = |oriented_a: &Structure, oriented_b: &Structure| {
-            let mut frame = xdrfile::Frame::new();
+        let mut write_frame = |oriented_a: &Structure, oriented_b: &Structure, data| {
             frame.step = frame_cnt;
             frame.time = frame_cnt as f32;
             frame_cnt += 1;
@@ -138,6 +144,7 @@ pub fn do_icoscan(
                 .map(|&p| [p.x as f32, p.y as f32, p.z as f32])
                 .collect();
             traj.write(&frame).expect("Failed to write XTC frame");
+            write!(energy_file, "{:.6}\n", data).expect("Failed to write energy to file");
         };
 
         r_and_omega
@@ -151,9 +158,10 @@ pub fn do_icoscan(
                     .for_each(|(pos_a, pos_b, _data_b)| {
                         let (oriented_a, oriented_b) =
                             orient_structures(r, omega, *pos_a, *pos_b, &ref_a, &ref_b);
-                        write_frame(&oriented_a, &oriented_b);
+                        write_frame(&oriented_a, &oriented_b, _data_b.get().unwrap());
                     });
             });
+        info!("Wrote {} frames to trajectory file", frame_cnt);
     }
 
     // Partition function contribution for single (r, omega) point
@@ -171,7 +179,7 @@ pub fn do_icoscan(
     // Save table to disk
     if let Some(savetable) = disktable {
         log::info!("Saving 6D table to {}", savetable.display());
-        let mut stream = faunus::aux::open_compressed(savetable)?;
+        let mut stream = BufWriter::new(open_compressed(savetable)?);
         for r in distances.iter().progress_count(distances.len() as u64) {
             table.stream_angular_space(*r, &mut stream)?;
         }
