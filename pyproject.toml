@@ -10,4 +10,9 @@ strip = true
 compatibility = "manylinux2014"
 
 [project]
-dependencies = ["mdtraj>=1.9"]
+name = "duello"
+version = "0.1.0"
+dependencies = [
+    "mdtraj>=1.9",
+    "pdb2xyz>=0.1.2",
+]

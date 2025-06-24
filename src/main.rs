@@ -23,7 +23,7 @@ use duello::{
 };
 use faunus::{energy::NonbondedMatrix, topology::Topology};
 use std::process::ExitCode;
-use std::{f64::consts::PI, fs::File, io::Write, ops::Neg, path::PathBuf};
+use std::{f64::consts::PI, fs::File, io::Write, ops::Add, ops::Neg, path::PathBuf};
 extern crate pretty_env_logger;
 #[macro_use]
 extern crate log;
@@ -175,6 +175,11 @@ fn do_scan(cmd: &Commands) -> Result<()> {
     );
     let ref_a = Structure::from_xyz(mol1, topology.atomkinds())?;
     let ref_b = Structure::from_xyz(mol2, topology.atomkinds())?;
+    let mut xyz_file = File::create("confout.xyz")?;
+    ref_a
+        .clone()
+        .add(ref_b.clone())
+        .to_xyz(&mut xyz_file, topology.atomkinds())?;
 
     info!("{}", medium);
     info!(

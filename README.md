@@ -117,8 +117,9 @@ Command                | Description
 ## Converting PDB files
 
 A simple script to convert protein structure files to coarse grained, one bead
-per amino acid XYZ files is provided in `scripts/pdb2xyz.py`.
-Requires that `mdtraj` is installed.
+per amino acid XYZ files is provided in `pdb2xyz` which can be installed with
+`pip install pdb2xyz`. This can also generate a corresponding `atomfile.yaml`
+with atom properties.
 
 ## Interaction models
 

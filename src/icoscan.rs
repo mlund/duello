@@ -20,11 +20,12 @@ use crate::{
     Sample, UnitQuaternion, Vector3,
 };
 use get_size::GetSize;
-use indicatif::ParallelProgressIterator;
+use indicatif::{ParallelProgressIterator, ProgressIterator};
 use iter_num_tools::arange;
 use itertools::Itertools;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::{f64::consts::PI, path::PathBuf};
+use xdrfile::Trajectory;
 
 use nalgebra::UnitVector3;
 
@@ -116,6 +117,36 @@ pub fn do_icoscan(
             calc_energy(*r, *omega);
         });
 
+    // Write oriented structures to trajectory file
+    log::info!("Writing trajectory file traj.xtc");
+    let mut traj = xdrfile::XTCTrajectory::open_write("traj.xtc")?;
+    let mut frame_cnt: usize = 0;
+    let n = r_and_omega.len();
+    r_and_omega
+        .into_iter()
+        .progress_count(n as u64)
+        .for_each(|(r, omega)| {
+            table
+                .get_icospheres(r, omega) // remaining 4D
+                .expect("invalid (r, omega) value")
+                .flat_iter()
+                .for_each(|(pos_a, pos_b, _data_b)| {
+                    let (oriented_a, oriented_b) =
+                        orient_structures(r, omega, *pos_a, *pos_b, &ref_a, &ref_b);
+                    let mut frame = xdrfile::Frame::new();
+                    frame.step = frame_cnt;
+                    frame.time = frame_cnt as f32;
+                    frame_cnt += 1;
+                    frame.coords = oriented_a
+                        .pos
+                        .iter()
+                        .chain(oriented_b.pos.iter())
+                        .map(|&p| [p.x as f32, p.y as f32, p.z as f32])
+                        .collect();
+                    traj.write(&frame).expect("Failed to write XTC frame");
+                });
+        });
+
     // Partition function contribution for single (r, omega) point
     // i.e. averaged over 4D angular space
     let calc_partition_func = |r: f64, omega: f64| {
@@ -130,6 +161,7 @@ pub fn do_icoscan(
 
     // Save table to disk
     if let Some(savetable) = disktable {
+        log::info!("Saving 6D table to {}", savetable.display());
         let mut stream = faunus::aux::open_compressed(savetable)?;
         for r in distances.iter() {
             table.stream_angular_space(*r, &mut stream)?;
