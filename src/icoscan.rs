@@ -124,6 +124,22 @@ pub fn do_icoscan(
         let mut traj = xdrfile::XTCTrajectory::open_write(xtcfile)?;
         let mut frame_cnt: usize = 0;
         let n = r_and_omega.len();
+
+        // Create new XTC frame from two structures and append to trajectory
+        let mut write_frame = |oriented_a: &Structure, oriented_b: &Structure| {
+            let mut frame = xdrfile::Frame::new();
+            frame.step = frame_cnt;
+            frame.time = frame_cnt as f32;
+            frame_cnt += 1;
+            frame.coords = oriented_a
+                .pos
+                .iter()
+                .chain(oriented_b.pos.iter())
+                .map(|&p| [p.x as f32, p.y as f32, p.z as f32])
+                .collect();
+            traj.write(&frame).expect("Failed to write XTC frame");
+        };
+
         r_and_omega
             .into_iter()
             .progress_count(n as u64)
@@ -135,17 +151,7 @@ pub fn do_icoscan(
                     .for_each(|(pos_a, pos_b, _data_b)| {
                         let (oriented_a, oriented_b) =
                             orient_structures(r, omega, *pos_a, *pos_b, &ref_a, &ref_b);
-                        let mut frame = xdrfile::Frame::new();
-                        frame.step = frame_cnt;
-                        frame.time = frame_cnt as f32;
-                        frame_cnt += 1;
-                        frame.coords = oriented_a
-                            .pos
-                            .iter()
-                            .chain(oriented_b.pos.iter())
-                            .map(|&p| [p.x as f32, p.y as f32, p.z as f32])
-                            .collect();
-                        traj.write(&frame).expect("Failed to write XTC frame");
+                        write_frame(&oriented_a, &oriented_b);
                     });
             });
     }
