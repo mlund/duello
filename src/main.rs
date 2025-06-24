@@ -125,6 +125,9 @@ enum Commands {
         /// Save table to disk (use .gz suffix for compression)
         #[arg(long)]
         savetable: Option<PathBuf>,
+        /// Export XTC file with all poses
+        #[arg(long)]
+        xtcfile: Option<PathBuf>,
     },
 }
 
@@ -144,6 +147,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         fixed_dielectric,
         pmf_file,
         savetable,
+        xtcfile,
     } = cmd
     else {
         bail!("Unknown command");
@@ -175,11 +179,13 @@ fn do_scan(cmd: &Commands) -> Result<()> {
     );
     let ref_a = Structure::from_xyz(mol1, topology.atomkinds())?;
     let ref_b = Structure::from_xyz(mol2, topology.atomkinds())?;
-    let mut xyz_file = File::create("confout.xyz")?;
-    ref_a
-        .clone()
-        .add(ref_b.clone())
-        .to_xyz(&mut xyz_file, topology.atomkinds())?;
+    if xtcfile.is_some() {
+        log::info!("Exporting merged XYZ file with both initial structures: confout.xyz");
+        ref_a
+            .clone()
+            .add(ref_b.clone())
+            .to_xyz(&mut File::create("confout.xyz")?, topology.atomkinds())?;
+    }
 
     info!("{}", medium);
     info!(
@@ -216,6 +222,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         temperature,
         pmf_file,
         savetable,
+        xtcfile,
     )
 }
 
