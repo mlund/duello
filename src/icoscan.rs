@@ -171,9 +171,10 @@ pub fn do_icoscan(
     let calc_partition_func = |r: f64, omega: f64| {
         table.get_icospheres(r, omega).unwrap().flat_iter().fold(
             Sample::default(),
-            |sum, (_, _, data_b)| {
+            |sum, (vertex_i, vertex_j, data_b)| {
+                let degeneracy = vertex_i.norm() * vertex_j.norm();
                 let energy = data_b.get().unwrap();
-                sum + Sample::new(*energy, *temperature)
+                sum + Sample::new(*energy, *temperature, degeneracy)
             },
         )
     };
