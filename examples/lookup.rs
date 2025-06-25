@@ -70,38 +70,3 @@ fn main() {
 
     println!("\nVertex weights:\n {:?}", weights);
 }
-
-fn make_weights(icosphere: &IcoSphere) -> Vec<f64> {
-    let indices = icosphere.get_all_indices();
-    let vertices = icosphere.raw_points();
-
-    let face_area = |a: usize, b: usize, c: usize| {
-        let a = vertices[a];
-        let b = vertices[b];
-        let c = vertices[c];
-        let ab = b - a;
-        let ac = c - a;
-        0.5 * ab.cross(ac).length()
-    };
-
-    let mut weights = Vec::with_capacity(vertices.len());
-    let mut adjency = AdjacencyBuilder::new(vertices.len());
-    adjency.add_indices(&indices);
-    let adjency = adjency.finish();
-
-    for (i, nb) in adjency.iter().enumerate() {
-        let mut areas = Vec::with_capacity(nb.len());
-        areas.push(face_area(i, *nb.first().unwrap(), *nb.last().unwrap()) as f64);
-        println!("Vertex {}: {} neighbors", i, nb.len());
-        for j in 0..nb.len() - 1 {
-            let area = face_area(i, nb[j], nb[j + 1]);
-            areas.push(area as f64);
-        }
-        let avg_area = areas.iter().sum::<f64>() / areas.len() as f64;
-        weights.push(avg_area);
-    }
-    let scale = vertices.len() as f64 / weights.iter().sum::<f64>();
-    weights.iter_mut().for_each(|w| *w *= scale);
-    assert_eq!(weights.len(), vertices.len());
-    weights
-}

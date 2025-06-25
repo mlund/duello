@@ -16,6 +16,7 @@
 extern crate approx;
 use crate::{IcoSphere, Vector3};
 use anyhow::{Context, Result};
+use hexasphere::AdjacencyBuilder;
 
 /// Make icosphere with at least `min_points` surface points (vertices).
 ///
@@ -55,12 +56,78 @@ pub fn make_icosphere(min_points: usize) -> Result<IcoSphere> {
 /// assert_eq!(vertices.len(), 42);
 /// ~~~
 pub fn make_icosphere_vertices(min_points: usize) -> Result<Vec<Vector3>> {
-    let vertex_positions = make_icosphere(min_points)?
+    let icosphere = make_icosphere(min_points)?;
+    let vertices = extract_vertices(&icosphere);
+    Ok(vertices)
+}
+
+/// Get the icosphere vertices as a vector of 3D vectors.
+pub fn extract_vertices(icosphere: &IcoSphere) -> Vec<Vector3> {
+    icosphere
         .raw_points()
         .iter()
         .map(|p| Vector3::new(p.x as f64, p.y as f64, p.z as f64))
-        .collect();
-    Ok(vertex_positions)
+        .collect()
+}
+
+/// Make weights for each vertex in the icosphere based on the average area of adjacent faces.
+pub fn make_weights(icosphere: &IcoSphere) -> Vec<f64> {
+    let indices = icosphere.get_all_indices();
+    let vertices = icosphere.raw_points();
+
+    // flat (euclidean) face area
+    let _flat_face_area = |a: usize, b: usize, c: usize| {
+        let a = vertices[a];
+        let b = vertices[b];
+        let c = vertices[c];
+        let ab = b - a;
+        let ac = c - a;
+        0.5 * ab.cross(ac).length()
+    };
+
+    // spherical face area
+    #[allow(non_snake_case)]
+    let spherical_face_area = |a: usize, b: usize, c: usize| {
+        let a = vertices[a].normalize();
+        let b = vertices[b].normalize();
+        let c = vertices[c].normalize();
+
+        let angle = |u: glam::f32::Vec3A, v: glam::f32::Vec3A, w: glam::f32::Vec3A| {
+            let vu = (u - v * v.dot(u)).normalize();
+            let vw = (w - v * v.dot(w)).normalize();
+            vu.angle_between(vw)
+        };
+
+        let A = angle(b, a, c);
+        let B = angle(c, b, a);
+        let C = angle(a, c, b);
+
+        (A + B + C) as f64 - std::f64::consts::PI
+    };
+
+    let mut weights = Vec::with_capacity(vertices.len());
+    let mut adjency = AdjacencyBuilder::new(vertices.len());
+    adjency.add_indices(&indices);
+
+    for (i, nb) in adjency.finish().iter().enumerate() {
+        let mut areas = Vec::with_capacity(nb.len());
+        areas.push(spherical_face_area(
+            i,
+            *nb.first().unwrap(),
+            *nb.last().unwrap(),
+        ));
+        println!("Vertex {}: {} neighbors", i, nb.len());
+        for j in 0..nb.len() - 1 {
+            let area = spherical_face_area(i, nb[j], nb[j + 1]);
+            areas.push(area);
+        }
+        let avg_area = areas.iter().sum::<f64>() / areas.len() as f64;
+        weights.push(avg_area);
+    }
+    let scale = vertices.len() as f64 / weights.iter().sum::<f64>();
+    weights.iter_mut().for_each(|w| *w *= scale);
+    assert_eq!(weights.len(), vertices.len());
+    weights
 }
 
 #[cfg(test)]
@@ -91,5 +158,28 @@ mod tests {
             center += point;
         }
         assert_relative_eq!(center.norm(), 0.0, epsilon = 1e-1);
+
+        let icosphere = make_icosphere(1).unwrap();
+        let weights = make_weights(&icosphere);
+        let min_weight = weights.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_weight = weights.iter().cloned().fold(0.0, f64::max);
+        assert_relative_eq!(min_weight, 1.0, epsilon = 1e-6);
+        assert_relative_eq!(max_weight, 1.0, epsilon = 1e-6);
+
+        let icosphere = make_icosphere(50).unwrap();
+        let weights = make_weights(&icosphere);
+        let min_weight = weights.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_weight = weights.iter().cloned().fold(0.0, f64::max);
+        let mean_weight = weights.iter().sum::<f64>() / weights.len() as f64;
+        let weight_stddev = weights
+            .iter()
+            .map(|w| (w - mean_weight).powi(2))
+            .sum::<f64>()
+            .sqrt()
+            / (weights.len() as f64).sqrt();
+        assert_relative_eq!(min_weight, 0.9399785391170831, epsilon = 1e-6);
+        assert_relative_eq!(max_weight, 1.0320120385450426, epsilon = 1e-6);
+        assert_relative_eq!(mean_weight, 0.9999999999999999, epsilon = 1e-6);
+        assert_relative_eq!(weight_stddev, 0.028536625575550475, epsilon = 1e-6);
     }
 }
