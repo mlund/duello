@@ -144,7 +144,7 @@ pub fn do_icoscan(
                 .map(|&p| [p.x as f32, p.y as f32, p.z as f32])
                 .collect();
             traj.write(&frame).expect("Failed to write XTC frame");
-            write!(energy_file, "{:.6}\n", data).expect("Failed to write energy to file");
+            writeln!(energy_file, "{:.6}", data).expect("Failed to write energy to file");
         };
 
         r_and_omega
