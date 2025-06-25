@@ -55,7 +55,7 @@ pub struct IcoTable2D<T: Clone + GetSize> {
     /// Each vertex corresponds to a position on the unit-sphere and can be converted
     /// to a spherical coordinate (θ, φ), i.e. a 2D coordinate.
     #[get_size(size = 8)]
-    vertices: Arc<OnceLock<Vec<Vertex>>>,
+    vertices: Arc<Vec<Vertex>>,
     /// Vertex information (position, data, neighbors)
     #[get_size(size_fn = oncelock_size_helper)]
     data: Vec<OnceLock<T>>,
@@ -68,11 +68,11 @@ fn oncelock_size_helper<T: GetSize>(value: &Vec<OnceLock<T>>) -> usize {
 impl<T: Clone + GetSize> IcoTable2D<T> {
     /// Iterator over vertices `(positions, neighbors)`
     pub fn iter_vertices(&self) -> impl Iterator<Item = &Vertex> {
-        self.vertices.get().unwrap().iter()
+        self.vertices.iter()
     }
     /// Get i'th vertex position
     pub fn get_pos(&self, index: usize) -> &Vector3 {
-        &self.vertices.get().unwrap()[index].pos
+        &self.vertices[index].pos
     }
     /// Get i'th data or `None`` if uninitialized
     pub fn get_data(&self, index: usize) -> &OnceLock<T> {
@@ -80,13 +80,13 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
     }
     /// Get i'th neighbors
     pub fn get_neighbors(&self, index: usize) -> &[u16] {
-        &self.vertices.get().unwrap()[index].neighbors
+        &self.vertices[index].neighbors
     }
     /// Get i'th vertex position; neighborlist; and data
     pub fn get(&self, index: usize) -> (&Vector3, &[u16], &OnceLock<T>) {
         (
-            &self.vertices.get().unwrap()[index].pos,
-            &self.vertices.get().unwrap()[index].neighbors,
+            &self.vertices[index].pos,
+            &self.vertices[index].neighbors,
             self.get_data(index),
         )
     }
@@ -100,8 +100,8 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
     }
 
     /// Generate table based on an existing vertices pointer and optionally set default data
-    pub fn from_vertices(vertices: Arc<OnceLock<Vec<Vertex>>>, data: Option<T>) -> Self {
-        let num_vertices = vertices.get().unwrap().len();
+    pub fn from_vertices(vertices: Arc<Vec<Vertex>>, data: Option<T>) -> Self {
+        let num_vertices = vertices.len();
         let data = data.map(|d| OnceLock::from(d));
         Self {
             vertices,
@@ -115,7 +115,7 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
             vmd_draw(Path::new("icosphere.vmd"), icosphere, "green", Some(10.0)).unwrap();
         }
         Self {
-            vertices: Arc::new(OnceLock::from(make_vertices(icosphere))),
+            vertices: Arc::new(make_vertices(icosphere)),
             data: vec![OnceLock::default(); icosphere.raw_points().len()],
         }
     }
@@ -134,7 +134,7 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
 
     /// Number of vertices in the table
     pub fn len(&self) -> usize {
-        self.vertices.get().unwrap().len()
+        self.vertices.len()
     }
 
     /// Check if the table is empty, i.e. has no vertices
@@ -184,7 +184,7 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
                 Vertex { pos, neighbors }
             })
             .collect_vec();
-        self.vertices = Arc::new(OnceLock::from(new_vertices));
+        self.vertices = Arc::new(new_vertices);
     }
 
     /// Get projected barycentric coordinate for an arbitrary point
@@ -355,7 +355,7 @@ impl IcoTable4D {
     /// Generate table based on a minimum number of vertices on the subdivided icosaedron
     pub fn from_min_points(min_points: usize, default_data: IcoTable2D<f64>) -> Result<Self> {
         let icosphere = make_icosphere(min_points)?;
-        let vertices = Arc::new(OnceLock::from(make_vertices(&icosphere)));
+        let vertices = Arc::new(make_vertices(&icosphere));
         Ok(Self::from_vertices(vertices, Some(default_data)))
     }
 
@@ -388,7 +388,7 @@ impl Table6D {
 
         // Vertex positions and neighbors are shared across all tables w. smart pointer.
         // Oncelocked data on the innermost table1 is left uninitialized and should be set later
-        let vertices = Arc::new(OnceLock::from(make_vertices(&icosphere)));
+        let vertices = Arc::new(make_vertices(&icosphere));
         let table_b = IcoTable2D::<f64>::from_vertices(vertices.clone(), None); // B: 𝜃 and 𝜑
 
         // We have a new angular resolution, depending on number of subdivisions
