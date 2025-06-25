@@ -48,6 +48,12 @@ pub fn make_icosphere(min_points: usize) -> Result<IcoSphere> {
         .map(|(n_div, _)| n_div)
         .context("too many vertices")?;
 
+    debug!(
+        "Creating icosphere with {} divisions, {} vertices",
+        n_divisions,
+        points_per_division(n_divisions)
+    );
+
     Ok(IcoSphere::new(n_divisions, |_| ()))
 }
 

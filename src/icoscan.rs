@@ -46,6 +46,8 @@ pub fn orient_structures(
     ref_a: &Structure,
     ref_b: &Structure,
 ) -> (Structure, Structure) {
+    let vertex_i = vertex_i.normalize();
+    let vertex_j = vertex_j.normalize();
     let r_vec = Vector3::new(0.0, 0.0, r);
     // Z axis cannot be *exactly* parallel to r_vec; see nalgebra::rotation_between
     let zaxis = UnitVector3::new_normalize(Vector3::new(0.0005, 0.0005, 1.0));

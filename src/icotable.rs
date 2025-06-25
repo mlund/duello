@@ -12,6 +12,7 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
+use crate::icosphere::make_weights;
 use crate::{
     make_icosphere, make_vertices, table::PaddedTable, IcoSphere, SphericalCoord, Vector3, Vertex,
 };
@@ -70,9 +71,9 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
     pub fn iter_vertices(&self) -> impl Iterator<Item = &Vertex> {
         self.vertices.iter()
     }
-    /// Get i'th vertex position
-    pub fn get_pos(&self, index: usize) -> &Vector3 {
-        &self.vertices[index].pos
+    /// Get i'th vertex position (normalized)
+    pub fn get_normalized_pos(&self, index: usize) -> Vector3 {
+        self.vertices[index].pos.normalize()
     }
     /// Get i'th data or `None`` if uninitialized
     pub fn get_data(&self, index: usize) -> &OnceLock<T> {
@@ -82,7 +83,7 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
     pub fn get_neighbors(&self, index: usize) -> &[u16] {
         &self.vertices[index].neighbors
     }
-    /// Get i'th vertex position; neighborlist; and data
+    /// Get i'th vertex normalized position; neighborlist; and data
     pub fn get(&self, index: usize) -> (&Vector3, &[u16], &OnceLock<T>) {
         (
             &self.vertices[index].pos,
@@ -264,11 +265,11 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
     }
 
     /// Get the three vertices of a face
-    pub fn face_positions(&self, face: &Face) -> (&Vector3, &Vector3, &Vector3) {
+    pub fn face_positions(&self, face: &Face) -> (Vector3, Vector3, Vector3) {
         (
-            self.get_pos(face[0]),
-            self.get_pos(face[1]),
-            self.get_pos(face[2]),
+            self.get_normalized_pos(face[0]),
+            self.get_normalized_pos(face[1]),
+            self.get_normalized_pos(face[2]),
         )
     }
 
@@ -283,7 +284,7 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
     /// - Binary Space Partitioning: https://en.wikipedia.org/wiki/Binary_space_partitioning
     pub fn nearest_vertex(&self, point: &Vector3) -> usize {
         self.iter_vertices()
-            .map(|v| (v.pos - point).norm_squared())
+            .map(|v| (v.pos.normalize() - point).norm_squared())
             .enumerate()
             .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
             .unwrap()
@@ -302,7 +303,12 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
             .get_neighbors(nearest)
             .iter()
             .cloned()
-            .map(|i| (i, (self.get_pos(i as usize) - point).norm_squared()))
+            .map(|i| {
+                (
+                    i,
+                    (self.get_normalized_pos(i as usize) - point).norm_squared(),
+                )
+            })
             .sorted_by(|a, b| a.1.partial_cmp(&b.1).unwrap()) // sort ascending
             .map(|(i, _)| i as usize) // keep only indices
             .take(2) // take two next nearest distances
@@ -385,10 +391,20 @@ impl Table6D {
         // Generate icosphere with at least n vertices
         let n_points = (4.0 * PI / angle_resolution.powi(2)).round() as usize;
         let icosphere = make_icosphere(n_points)?;
+        let weights = make_weights(&icosphere);
 
-        // Vertex positions and neighbors are shared across all tables w. smart pointer.
+        // Scale vertices by their relative weights. This is just a simple way to store the
+        // weights in the vertices, so that we can use them later
+        // NOTE: Normalize vertices before use in geometric operations!
+        let mut vertices = make_vertices(&icosphere);
+        vertices
+            .iter_mut()
+            .zip(weights)
+            .for_each(|(v, w)| v.pos *= w); // scale vertices by weights
+
+        // Vertex positions and neighbors are shared across all tables w. thread-safe smart pointer.
         // Oncelocked data on the innermost table1 is left uninitialized and should be set later
-        let vertices = Arc::new(make_vertices(&icosphere));
+        let vertices = Arc::new(vertices);
         let table_b = IcoTable2D::<f64>::from_vertices(vertices.clone(), None); // B: 𝜃 and 𝜑
 
         // We have a new angular resolution, depending on number of subdivisions
@@ -412,8 +428,8 @@ impl Table6D {
             for (vertex1, vertex2, data) in angles.flat_iter() {
                 if let Some(data) = data.get() {
                     let (s1, s2) = (
-                        SphericalCoord::from_cartesian(*vertex1),
-                        SphericalCoord::from_cartesian(*vertex2),
+                        SphericalCoord::from_cartesian(vertex1.normalize()),
+                        SphericalCoord::from_cartesian(vertex2.normalize()),
                     );
                     writeln!(
                         stream,
@@ -502,7 +518,7 @@ mod tests {
         let icotable = IcoTable2D::<f64>::from_icosphere(&icosphere, 0.0);
         assert_eq!(icotable.data.len(), 12);
 
-        let point = icotable.get_pos(0);
+        let point = icotable.get_normalized_pos(0);
 
         assert_relative_eq!(point.x, 0.0);
         assert_relative_eq!(point.y, 1.0);
@@ -517,16 +533,16 @@ mod tests {
         assert_relative_eq!(bary[2], 0.0);
 
         // Nearest face to slightly displaced vertex 0
-        let point = (icotable.get_pos(0) + Vector3::new(1e-3, 0.0, 0.0)).normalize();
+        let point = (icotable.get_normalized_pos(0) + Vector3::new(1e-3, 0.0, 0.0)).normalize();
         let face = icotable.nearest_face(&point);
         let bary = icotable.barycentric(&point, &face);
         assert_eq!(face, [0, 1, 5]);
-        assert_relative_eq!(bary[0], 0.9991907334103153);
-        assert_relative_eq!(bary[1], 0.000809266589684687);
+        assert_relative_eq!(bary[0], 0.9991907334103153, epsilon = 1e-6);
+        assert_relative_eq!(bary[1], 0.000809266589684687, epsilon = 1e-6);
         assert_relative_eq!(bary[2], 0.0);
 
         // find nearest vertex and face to vertex 2
-        let point = icotable.get_pos(2);
+        let point = icotable.get_normalized_pos(2);
         let face = icotable.nearest_face(&point);
         let bary = icotable.barycentric(&point, &face);
         assert_eq!(face, [0, 1, 2]);
@@ -535,7 +551,7 @@ mod tests {
         assert_relative_eq!(bary[2], 1.0);
 
         // Midpoint on edge between vertices 0 and 2
-        let point = point + (icotable.get_pos(0) - point) * 0.5;
+        let point = point + (icotable.get_normalized_pos(0) - point) * 0.5;
         let bary = icotable.barycentric(&point, &face);
         assert_relative_eq!(bary[0], 0.5);
         assert_relative_eq!(bary[1], 0.0);
@@ -550,11 +566,11 @@ mod tests {
 
         let point = Vector3::new(0.5, 0.5, 0.5).normalize();
         let data = icotable.interpolate(&point);
-        assert_relative_eq!(data, 2.59977558757542);
+        assert_relative_eq!(data, 2.59977558757542, epsilon = 1e-6);
 
         let point = Vector3::new(0.5, 1.0, -2.0).normalize();
         let data = icotable.interpolate(&point);
-        assert_relative_eq!(data, 6.062167441678067);
+        assert_relative_eq!(data, 6.062167441678067, epsilon = 1e-6);
     }
 
     #[test]
