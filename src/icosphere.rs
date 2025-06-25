@@ -14,8 +14,11 @@
 
 #[cfg(test)]
 extern crate approx;
+use std::f64::consts::PI;
+
 use crate::{IcoSphere, Vector3};
 use anyhow::{Context, Result};
+use glam::f32::Vec3A;
 use hexasphere::AdjacencyBuilder;
 
 /// Make icosphere with at least `min_points` surface points (vertices).
@@ -88,13 +91,13 @@ pub fn make_weights(icosphere: &IcoSphere) -> Vec<f64> {
     // spherical face area
     #[allow(non_snake_case)]
     let spherical_face_area = |a: usize, b: usize, c: usize| {
-        let a = vertices[a].normalize();
-        let b = vertices[b].normalize();
-        let c = vertices[c].normalize();
+        let a = &vertices[a];
+        let b = &vertices[b];
+        let c = &vertices[c];
 
-        let angle = |u: glam::f32::Vec3A, v: glam::f32::Vec3A, w: glam::f32::Vec3A| {
-            let vu = (u - v * v.dot(u)).normalize();
-            let vw = (w - v * v.dot(w)).normalize();
+        let angle = |u: &Vec3A, v: &Vec3A, w: &Vec3A| {
+            let vu = (u - v * v.dot(*u)).normalize();
+            let vw = (w - v * v.dot(*w)).normalize();
             vu.angle_between(vw)
         };
 
@@ -102,7 +105,7 @@ pub fn make_weights(icosphere: &IcoSphere) -> Vec<f64> {
         let B = angle(c, b, a);
         let C = angle(a, c, b);
 
-        (A + B + C) as f64 - std::f64::consts::PI
+        (A + B + C) as f64 - PI
     };
 
     let mut weights = Vec::with_capacity(vertices.len());
@@ -116,7 +119,6 @@ pub fn make_weights(icosphere: &IcoSphere) -> Vec<f64> {
             *nb.first().unwrap(),
             *nb.last().unwrap(),
         ));
-        println!("Vertex {}: {} neighbors", i, nb.len());
         for j in 0..nb.len() - 1 {
             let area = spherical_face_area(i, nb[j], nb[j + 1]);
             areas.push(area);
@@ -124,9 +126,10 @@ pub fn make_weights(icosphere: &IcoSphere) -> Vec<f64> {
         let avg_area = areas.iter().sum::<f64>() / areas.len() as f64;
         weights.push(avg_area);
     }
+    assert_eq!(weights.len(), vertices.len());
+
     let scale = vertices.len() as f64 / weights.iter().sum::<f64>();
     weights.iter_mut().for_each(|w| *w *= scale);
-    assert_eq!(weights.len(), vertices.len());
     weights
 }
 
@@ -166,7 +169,23 @@ mod tests {
         assert_relative_eq!(min_weight, 1.0, epsilon = 1e-6);
         assert_relative_eq!(max_weight, 1.0, epsilon = 1e-6);
 
-        let icosphere = make_icosphere(50).unwrap();
+        let icosphere = make_icosphere(42).unwrap();
+        let weights = make_weights(&icosphere);
+        let min_weight = weights.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_weight = weights.iter().cloned().fold(0.0, f64::max);
+        let mean_weight = weights.iter().sum::<f64>() / weights.len() as f64;
+        let weight_stddev = weights
+            .iter()
+            .map(|w| (w - mean_weight).powi(2))
+            .sum::<f64>()
+            .sqrt()
+            / (weights.len() as f64).sqrt();
+        assert_relative_eq!(min_weight, 0.9538671732382897, epsilon = 1e-6);
+        assert_relative_eq!(max_weight, 1.0184529616689328, epsilon = 1e-6);
+        assert_relative_eq!(mean_weight, 0.9999999999999999, epsilon = 1e-6);
+        assert_relative_eq!(weight_stddev, 0.0291766407712738, epsilon = 1e-6);
+
+        let icosphere = make_icosphere(92).unwrap();
         let weights = make_weights(&icosphere);
         let min_weight = weights.iter().cloned().fold(f64::INFINITY, f64::min);
         let max_weight = weights.iter().cloned().fold(0.0, f64::max);
