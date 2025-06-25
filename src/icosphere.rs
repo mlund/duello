@@ -91,9 +91,9 @@ pub fn make_weights(icosphere: &IcoSphere) -> Vec<f64> {
     // spherical face area
     #[allow(non_snake_case)]
     let spherical_face_area = |a: usize, b: usize, c: usize| {
-        let a = &vertices[a];
-        let b = &vertices[b];
-        let c = &vertices[c];
+        let a = &vertices[a].normalize();
+        let b = &vertices[b].normalize();
+        let c = &vertices[c].normalize();
 
         let angle = |u: &Vec3A, v: &Vec3A, w: &Vec3A| {
             let vu = (u - v * v.dot(*u)).normalize();
