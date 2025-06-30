@@ -2,6 +2,9 @@
   <img src="assets/duello-logo.png" alt="crates.io", height="300">
 </p>
 <p align="center">
+    <a href="https://doi.org/10.5281/zenodo.15772003">
+        <img src="https://zenodo.org/badge/DOI/10.5281/zenodo.15772003.svg" alt="Zenodo">
+    </a>
     <a href="https://colab.research.google.com/github/mlund/duello/blob/master/scripts/colab.ipynb">
         <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab">
     </a>
