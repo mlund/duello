@@ -11,8 +11,7 @@ compatibility = "manylinux2014"
 
 [project]
 name = "duello"
-version = "0.1.0"
+version = "0.1.5"
 dependencies = [
-    "mdtraj>=1.9",
     "pdb2xyz>=0.1.2",
 ]
