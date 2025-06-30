@@ -1,0 +1,31 @@
+{
+    "title": "Duello - Virial Coefficient and Dissociation Constant Estimation for Rigid Macromolecules",
+    "description": "Duello is a tool to evaluate the two-body partition function between rigid bodies, performing a statistical mechanical average over inter-molecular orientations using subdivided icosahedrons. The osmotic second virial coefficient; binary dissociation constant; and the potential of mean force is calculated.",
+    "creators": [
+        {
+            "name": "Mikael Lund",
+            "affiliation": "Division of Theoretical Chemistry, Department of Chemistry, Lund University, Sweden",
+            "orcid": "0000-0001-8178-8175"
+        }
+    ],
+    "contributors": [
+        {"type": "Researcher", "name": "Isabel Vinterbladh", "orcid": "0009-0007-0801-2611"}
+    ],
+    "keywords": [
+        "statistical thermodynamics",
+        "virial coefficient",
+        "intermolecular interactions",
+        "molecular simulation",
+        "docking"
+    ],
+    "related_identifiers": [
+        {
+            "scheme": "url",
+            "identifier": "https://github.com/mlund/duello",
+            "relation": "isSupplementTo"
+        }
+    ],
+    "license": "mit-license",
+    "access_right": "open",
+    "upload_type": "software"
+}
