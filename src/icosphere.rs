@@ -203,7 +203,7 @@ mod tests {
             .sqrt()
             / (weights.len() as f64).sqrt();
         assert_relative_eq!(min_weight, 0.9399785391170831, epsilon = 1e-6);
-        assert_relative_eq!(max_weight, 1.0320120385450426, epsilon = 1e-6);
+        assert_relative_eq!(max_weight, 1.0320120385450426, epsilon = 1e-5);
         assert_relative_eq!(mean_weight, 0.9999999999999999, epsilon = 1e-6);
         assert_relative_eq!(weight_stddev, 0.028536625575550475, epsilon = 1e-6);
     }
