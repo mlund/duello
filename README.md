@@ -153,7 +153,7 @@ binary package on pipy.org.
 ## Create `pip` package using Maturin via a Docker image:
 
 ```sh
-docker run --rm -v $(pwd):/io ghcr.io/pyo3/maturin publish -u __token__ -p ...
+docker run --rm -v $(pwd):/io ghcr.io/pyo3/maturin publish -u __token__ -p PYPI_TOKEN
 ```
 
 For local Maturin installs, follow the steps below.
@@ -161,9 +161,14 @@ For local Maturin installs, follow the steps below.
 ```sh
 pip install ziglang pipx
 pipx install maturin # on ubuntu; then restart shell
-maturin publish -u __token__ --target=x86_64-unknown-linux-gnu --zig
+maturin publish -u __token__ -p PYPI_TOKEN --target=x86_64-unknown-linux-gnu --zig
 ```
 
 MacOS targets can be generated without `--zig` using the targets
 `x86_64-apple-darwin` and `aarch64-apple-darwin`.
-See list of targets with `rustup target list`.
+
+```sh
+rustup target list
+rustup target add x86_64-apple-darwin
+```
+
