@@ -139,7 +139,7 @@ The provided examples illustrate the following schemes:
 - Screened `Coulomb` + `WeeksChandlerAndersen` for the CPPM model.
 
 Many more pair-potentials are available through the
-[`interatomic`](https://crates.io/crates/interatomic) library,
+[`interatomic`](https://docs.rs/interatomic/latest/interatomic/twobody/index.html) library,
 _e.g._ `LennardJones`, `HardSphere` etc.
 
 __Warning:__ The electrostatic term, `Coulomb` is
