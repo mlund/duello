@@ -118,15 +118,18 @@ pub fn make_weights(icosphere: &IcoSphere) -> Vec<f64> {
     let mut adjency = AdjacencyBuilder::new(vertices.len());
     adjency.add_indices(&indices);
 
-    for (i, nb) in adjency.finish().iter().enumerate() {
-        let mut areas = Vec::with_capacity(nb.len());
+    // Loop over each neighboring face to i'th vertex
+    for (i, neighbors) in adjency.finish().iter().enumerate() {
+        let mut areas = Vec::with_capacity(neighbors.len());
+        // Handle the face made of i with the first and last neighboring vertices
         areas.push(spherical_face_area(
             i,
-            *nb.first().unwrap(),
-            *nb.last().unwrap(),
+            *neighbors.first().unwrap(),
+            *neighbors.last().unwrap(),
         ));
-        for j in 0..nb.len() - 1 {
-            let area = spherical_face_area(i, nb[j], nb[j + 1]);
+        // Handle the faces made of i with each remaining pair of neighboring vertices
+        for j in 0..neighbors.len() - 1 {
+            let area = spherical_face_area(i, neighbors[j], neighbors[j + 1]);
             areas.push(area);
         }
         let avg_area = areas.iter().sum::<f64>() / areas.len() as f64;
@@ -134,6 +137,8 @@ pub fn make_weights(icosphere: &IcoSphere) -> Vec<f64> {
     }
     assert_eq!(weights.len(), vertices.len());
 
+    // Normalize the weights to that they fluctuate around 1.0
+    // (this has no effect on final results)
     let scale = vertices.len() as f64 / weights.iter().sum::<f64>();
     weights.iter_mut().for_each(|w| *w *= scale);
     weights
