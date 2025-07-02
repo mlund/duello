@@ -118,23 +118,22 @@ pub fn make_weights(icosphere: &IcoSphere) -> Vec<f64> {
 }
 
 /// Calculate the spherical face area of a triangle defined by three vertices
+/// See <https://en.wikipedia.org/wiki/Spherical_trigonometry>
 #[allow(non_snake_case)]
 fn spherical_face_area(a: &Vec3A, b: &Vec3A, c: &Vec3A) -> f64 {
-    let a = &a.normalize();
-    let b = &b.normalize();
-    let c = &c.normalize();
+    assert!(a.is_normalized());
+    assert!(b.is_normalized());
+    assert!(c.is_normalized());
 
     let angle = |u: &Vec3A, v: &Vec3A, w: &Vec3A| {
-        let vu = (u - v * v.dot(*u)).normalize();
-        let vw = (w - v * v.dot(*w)).normalize();
+        let vu = u - v * v.dot(*u);
+        let vw = w - v * v.dot(*w);
         vu.angle_between(vw)
     };
-
     let A = angle(b, a, c);
     let B = angle(c, b, a);
     let C = angle(a, c, b);
-
-    (A + B + C) as f64 - PI
+    (A + B + C) as f64 - PI // Spherical excess
 }
 
 /// Calculate the euclidian (flat) face area of a triangle defined by three vertices
@@ -226,9 +225,8 @@ mod tests {
         let area = spherical_face_area(&a, &b, &c);
         assert_relative_eq!(area, 0.5 * PI, epsilon = 1e-6);
 
-        // Sum face area of a regular icosahedron - should be 4π
+        // Sum face areas of a regular icosahedron - should be 4π
         let icosahedron = IcoSphere::new(0, |_| ());
-        let indices = icosahedron.get_all_indices();
         let vertices = icosahedron.raw_points();
         let face_area = |triangle: &[u32]| {
             let a = &vertices[triangle[0] as usize];
@@ -236,7 +234,7 @@ mod tests {
             let c = &vertices[triangle[2] as usize];
             spherical_face_area(a, b, c)
         };
-        let total_area = indices.chunks(3).map(face_area).sum::<f64>();
+        let total_area: f64 = icosahedron.get_all_indices().chunks(3).map(face_area).sum();
         assert_relative_eq!(total_area, 4.0 * PI, epsilon = 1e-5);
     }
 }
