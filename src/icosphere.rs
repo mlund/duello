@@ -216,4 +216,14 @@ mod tests {
         assert_relative_eq!(mean_weight, 0.9999999999999999, epsilon = 1e-6);
         assert_relative_eq!(weight_stddev, 0.028536625575550475, epsilon = 1e-6);
     }
+
+    #[test]
+    fn test_spherical_face_area() {
+        // Equilateral triangle on the unit sphere
+        let a = Vec3A::new(1.0, 0.0, 0.0);
+        let b = Vec3A::new(0.0, 1.0, 0.0);
+        let c = Vec3A::new(0.0, 0.0, 1.0);
+        let area = spherical_face_area(&a, &b, &c);
+        assert_relative_eq!(area, 0.5 * PI, epsilon = 1e-6);
+    }
 }
