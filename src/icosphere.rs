@@ -224,17 +224,35 @@ mod tests {
         let c = Vec3A::new(0.0, 0.0, 1.0);
         let area = spherical_face_area(&a, &b, &c);
         assert_relative_eq!(area, 0.5 * PI, epsilon = 1e-6);
-
+    }
+    #[test]
+    fn test_icosahedron_face_areas() {
         // Sum face areas of a regular icosahedron - should be 4π
-        let icosahedron = IcoSphere::new(0, |_| ());
+        let icosahedron = IcoSphere::new(0, |_| ()); // no subdivision
         let vertices = icosahedron.raw_points();
-        let face_area = |triangle: &[u32]| {
-            let a = &vertices[triangle[0] as usize];
-            let b = &vertices[triangle[1] as usize];
-            let c = &vertices[triangle[2] as usize];
+        let to_area = |face: &[u32]| {
+            let a = &vertices[face[0] as usize];
+            let b = &vertices[face[1] as usize];
+            let c = &vertices[face[2] as usize];
             spherical_face_area(a, b, c)
         };
-        let total_area: f64 = icosahedron.get_all_indices().chunks(3).map(face_area).sum();
+        let total_area: f64 = icosahedron.get_all_indices().chunks(3).map(to_area).sum();
+        assert_eq!(vertices.len(), 12);
         assert_relative_eq!(total_area, 4.0 * PI, epsilon = 1e-5);
+    }
+    #[test]
+    fn test_subdivided_icosahedron_face_areas() {
+        // Sum face areas of a double subdivided icosahedron - should be 4π
+        let icosahedron = IcoSphere::new(2, |_| ()); // 2 subdivisions
+        let vertices = icosahedron.raw_points();
+        let to_area = |face: &[u32]| {
+            let a = &vertices[face[0] as usize];
+            let b = &vertices[face[1] as usize];
+            let c = &vertices[face[2] as usize];
+            spherical_face_area(a, b, c)
+        };
+        let total_area: f64 = icosahedron.get_all_indices().chunks(3).map(to_area).sum();
+        assert_eq!(vertices.len(), 92);
+        assert_relative_eq!(total_area, 4.0 * PI, epsilon = 1e-4);
     }
 }
