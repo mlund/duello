@@ -225,5 +225,18 @@ mod tests {
         let c = Vec3A::new(0.0, 0.0, 1.0);
         let area = spherical_face_area(&a, &b, &c);
         assert_relative_eq!(area, 0.5 * PI, epsilon = 1e-6);
+
+        // Sum face area of a regular icosahedron - should be 4π
+        let icosahedron = IcoSphere::new(0, |_| ());
+        let indices = icosahedron.get_all_indices();
+        let vertices = icosahedron.raw_points();
+        let face_area = |triangle: &[u32]| {
+            let a = &vertices[triangle[0] as usize];
+            let b = &vertices[triangle[1] as usize];
+            let c = &vertices[triangle[2] as usize];
+            spherical_face_area(a, b, c)
+        };
+        let total_area = indices.chunks(3).map(face_area).sum::<f64>();
+        assert_relative_eq!(total_area, 4.0 * PI, epsilon = 1e-5);
     }
 }
