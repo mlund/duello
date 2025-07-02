@@ -70,11 +70,11 @@ impl Sample {
     }
     /// Free energy (kJ / mol)
     pub fn free_energy(&self) -> f64 {
-        (self.exp_energy / self.degeneracy as f64).ln().neg() * self.thermal_energy
+        (self.exp_energy / self.degeneracy).ln().neg() * self.thermal_energy
     }
     /// Mean <exp(-U/kT)-1>
     pub fn mean_exp_energy_m1(&self) -> f64 {
-        self.exp_energy_m1 / self.degeneracy as f64
+        self.exp_energy_m1 / self.degeneracy
     }
     /// Number of samples
     pub fn n(&self) -> u64 {

@@ -83,37 +83,6 @@ pub fn extract_vertices(icosphere: &IcoSphere) -> Vec<Vector3> {
 pub fn make_weights(icosphere: &IcoSphere) -> Vec<f64> {
     let indices = icosphere.get_all_indices();
     let vertices = icosphere.raw_points();
-
-    // flat (euclidean) face area
-    let _flat_face_area = |a: usize, b: usize, c: usize| {
-        let a = vertices[a];
-        let b = vertices[b];
-        let c = vertices[c];
-        let ab = b - a;
-        let ac = c - a;
-        0.5 * ab.cross(ac).length()
-    };
-
-    // spherical face area
-    #[allow(non_snake_case)]
-    let spherical_face_area = |a: usize, b: usize, c: usize| {
-        let a = &vertices[a].normalize();
-        let b = &vertices[b].normalize();
-        let c = &vertices[c].normalize();
-
-        let angle = |u: &Vec3A, v: &Vec3A, w: &Vec3A| {
-            let vu = (u - v * v.dot(*u)).normalize();
-            let vw = (w - v * v.dot(*w)).normalize();
-            vu.angle_between(vw)
-        };
-
-        let A = angle(b, a, c);
-        let B = angle(c, b, a);
-        let C = angle(a, c, b);
-
-        (A + B + C) as f64 - PI
-    };
-
     let mut weights = Vec::with_capacity(vertices.len());
     let mut adjency = AdjacencyBuilder::new(vertices.len());
     adjency.add_indices(&indices);
@@ -123,13 +92,17 @@ pub fn make_weights(icosphere: &IcoSphere) -> Vec<f64> {
         let mut areas = Vec::with_capacity(neighbors.len());
         // Handle the face made of i with the first and last neighboring vertices
         areas.push(spherical_face_area(
-            i,
-            *neighbors.first().unwrap(),
-            *neighbors.last().unwrap(),
+            &vertices[i],
+            &vertices[*neighbors.first().unwrap()],
+            &vertices[*neighbors.last().unwrap()],
         ));
-        // Handle the faces made of i with each remaining pair of neighboring vertices
+        // Handle the faces made of i with each remaining pairs of neighboring vertices
         for j in 0..neighbors.len() - 1 {
-            let area = spherical_face_area(i, neighbors[j], neighbors[j + 1]);
+            let area = spherical_face_area(
+                &vertices[i],
+                &vertices[neighbors[j]],
+                &vertices[neighbors[j + 1]],
+            );
             areas.push(area);
         }
         let avg_area = areas.iter().sum::<f64>() / areas.len() as f64;
@@ -137,11 +110,42 @@ pub fn make_weights(icosphere: &IcoSphere) -> Vec<f64> {
     }
     assert_eq!(weights.len(), vertices.len());
 
-    // Normalize the weights to that they fluctuate around 1.0
+    // Normalize the weights so that they fluctuate around 1.0
     // (this has no effect on final results)
     let scale = vertices.len() as f64 / weights.iter().sum::<f64>();
     weights.iter_mut().for_each(|w| *w *= scale);
     weights
+}
+
+/// Calculate the spherical face area of a triangle defined by three vertices
+#[allow(non_snake_case)]
+fn spherical_face_area(a: &Vec3A, b: &Vec3A, c: &Vec3A) -> f64 {
+    let a = &a.normalize();
+    let b = &b.normalize();
+    let c = &c.normalize();
+
+    let angle = |u: &Vec3A, v: &Vec3A, w: &Vec3A| {
+        let vu = (u - v * v.dot(*u)).normalize();
+        let vw = (w - v * v.dot(*w)).normalize();
+        vu.angle_between(vw)
+    };
+
+    let A = angle(b, a, c);
+    let B = angle(c, b, a);
+    let C = angle(a, c, b);
+
+    (A + B + C) as f64 - PI
+}
+
+/// Calculate the euclidian (flat) face area of a triangle defined by three vertices
+#[allow(unused)]
+fn flat_face_area(a: &Vec3A, b: &Vec3A, c: &Vec3A) -> f64 {
+    let a = a.normalize();
+    let b = b.normalize();
+    let c = c.normalize();
+    let ab = b - a;
+    let ac = c - a;
+    0.5 * ab.cross(ac).length() as f64
 }
 
 #[cfg(test)]
