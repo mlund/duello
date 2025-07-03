@@ -12,7 +12,7 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
-use anyhow::bail;
+use anyhow::ensure;
 use itertools::Itertools;
 use num_traits::Inv;
 use physical_constants::AVOGADRO_CONSTANT;
@@ -49,12 +49,11 @@ impl VirialCoeff {
     /// 𝐵₂ = -½ ∫ [ exp(-𝛽𝑤(𝑟) ) - 1 ] 4π𝑟² d𝑟
     /// If σ is not provided, it is assumed to be the first distance in the PMF.
     pub fn from_pmf_slice(pomf: &[(f64, f64)], sigma: Option<f64>) -> anyhow::Result<Self> {
-        if pomf.len() < 2 {
-            bail!("PMF must have at least two points");
-        }
-        if !pomf.iter().map(|(r, _)| *r).is_sorted() {
-            bail!("PMF distances must be in increasing order");
-        }
+        ensure!(pomf.len() >= 2, "PMF must have at least two points");
+        ensure!(
+            pomf.iter().map(|(r, _)| *r).is_sorted(),
+            "PMF distances must be in ascending order"
+        );
         // use first two distances to calculate dr and assume it's constant
         let (r0, r1) = (pomf[0].0, pomf[1].0);
         let dr = r1 - r0;

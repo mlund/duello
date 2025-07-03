@@ -121,9 +121,9 @@ pub fn make_weights(icosphere: &IcoSphere) -> Vec<f64> {
 /// See <https://en.wikipedia.org/wiki/Spherical_trigonometry>
 #[allow(non_snake_case)]
 fn spherical_face_area(a: &Vec3A, b: &Vec3A, c: &Vec3A) -> f64 {
-    assert!(a.is_normalized());
-    assert!(b.is_normalized());
-    assert!(c.is_normalized());
+    debug_assert!(a.is_normalized());
+    debug_assert!(b.is_normalized());
+    debug_assert!(c.is_normalized());
 
     let angle = |u: &Vec3A, v: &Vec3A, w: &Vec3A| {
         let vu = u - v * v.dot(*u);
@@ -139,9 +139,9 @@ fn spherical_face_area(a: &Vec3A, b: &Vec3A, c: &Vec3A) -> f64 {
 /// Calculate the euclidian (flat) face area of a triangle defined by three vertices
 #[allow(unused)]
 fn flat_face_area(a: &Vec3A, b: &Vec3A, c: &Vec3A) -> f64 {
-    let a = a.normalize();
-    let b = b.normalize();
-    let c = c.normalize();
+    debug_assert!(a.is_normalized());
+    debug_assert!(b.is_normalized());
+    debug_assert!(c.is_normalized());
     let ab = b - a;
     let ac = c - a;
     0.5 * ab.cross(ac).length() as f64
@@ -218,10 +218,12 @@ mod tests {
 
     #[test]
     fn test_spherical_face_area() {
-        // Equilateral triangle on the unit sphere
-        let a = Vec3A::new(1.0, 0.0, 0.0);
-        let b = Vec3A::new(0.0, 1.0, 0.0);
-        let c = Vec3A::new(0.0, 0.0, 1.0);
+        // Equilateral triangle on the unit sphere (1/8 of a unit sphere)
+        let [a, b, c] = [
+            Vec3A::new(1.0, 0.0, 0.0),
+            Vec3A::new(0.0, 1.0, 0.0),
+            Vec3A::new(0.0, 0.0, 1.0),
+        ];
         let area = spherical_face_area(&a, &b, &c);
         assert_relative_eq!(area, 0.5 * PI, epsilon = 1e-6);
     }
@@ -231,9 +233,11 @@ mod tests {
         let icosahedron = IcoSphere::new(0, |_| ()); // no subdivision
         let vertices = icosahedron.raw_points();
         let to_area = |face: &[u32]| {
-            let a = &vertices[face[0] as usize];
-            let b = &vertices[face[1] as usize];
-            let c = &vertices[face[2] as usize];
+            let [a, b, c] = [
+                &vertices[face[0] as usize],
+                &vertices[face[1] as usize],
+                &vertices[face[2] as usize],
+            ];
             spherical_face_area(a, b, c)
         };
         let total_area: f64 = icosahedron.get_all_indices().chunks(3).map(to_area).sum();
@@ -246,9 +250,11 @@ mod tests {
         let icosahedron = IcoSphere::new(2, |_| ()); // 2 subdivisions
         let vertices = icosahedron.raw_points();
         let to_area = |face: &[u32]| {
-            let a = &vertices[face[0] as usize];
-            let b = &vertices[face[1] as usize];
-            let c = &vertices[face[2] as usize];
+            let [a, b, c] = [
+                &vertices[face[0] as usize],
+                &vertices[face[1] as usize],
+                &vertices[face[2] as usize],
+            ];
             spherical_face_area(a, b, c)
         };
         let total_area: f64 = icosahedron.get_all_indices().chunks(3).map(to_area).sum();

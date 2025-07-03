@@ -12,7 +12,7 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
-use anyhow::Result;
+use anyhow::{ensure, Result};
 use get_size::GetSize;
 
 pub type PaddedTable1D = PaddedTable<f64>;
@@ -71,11 +71,8 @@ impl<T: Clone + GetSize> PaddedTable<T> {
     /// Convert value to index
     pub fn to_index(&self, key: f64) -> Result<usize> {
         let index = ((key - self.min) / self.res + 0.5) as usize;
-        if index >= self.data.len() {
-            anyhow::bail!("Index out of range")
-        } else {
-            Ok(index)
-        }
+        ensure!(index < self.data.len(), "Index out of range");
+        Ok(index)
     }
     /// Set value corresponding to a key and add periodic padding to first and last element
     ///
