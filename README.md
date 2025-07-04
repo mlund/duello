@@ -82,8 +82,6 @@ you may alternatively build and install directly from the source code:
 cargo install --git https://github.com/mlund/duello
 ```
 
-If you have compilation issues, try updating Rust with `rustup toolchain update`.
-
 # Usage
 
 The command-line tool `duello` does the 6D scanning and calculates
@@ -91,7 +89,7 @@ the angularly averaged potential of mean force, _A(R)_ which
 is used to derive the 2nd virial coefficient and twobody dissociation constant, $K_d$.
 The two input structures should be in `.xyz` format and all particle names must
 be defined in the topology file under `atoms`.
-The topology also defines the particular pair-potential to use.
+The topology also defines the particular pair-potential to use, see below.
 Note that currently, a coulomb potential is automatically added and should
 hence _not_ be specified in the topology.
 The program is written in Rust and attempts to use all available CPU cores.
@@ -108,6 +106,24 @@ duello scan \
     --temperature 298.15
 ```
 
+## Preparing PDB files
+
+The following uses `pdb2xyz` to create a coarse grained XYZ file and Calvados topology for Duello:
+
+```sh
+pip install pdb2xyz
+pdb2xyz -i 4lzt.pdb -o 4lzt.xyz --pH 7.0 --sidechains
+duello scan \
+  -1 4lzt.xyz -2 4lzt.xyz \
+  --rmin 24 --rmax 80 --dr 0.5 \
+  --resolution 0.6 \
+  --top topology.yaml \
+  --molarity 0.05
+```
+
+If `pdb2xyz` give errors, you may be able to correct your PDB file with
+[pdbfixer](https://github.com/openmm/pdbfixer?tab=readme-ov-file).
+
 ## Examples
 
 Ready run scripts examples are provided in the `scripts/` directory:
@@ -117,12 +133,6 @@ Command                | Description
 `scripts/cppm.sh`      | Spherical, multipolar particles using the CPPM model
 `scripts/calvados3.sh` | Two coarse grained lysozyme molecules w. Calvados3 interactions
 
-## Converting PDB files
-
-A simple script to convert protein structure files to coarse grained, one bead
-per amino acid XYZ files is provided in `pdb2xyz` which can be installed with
-`pip install pdb2xyz`. This can also generate a corresponding `atomfile.yaml`
-with atom properties.
 
 ## Interaction models
 

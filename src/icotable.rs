@@ -21,6 +21,7 @@ use core::f64::consts::PI;
 use get_size::GetSize;
 use itertools::Itertools;
 use nalgebra::Matrix3;
+use std::fmt::Display;
 use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
@@ -130,7 +131,7 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
 
     pub fn angle_resolution(&self) -> f64 {
         let n_points = self.data.len();
-        (4.0 * std::f64::consts::PI / n_points as f64).sqrt()
+        (4.0 * PI / n_points as f64).sqrt()
     }
 
     /// Number of vertices in the table
@@ -146,7 +147,7 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
     /// Set data associated with each vertex using a generator function
     /// The function takes the index of the vertex and its position
     /// Due to the `OnceLock` wrap, this can be done only once!
-    pub fn set_vertex_data(&self, f: impl Fn(usize, &Vector3) -> T) -> anyhow::Result<()> {
+    pub fn set_vertex_data(&self, f: impl Fn(usize, &Vector3) -> T) -> Result<()> {
         ensure!(
             self.data.iter().any(|v| v.get().is_none()),
             "Data already set for some vertices"
@@ -326,7 +327,7 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
     }
 }
 
-impl std::fmt::Display for IcoTable2D<f64> {
+impl Display for IcoTable2D<f64> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "# x y z θ φ data")?;
         for (pos, _, data) in self.iter() {
@@ -372,7 +373,7 @@ impl IcoTable4D {
         bary_a: &Vector3,
         bary_b: &Vector3,
     ) -> f64 {
-        let data_ab = Matrix3::<f64>::from_fn(|i, j| {
+        let data_ab = Matrix3::from_fn(|i, j| {
             *self
                 .get_data(face_a[i])
                 .get()
@@ -404,7 +405,7 @@ impl Table6D {
         // Vertex positions and neighbors are shared across all tables w. thread-safe smart pointer.
         // Oncelocked data on the innermost table1 is left uninitialized and should be set later
         let vertices = Arc::new(vertices);
-        let table_b = IcoTable2D::<f64>::from_vertices(vertices.clone(), None); // B: 𝜃 and 𝜑
+        let table_b = IcoTable2D::from_vertices(vertices.clone(), None); // B: 𝜃 and 𝜑
 
         // We have a new angular resolution, depending on number of subdivisions
         let angle_resolution = table_b.angle_resolution();
@@ -455,7 +456,7 @@ pub(crate) fn vmd_draw(
     icosphere: &IcoSphere,
     color: &str,
     scale: Option<f32>,
-) -> anyhow::Result<()> {
+) -> Result<()> {
     let num_faces = icosphere.get_all_indices().len() / 3;
     let path = path.with_extension(format!("faces{}.vmd", num_faces));
     let mut stream = std::fs::File::create(path)?;
@@ -514,7 +515,7 @@ mod tests {
     #[test]
     fn test_icosphere_table() {
         let icosphere = make_icosphere(3).unwrap();
-        let icotable = IcoTable2D::<f64>::from_icosphere(&icosphere, 0.0);
+        let icotable = IcoTable2D::from_icosphere(&icosphere, 0.0);
         assert_eq!(icotable.data.len(), 12);
 
         let point = icotable.get_normalized_pos(0);
@@ -560,7 +561,7 @@ mod tests {
     #[test]
     fn test_icosphere_interpolate() {
         let icosphere = make_icosphere(3).unwrap();
-        let icotable = IcoTable2D::<f64>::from_icosphere_without_data(&icosphere);
+        let icotable = IcoTable2D::from_icosphere_without_data(&icosphere);
         icotable.set_vertex_data(|i, _| i as f64 + 1.0).unwrap();
 
         let point = Vector3::new(0.5, 0.5, 0.5).normalize();
@@ -576,7 +577,7 @@ mod tests {
     fn test_face_face_interpolation() {
         let n_points = 12;
         let icosphere = make_icosphere(n_points).unwrap();
-        let icotable = IcoTable2D::<f64>::from_icosphere_without_data(&icosphere);
+        let icotable = IcoTable2D::from_icosphere_without_data(&icosphere);
         icotable.set_vertex_data(|i, _| i as f64).unwrap();
         let icotable_of_spheres = IcoTable4D::from_min_points(n_points, icotable).unwrap();
 
