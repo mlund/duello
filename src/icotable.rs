@@ -426,23 +426,24 @@ impl Table6D {
         writeln!(stream, "# r 𝜔 𝜃1 𝜑1 𝜃2 𝜑2 data")?;
         for (omega, angles) in self.get(r)?.iter() {
             for (vertex1, vertex2, data) in angles.flat_iter() {
-                if let Some(data) = data.get() {
-                    let (s1, s2) = (
-                        SphericalCoord::from_cartesian(vertex1.normalize()),
-                        SphericalCoord::from_cartesian(vertex2.normalize()),
-                    );
-                    writeln!(
-                        stream,
-                        "{:.2} {:.3} {:.3} {:.3} {:.3} {:.3} {:.4e}",
-                        r,
-                        omega,
-                        s1.theta(),
-                        s1.phi(),
-                        s2.theta(),
-                        s2.phi(),
-                        data
-                    )?;
-                }
+                let Some(data) = data.get() else {
+                    continue; // skip uninitialized data
+                };
+                let (s1, s2) = (
+                    SphericalCoord::from_cartesian(vertex1.normalize()),
+                    SphericalCoord::from_cartesian(vertex2.normalize()),
+                );
+                writeln!(
+                    stream,
+                    "{:.2} {:.3} {:.3} {:.3} {:.3} {:.3} {:.4e}",
+                    r,
+                    omega,
+                    s1.theta(),
+                    s1.phi(),
+                    s2.theta(),
+                    s2.phi(),
+                    data
+                )?;
             }
         }
         Ok(())

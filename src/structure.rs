@@ -13,7 +13,7 @@
 // limitations under the license.
 
 use crate::Vector3;
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use faunus::topology::{AtomKind, FindByName};
 use itertools::Itertools;
 use nalgebra::Matrix3;
@@ -319,14 +319,14 @@ impl Display for Structure {
 
 /// Parse a single line from an XYZ file
 fn from_xyz_line(line: &str) -> Result<(String, Vector3)> {
-    if let Some([name, x, y, z]) = line.split_whitespace().collect_array() {
-        Ok((
-            name.to_string(),
-            Vector3::new(x.parse()?, y.parse()?, z.parse()?),
-        ))
-    } else {
-        bail!("'name x y z' expected in XYZ record: {}", line);
-    }
+    let [name, x, y, z] = line
+        .split_whitespace()
+        .collect_array()
+        .ok_or_else(|| anyhow!("Invalid XYZ record: {}", line))?;
+    Ok((
+        name.to_string(),
+        Vector3::new(x.parse()?, y.parse()?, z.parse()?),
+    ))
 }
 
 /// Write single ATOM record in PQR file stream
@@ -357,18 +357,17 @@ pub struct AminoAcidModelRecord {
 
 impl AminoAcidModelRecord {
     pub fn from_line(line: &str) -> Result<Self> {
-        if let Some([name, _, x, y, z, charge, mass, radius]) =
-            line.split_whitespace().collect_array()
-        {
-            Ok(Self {
-                name: name.to_string(),
-                pos: Vector3::new(x.parse()?, y.parse()?, z.parse()?),
-                charge: charge.parse()?,
-                mass: mass.parse()?,
-                radius: radius.parse()?,
-            })
-        } else {
-            bail!("Invalid AAM record: {}", line);
-        }
+        let [name, _, x, y, z, charge, mass, radius] = line
+            .split_whitespace()
+            .collect_array()
+            .ok_or_else(|| anyhow!("Invalid AAM record: {}", line))?;
+
+        Ok(Self {
+            name: name.to_string(),
+            pos: Vector3::new(x.parse()?, y.parse()?, z.parse()?),
+            charge: charge.parse()?,
+            mass: mass.parse()?,
+            radius: radius.parse()?,
+        })
     }
 }
