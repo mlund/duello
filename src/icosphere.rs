@@ -21,6 +21,9 @@ use anyhow::{Context, Result};
 use glam::f32::Vec3A;
 use hexasphere::AdjacencyBuilder;
 
+/// Surface area of a unit sphere.
+const UNIT_SPHERE_AREA: f64 = 4.0 * PI;
+
 /// Make icosphere with at least `min_points` surface points (vertices).
 ///
 /// This is done by iteratively subdividing the faces of an icosahedron
@@ -89,31 +92,35 @@ pub fn make_weights(icosphere: &IcoSphere) -> Vec<f64> {
 
     // Loop over each neighboring face to i'th vertex
     for (i, neighbors) in adjency.finish().iter().enumerate() {
-        let mut areas = Vec::with_capacity(neighbors.len());
+        let mut area = 0.0;
         // Handle the face made of i with the first and last neighboring vertices
-        areas.push(spherical_face_area(
+        area += spherical_face_area(
             &vertices[i],
             &vertices[*neighbors.first().unwrap()],
             &vertices[*neighbors.last().unwrap()],
-        ));
+        );
         // Handle the faces made of i with each remaining pairs of neighboring vertices
         for j in 0..neighbors.len() - 1 {
-            let area = spherical_face_area(
+            area += spherical_face_area(
                 &vertices[i],
                 &vertices[neighbors[j]],
                 &vertices[neighbors[j + 1]],
             );
-            areas.push(area);
         }
-        let avg_area = areas.iter().sum::<f64>() / areas.len() as f64;
-        weights.push(avg_area);
+        // Faces contribute w. 1/3 of their area to a single vertex weight
+        weights.push(area / 3.0);
     }
-    assert_eq!(weights.len(), vertices.len());
+    debug_assert_eq!(weights.len(), vertices.len());
 
-    // Normalize the weights so that they fluctuate around 1.0
+    // The sum of all vertex contributions should add up to 4π,
+    // the surface area of a unit sphere
+    let total_area = weights.iter().sum::<f64>();
+    approx::assert_relative_eq!(total_area, UNIT_SPHERE_AREA, epsilon = 1e-4);
+
+    // Normalize the weights so that they fluctuate around 1
     // (this has no effect on final results)
-    let scale = vertices.len() as f64 / weights.iter().sum::<f64>();
-    weights.iter_mut().for_each(|w| *w *= scale);
+    let ideal_vertex_area = UNIT_SPHERE_AREA / vertices.len() as f64;
+    weights.iter_mut().for_each(|w| *w /= ideal_vertex_area);
     weights
 }
 
@@ -194,10 +201,10 @@ mod tests {
             .sum::<f64>()
             .sqrt()
             / (weights.len() as f64).sqrt();
-        assert_relative_eq!(min_weight, 0.9538671732382897, epsilon = 1e-6);
-        assert_relative_eq!(max_weight, 1.0184529616689328, epsilon = 1e-6);
+        assert_relative_eq!(min_weight, 0.8327130552002484, epsilon = 1e-6);
+        assert_relative_eq!(max_weight, 1.0669150648124996, epsilon = 1e-6);
         assert_relative_eq!(mean_weight, 0.9999999999999999, epsilon = 1e-6);
-        assert_relative_eq!(weight_stddev, 0.0291766407712738, epsilon = 1e-6);
+        assert_relative_eq!(weight_stddev, 0.10580141129416724, epsilon = 1e-6);
 
         let icosphere = make_icosphere(92).unwrap();
         let weights = make_weights(&icosphere);
@@ -210,10 +217,10 @@ mod tests {
             .sum::<f64>()
             .sqrt()
             / (weights.len() as f64).sqrt();
-        assert_relative_eq!(min_weight, 0.9399785391170831, epsilon = 1e-6);
-        assert_relative_eq!(max_weight, 1.0320120385450426, epsilon = 1e-5);
-        assert_relative_eq!(mean_weight, 0.9999999999999999, epsilon = 1e-6);
-        assert_relative_eq!(weight_stddev, 0.028536625575550475, epsilon = 1e-6);
+        assert_relative_eq!(min_weight, 0.7996549501752724, epsilon = 1e-6);
+        assert_relative_eq!(max_weight, 1.053539416842339, epsilon = 1e-5);
+        assert_relative_eq!(mean_weight, 1.0, epsilon = 1e-3);
+        assert_relative_eq!(weight_stddev, 0.07941105694522466, epsilon = 1e-6);
     }
 
     #[test]
@@ -242,7 +249,7 @@ mod tests {
         };
         let total_area: f64 = icosahedron.get_all_indices().chunks(3).map(to_area).sum();
         assert_eq!(vertices.len(), 12);
-        assert_relative_eq!(total_area, 4.0 * PI, epsilon = 1e-5);
+        assert_relative_eq!(total_area, UNIT_SPHERE_AREA, epsilon = 1e-5);
     }
     #[test]
     fn test_subdivided_icosahedron_face_areas() {
@@ -259,6 +266,6 @@ mod tests {
         };
         let total_area: f64 = icosahedron.get_all_indices().chunks(3).map(to_area).sum();
         assert_eq!(vertices.len(), 92);
-        assert_relative_eq!(total_area, 4.0 * PI, epsilon = 1e-4);
+        assert_relative_eq!(total_area, UNIT_SPHERE_AREA, epsilon = 1e-4);
     }
 }
