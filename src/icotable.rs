@@ -409,7 +409,7 @@ impl Table6D {
 
         // We have a new angular resolution, depending on number of subdivisions
         let angle_resolution = table_b.angle_resolution();
-        log::info!("Actual angle resolution = {:.2} radians", angle_resolution);
+        log::info!("Actual angle resolution = {angle_resolution:.2} radians");
 
         let table_a = IcoTable4D::from_vertices(vertices, Some(table_b)); // A: 𝜃 and 𝜑
         let table_omega = PaddedTable::<IcoTable4D>::new(0.0, 2.0 * PI, angle_resolution, table_a); // 𝜔
@@ -459,14 +459,14 @@ pub(crate) fn vmd_draw(
     scale: Option<f32>,
 ) -> Result<()> {
     let num_faces = icosphere.get_all_indices().len() / 3;
-    let path = path.with_extension(format!("faces{}.vmd", num_faces));
+    let path = path.with_extension(format!("faces{num_faces}.vmd"));
     let mut stream = std::fs::File::create(path)?;
     icosphere.get_all_indices().chunks(3).try_for_each(|c| {
         let scale = scale.unwrap_or(1.0);
         let a = icosphere.raw_points()[c[0] as usize] * scale;
         let b = icosphere.raw_points()[c[1] as usize] * scale;
         let c = icosphere.raw_points()[c[2] as usize] * scale;
-        writeln!(stream, "draw color {}", color)?;
+        writeln!(stream, "draw color {color}")?;
         writeln!(
             stream,
             "draw triangle {{{:.3} {:.3} {:.3}}} {{{:.3} {:.3} {:.3}}} {{{:.3} {:.3} {:.3}}}",

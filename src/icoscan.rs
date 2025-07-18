@@ -146,7 +146,7 @@ pub fn do_icoscan(
                 .map(|&p| [p.x as f32, p.y as f32, p.z as f32])
                 .collect();
             traj.write(&frame).expect("Failed to write XTC frame");
-            writeln!(energy_file, "{:.6}", data).expect("Failed to write energy to file");
+            writeln!(energy_file, "{data:.6}").expect("Failed to write energy to file");
         };
 
         r_and_omega
@@ -163,7 +163,7 @@ pub fn do_icoscan(
                         write_frame(&oriented_a, &oriented_b, _data_b.get().unwrap());
                     });
             });
-        info!("Wrote {} frames to trajectory file", frame_cnt);
+        info!("Wrote {frame_cnt} frames to trajectory file");
     }
 
     // Partition function contribution for single (r, omega) point

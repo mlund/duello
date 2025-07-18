@@ -53,7 +53,7 @@ impl Structure {
                 atomkinds
                     .find_name(name)
                     .map(|kind| kind.id())
-                    .context(format!("Unknown atom name in structure file: {:?}", name))
+                    .context(format!("Unknown atom name in structure file: {name:?}"))
             })
             .try_collect()?;
 
@@ -63,7 +63,7 @@ impl Structure {
                 atomkinds
                     .find_name(name)
                     .map(|kind| kind.mass())
-                    .context(format!("Unknown atom name in XYZ file: {}", name))
+                    .context(format!("Unknown atom name in XYZ file: {name}"))
             })
             .try_collect()?;
 
@@ -73,7 +73,7 @@ impl Structure {
                 atomkinds
                     .find_name(name)
                     .map(|i| i.charge())
-                    .context(format!("Unknown atom name in XYZ file: {}", name))
+                    .context(format!("Unknown atom name in XYZ file: {name}"))
             })
             .try_collect()?;
 
@@ -83,7 +83,7 @@ impl Structure {
                 atomkinds
                     .find_name(name)
                     .map(|i| i.sigma().unwrap_or(0.0) * 0.5)
-                    .context(format!("Unknown atom name in XYZ file: {}", name))
+                    .context(format!("Unknown atom name in XYZ file: {name}"))
             })
             .try_collect()?;
         let mut structure = Self {

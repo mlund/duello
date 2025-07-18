@@ -187,7 +187,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
             .to_xyz(&mut File::create("confout.xyz")?, topology.atomkinds())?;
     }
 
-    info!("{}", medium);
+    info!("{medium}");
     info!(
         "Molecular net-charges:    [{:.2}e, {:.2}e]",
         ref_a.net_charge(),
@@ -208,8 +208,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
     );
 
     info!(
-        "COM range: [{:.1}, {:.1}) in {:.1} Å steps 🐾",
-        rmin, rmax, dr
+        "COM range: [{rmin:.1}, {rmax:.1}) in {dr:.1} Å steps 🐾"
     );
     icoscan::do_icoscan(
         *rmin,
@@ -352,7 +351,7 @@ fn do_potential(cmd: &Commands) -> Result<()> {
         energy::electric_potential(&structure, &v.scale(*radius), &multipole)
     })?;
 
-    File::create("pot_at_vertices.dat")?.write_fmt(format_args!("{}", icotable))?;
+    File::create("pot_at_vertices.dat")?.write_fmt(format_args!("{icotable}"))?;
 
     // Make PQR file illustrating the electric potential at each vertex
     let mut pqr_file = File::create("potential.pqr")?;
@@ -374,21 +373,15 @@ fn do_potential(cmd: &Commands) -> Result<()> {
             let abs_err = (interpolated - exact).abs();
             if abs_err > 0.05 {
                 log::debug!(
-                    "Potential at theta={:.3} phi={:.3} is {:.4} (exact: {:.4}) abs. error {:.4}",
-                    theta,
-                    phi,
-                    interpolated,
-                    exact,
-                    abs_err
+                    "Potential at theta={theta:.3} phi={phi:.3} is {interpolated:.4} (exact: {exact:.4}) abs. error {abs_err:.4}"
                 );
                 let face = icotable.nearest_face(&point);
                 let bary = icotable.naive_barycentric(&point, &face);
-                log::debug!("Face: {:?} Barycentric: {:?}\n", face, bary);
+                log::debug!("Face: {face:?} Barycentric: {bary:?}\n");
             }
             writeln!(
                 pot_angles_file,
-                "{:.3} {:.3} {:.4} {:.4} {:.4}",
-                theta, phi, interpolated, exact, rel_err
+                "{theta:.3} {phi:.3} {interpolated:.4} {exact:.4} {rel_err:.4}"
             )?;
         }
     }

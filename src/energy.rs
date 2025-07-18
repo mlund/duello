@@ -61,11 +61,7 @@ impl PairMatrix {
 
                 if use_polarization {
                     log::debug!(
-                        "Adding ion-induced dipole term for atom pair ({}, {}). Alphas: {}, {}",
-                        i,
-                        j,
-                        alpha1,
-                        alpha2
+                        "Adding ion-induced dipole term for atom pair ({i}, {j}). Alphas: {alpha1}, {alpha2}"
                     );
                 }
                 let coulomb =
@@ -99,7 +95,7 @@ impl PairMatrix {
                 energy += potentials[(a, b)].isotropic_twobody_energy(distance_sq);
             }
         }
-        trace!("molecule-molecule energy: {:.2} kJ/mol", energy);
+        trace!("molecule-molecule energy: {energy:.2} kJ/mol");
         energy
     }
 }

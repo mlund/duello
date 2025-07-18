@@ -8,7 +8,7 @@ fn main() {
     let indices = icosphere.get_all_indices();
     let vertices = icosphere.raw_points();
 
-    println!("Indices: {:?}", indices);
+    println!("Indices: {indices:?}");
 
     println!("\nVertices:");
     for (i, vertex) in vertices.iter().enumerate() {
@@ -33,7 +33,7 @@ fn main() {
     let mut ab = AdjacencyBuilder::new(vertices.len());
     ab.add_indices(&indices);
     let adjency = ab.finish();
-    println!("\nVertex neighborlist:\n(The result preserves winding: the resulting array is wound around the center vertex in the same way that the source triangles were wound.):\n {:?}", adjency);
+    println!("\nVertex neighborlist:\n(The result preserves winding: the resulting array is wound around the center vertex in the same way that the source triangles were wound.):\n {adjency:?}");
 
     let face_area = |a: usize, b: usize, c: usize| {
         let a = vertices[a];
@@ -68,5 +68,5 @@ fn main() {
         writeln!(weight_file, "{weight}").expect("Failed to write to file");
     }
 
-    println!("\nVertex weights:\n {:?}", weights);
+    println!("\nVertex weights:\n {weights:?}");
 }
