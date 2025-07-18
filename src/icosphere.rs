@@ -21,7 +21,7 @@ use anyhow::{Context, Result};
 use glam::f32::Vec3A;
 use hexasphere::AdjacencyBuilder;
 
-/// Surface area of a unit sphere.
+/// Surface area of a unit sphere, 4π.
 const UNIT_SPHERE_AREA: f64 = 4.0 * PI;
 
 /// Make icosphere with at least `min_points` surface points (vertices).
