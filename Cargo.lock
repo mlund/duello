@@ -1098,7 +1098,7 @@ dependencies = [
 [[package]]
 name = "interatomic"
 version = "0.3.0"
-source = "git+https://github.com/mlund/interatomic.git#1ccff8de5124b7b25cf98db9978fe50556cec660"
+source = "git+https://github.com/mlund/interatomic.git#b0b6aea56146256178f24151efcc18ac51027756"
 dependencies = [
  "anyhow",
  "coulomb",
