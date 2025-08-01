@@ -368,7 +368,7 @@ source = "git+https://github.com/mlund/coulomb.git#2c09685c4a52ad0716015d67db3ab
 dependencies = [
  "anyhow",
  "itertools 0.10.5",
- "nalgebra",
+ "nalgebra 0.33.2",
  "num",
  "num-integer",
  "physical_constants",
@@ -633,7 +633,7 @@ dependencies = [
  "itertools-num",
  "lazy_static",
  "log",
- "nalgebra",
+ "nalgebra 0.34.0",
  "nu-ansi-term",
  "num-traits",
  "physical_constants",
@@ -737,7 +737,7 @@ dependencies = [
  "interatomic",
  "itertools 0.10.5",
  "log",
- "nalgebra",
+ "nalgebra 0.33.2",
  "ndarray",
  "num",
  "physical_constants",
@@ -1104,7 +1104,7 @@ dependencies = [
  "coulomb",
  "dyn-clone",
  "itertools 0.10.5",
- "nalgebra",
+ "nalgebra 0.33.2",
  "num",
  "physical_constants",
  "serde",
@@ -1279,6 +1279,20 @@ dependencies = [
  "num-rational",
  "num-traits",
  "serde",
+ "simba",
+ "typenum",
+]
+
+[[package]]
+name = "nalgebra"
+version = "0.34.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cd59afb6639828b33677758314a4a1a745c15c02bc597095b851c8fd915cf49"
+dependencies = [
+ "approx",
+ "num-complex",
+ "num-rational",
+ "num-traits",
  "simba",
  "typenum",
 ]
