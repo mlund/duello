@@ -207,9 +207,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         ref_b.total_mass(),
     );
 
-    info!(
-        "COM range: [{rmin:.1}, {rmax:.1}) in {dr:.1} Å steps 🐾"
-    );
+    info!("COM range: [{rmin:.1}, {rmax:.1}) in {dr:.1} Å steps 🐾");
     icoscan::do_icoscan(
         *rmin,
         *rmax,

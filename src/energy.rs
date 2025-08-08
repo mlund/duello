@@ -83,7 +83,7 @@ impl PairMatrix {
         Self { nonbonded }
     }
 
-    // Sum energy between two set of atomic structures (kJ/mol)
+    /// Sum energy between two set of atomic structures (kJ/mol)
     pub fn sum_energy(&self, a: &Structure, b: &Structure) -> f64 {
         let potentials = self.nonbonded.get_potentials();
         let mut energy = 0.0;

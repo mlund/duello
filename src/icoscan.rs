@@ -130,12 +130,13 @@ pub fn do_icoscan(
         let mut traj = XTCTrajectory::open_write(xtcfile)?;
         let mut energy_file =
             BufWriter::new(open_compressed(&xtcfile.with_extension("energy.dat.gz"))?);
+        writeln!(energy_file, "# Energy (kJ/mol)").expect("Failed to write header");
         let mut frame_cnt: usize = 0;
         let mut frame = Frame::new();
         let n = r_and_omega.len();
 
         // Create new XTC frame from two structures and append to trajectory
-        let mut write_frame = |oriented_a: &Structure, oriented_b: &Structure, data| {
+        let mut write_frame = |oriented_a: &Structure, oriented_b: &Structure, energy| {
             frame.step = frame_cnt;
             frame.time = frame_cnt as f32;
             frame_cnt += 1;
@@ -146,7 +147,7 @@ pub fn do_icoscan(
                 .map(|&p| [p.x as f32, p.y as f32, p.z as f32])
                 .collect();
             traj.write(&frame).expect("Failed to write XTC frame");
-            writeln!(energy_file, "{data:.6}").expect("Failed to write energy to file");
+            writeln!(energy_file, "{energy:.6}").expect("Failed to write energy to file");
         };
 
         r_and_omega
@@ -173,7 +174,7 @@ pub fn do_icoscan(
             Sample::default(),
             |sum, (vertex_i, vertex_j, data_b)| {
                 let degeneracy = vertex_i.norm() * vertex_j.norm();
-                let energy = data_b.get().unwrap();
+                let energy = data_b.get().unwrap(); // kJ/mol
                 sum + Sample::new(*energy, *temperature, degeneracy)
             },
         )
