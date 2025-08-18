@@ -143,7 +143,7 @@ pub fn do_icoscan(
                 .pos
                 .iter()
                 .chain(oriented_b.pos.iter())
-                .map(|&p| [p.x as f32, p.y as f32, p.z as f32])
+                .map(|&p| [p.x as f32 * 0.1, p.y as f32 * 0.1, p.z as f32 * 0.1]) // angstrom to nm
                 .collect();
             traj.write(&frame).expect("Failed to write XTC frame");
             writeln!(energy_file, "{data:.6}").expect("Failed to write energy to file");

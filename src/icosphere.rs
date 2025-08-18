@@ -232,7 +232,7 @@ mod tests {
             Vec3A::new(0.0, 0.0, 1.0),
         ];
         let area = spherical_face_area(&a, &b, &c);
-        assert_relative_eq!(area, 0.5 * PI, epsilon = 1e-6);
+        assert_relative_eq!(area, UNIT_SPHERE_AREA / 8.0, epsilon = 1e-6);
     }
     #[test]
     fn test_icosahedron_face_areas() {
