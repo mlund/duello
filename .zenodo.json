@@ -24,6 +24,11 @@
             "scheme": "url",
             "identifier": "https://github.com/mlund/duello",
             "relation": "isSupplementTo"
+        },
+        {
+            "scheme": "doi",
+            "identifier": "10.26434/chemrxiv-2025-0bfhd",
+            "relation": "isSupplementTo"
         }
     ],
     "access_right": "open",
