@@ -17,7 +17,7 @@ approx = "0.5"
 clap = { version = "4", features = ["derive"], default-features = false }
 itertools = {version = "0.14"}
 itertools-num = {version = "0.1", default-features = false}
-nalgebra = {version = "0.33", default-features = false}
+nalgebra = {version = "0.34", default-features = false}
 rayon = "1.10"
 faunus = { git = "https://github.com/mlund/faunus-rs.git" }
 interatomic = { git = "https://github.com/mlund/interatomic.git", version = "0.3", features = ["serde"] }
