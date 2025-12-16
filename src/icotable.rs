@@ -140,7 +140,7 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
     }
 
     /// Check if the table is empty, i.e. has no vertices
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
 

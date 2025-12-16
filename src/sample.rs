@@ -53,15 +53,15 @@ impl Sample {
         }
     }
     /// Thermal energy (kJ/mol)
-    pub fn thermal_energy(&self) -> f64 {
+    pub const fn thermal_energy(&self) -> f64 {
         self.thermal_energy
     }
     /// Mean energy (kJ/mol)
-    pub fn mean_energy(&self) -> f64 {
+    pub const fn mean_energy(&self) -> f64 {
         self.mean_energy / self.exp_energy
     }
     /// Mean squared energy (kJ/mol)^2
-    pub fn mean_squared_energy(&self) -> f64 {
+    pub const fn mean_squared_energy(&self) -> f64 {
         self.mean_squared_energy / self.exp_energy
     }
     /// Heat capacity C/R
@@ -73,11 +73,11 @@ impl Sample {
         (self.exp_energy / self.degeneracy).ln().neg() * self.thermal_energy
     }
     /// Mean <exp(-U/kT)-1>
-    pub fn mean_exp_energy_m1(&self) -> f64 {
+    pub const fn mean_exp_energy_m1(&self) -> f64 {
         self.exp_energy_m1 / self.degeneracy
     }
     /// Number of samples
-    pub fn n(&self) -> u64 {
+    pub const fn n(&self) -> u64 {
         self.n
     }
 }
@@ -99,7 +99,7 @@ impl std::fmt::Display for Sample {
 
 impl Sum for Sample {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        iter.fold(Sample::default(), |sum, s| sum + s)
+        iter.fold(Self::default(), |sum, s| sum + s)
     }
 }
 

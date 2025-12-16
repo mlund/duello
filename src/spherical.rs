@@ -27,18 +27,15 @@ pub struct SphericalCoord {
 }
 
 impl SphericalCoord {
-    #[inline(always)]
     /// Radius
     pub const fn radius(&self) -> f64 {
         self.r
     }
     /// Polar angle, theta (0..pi)
-    #[inline(always)]
     pub const fn theta(&self) -> f64 {
         self.theta
     }
     /// Polar angle, theta (0..pi)
-    #[inline(always)]
     pub const fn polar_angle(&self) -> f64 {
         self.theta
     }
@@ -48,7 +45,6 @@ impl SphericalCoord {
         self.phi
     }
     /// Azimuthal angle, phi (0..2pi)
-    #[inline(always)]
     pub const fn azimuthal_angle(&self) -> f64 {
         self.phi
     }
@@ -93,7 +89,7 @@ impl From<SphericalCoord> for Vector3 {
 /// Get spherical coordinates from cartesian coordinates
 impl From<Vector3> for SphericalCoord {
     fn from(cartesian: Vector3) -> Self {
-        SphericalCoord::from_cartesian(cartesian)
+        Self::from_cartesian(cartesian)
     }
 }
 

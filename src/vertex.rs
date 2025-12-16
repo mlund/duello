@@ -46,7 +46,10 @@ pub fn make_vertices(icosphere: &IcoSphere) -> Vec<Vertex> {
         .zip(neighbors)
         .map(|(pos, neighbors)| Vertex {
             pos,
-            neighbors: neighbors.iter().map(|i| *i as u16).collect_vec(),
+            neighbors: neighbors
+                .iter()
+                .map(|i| u16::try_from(*i).unwrap())
+                .collect_vec(),
         })
         .collect();
 

@@ -32,7 +32,7 @@ pub struct PaddedTable<T: Clone + GetSize> {
 }
 
 impl<T: Clone + GetSize> PaddedTable<T> {
-    pub fn new(min: f64, max: f64, step: f64, initial_value: T) -> PaddedTable<T> {
+    pub fn new(min: f64, max: f64, step: f64, initial_value: T) -> Self {
         assert!(min < max && step > 0.0);
         let n = ((max - min + 2.0 * step) / step + 0.5) as usize;
         Self {
@@ -59,12 +59,12 @@ impl<T: Clone + GetSize> PaddedTable<T> {
     }
 
     /// Get maximum key value (inclusive)
-    pub fn max_key(&self) -> f64 {
+    pub const fn max_key(&self) -> f64 {
         self._max - self.res
     }
 
     /// Get key spacing
-    pub fn key_step(&self) -> f64 {
+    pub const fn key_step(&self) -> f64 {
         self.res
     }
 
@@ -108,10 +108,10 @@ impl<T: Clone + GetSize> PaddedTable<T> {
         Ok(&mut self.data[index])
     }
 
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.data.len()
     }
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
 }

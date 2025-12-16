@@ -70,16 +70,16 @@ impl VirialCoeff {
     }
 
     /// Constructs a new VirialCoeff from raw parts
-    pub fn from_raw_parts(b2: f64, sigma: f64) -> Self {
+    pub const fn from_raw_parts(b2: f64, sigma: f64) -> Self {
         Self { b2, sigma }
     }
 
     /// Virial coefficient, B2 (Å³)
-    pub fn b2(&self) -> f64 {
+    pub const fn b2(&self) -> f64 {
         self.b2
     }
     /// Distance of closest approach, σ (Å)
-    pub fn sigma(&self) -> f64 {
+    pub const fn sigma(&self) -> f64 {
         self.sigma
     }
     /// Hard sphere contribution to second virial coefficient, B2hs (Å³)
@@ -100,7 +100,7 @@ impl VirialCoeff {
     /// Dissociation constant, 𝐾𝑑
     /// See "Colloidal Domain" by Evans and Wennerström, 2nd Ed, p. 408
     pub fn dissociation_const(&self) -> Option<f64> {
-        self.association_const().map(|k| k.inv())
+        self.association_const().map(Inv::inv)
     }
     /// Virial coefficient, B2 in mol⋅ml/g². Molar weights in g/mol.
     pub fn mol_ml_per_gram2(&self, mw1: f64, mw2: f64) -> f64 {
@@ -125,7 +125,7 @@ impl serde::Serialize for VirialCoeff {
 }
 
 impl From<VirialCoeff> for f64 {
-    fn from(v: VirialCoeff) -> f64 {
+    fn from(v: VirialCoeff) -> Self {
         v.b2()
     }
 }

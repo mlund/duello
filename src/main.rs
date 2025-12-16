@@ -194,7 +194,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         ref_b.net_charge(),
     );
 
-    const ELECTRON_ANGSTROM_TO_DEBYE: f64 = 4.80320425;
+    const ELECTRON_ANGSTROM_TO_DEBYE: f64 = 4.803_204_25;
     info! {
         "Molecular dipole moments: [{:.2} D, {:.2} D]",
         ref_a.dipole_moment().norm() * ELECTRON_ANGSTROM_TO_DEBYE,
@@ -207,7 +207,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         ref_b.total_mass(),
     );
 
-    info!("COM range: [{rmin:.1}, {rmax:.1}) in {dr:.1} Å steps 🐾");
+    info!("COM range: [{rmin:.1}, {rmax:.1}) in {dr:.1} Å steps 🐾");
     icoscan::do_icoscan(
         *rmin,
         *rmax,
@@ -247,7 +247,7 @@ fn do_dipole(cmd: &Commands) -> Result<()> {
     );
 
     let mut dipole_file = File::create(output)?;
-    writeln!(dipole_file, "# R/Å w_vertex w_exact w_interpolated")?;
+    writeln!(dipole_file, "# R/Å w_vertex w_exact w_interpolated")?;
 
     let charge = 1.0;
     let bjerrum_len = 7.0;
@@ -403,7 +403,7 @@ fn do_main() -> Result<()> {
         None => {
             bail!("No command given");
         }
-    };
+    }
     Ok(())
 }
 

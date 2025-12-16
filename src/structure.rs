@@ -195,8 +195,8 @@ impl Structure {
     pub fn inertia_tensor(&self) -> nalgebra::Matrix3<f64> {
         let center = self.mass_center();
         inertia_tensor(
-            self.pos.iter().cloned(),
-            self.masses.iter().cloned(),
+            self.pos.iter().copied(),
+            self.masses.iter().copied(),
             Some(center),
         )
     }
@@ -205,7 +205,7 @@ impl Structure {
 impl std::ops::Add for Structure {
     type Output = Self;
     fn add(self, other: Self) -> Self {
-        let mut s = self.clone();
+        let mut s = self;
         s.pos.extend(other.pos);
         s.masses.extend(other.masses);
         s.charges.extend(other.charges);
@@ -273,7 +273,7 @@ pub fn inertia_tensor(
 ) -> Matrix3<f64> {
     positions
         .into_iter()
-        .map(|r| r - center.unwrap_or(Vector3::zeros()))
+        .map(|r| r - center.unwrap_or_else(Vector3::zeros))
         .zip(masses)
         .map(|(r, m)| m * (r.norm_squared() * Matrix3::<f64>::identity() - r * r.transpose()))
         .sum()
