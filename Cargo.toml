@@ -39,7 +39,7 @@ num-traits = "0.2"
 rand = {version = "0.8", default-features = false}
 get-size = {version = "0.1", features = ["derive"], default-features = false}
 physical_constants = "0.5"
-serde_json = {version = "1.0.137", default-features = false}
+serde_json = {version = "1.0.148", default-features = false}
 xdrfile = "0.3.0"
 glam = "0.29.3"
 
