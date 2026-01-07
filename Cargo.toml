@@ -42,6 +42,7 @@ physical_constants = "0.5"
 serde_json = {version = "1.0.137", default-features = false}
 xdrfile = "0.3.0"
 glam = "0.29.3"
+voronota = {git = "https://github.com/mlund/voronota-rs.git"}
 
 [dev-dependencies]
 lazy_static = "1.5"

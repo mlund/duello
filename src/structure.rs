@@ -13,7 +13,7 @@
 // limitations under the license.
 
 use crate::Vector3;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use faunus::topology::{AtomKind, FindByName};
 use itertools::Itertools;
 use nalgebra::Matrix3;
@@ -35,6 +35,8 @@ pub struct Structure {
     pub radii: Vec<f64>,
     /// Atom kind ids
     pub atom_ids: Vec<usize>,
+    /// Tension associated with each atom (used in SASA calculations)
+    pub tensions: Vec<f64>,
 }
 
 impl Structure {
@@ -86,12 +88,16 @@ impl Structure {
                     .context(format!("Unknown atom name in XYZ file: {name}"))
             })
             .try_collect()?;
+
+        let tensions = vec![0.0; nxyz.len()]; // default tensions to zero
+
         let mut structure = Self {
             pos: nxyz.iter().map(|(_, pos)| *pos).collect(),
             masses,
             charges,
             radii,
             atom_ids,
+            tensions,
         };
         let center = structure.mass_center();
         structure.translate(&-center); // translate to 0,0,0
@@ -129,12 +135,15 @@ impl Structure {
             })
             .try_collect()?;
 
+        let tensions = vec![0.0; aam.len()]; // default tensions to zero
+
         let mut structure = Self {
             pos: aam.iter().map(|i| i.pos).collect(),
             masses: aam.iter().map(|i| i.mass).collect(),
             charges: aam.iter().map(|i| i.charge).collect(),
             radii: aam.iter().map(|i| i.radius).collect(),
             atom_ids,
+            tensions,
         };
         let center = structure.mass_center();
         structure.translate(&-center); // translate to 0,0,0
@@ -200,6 +209,19 @@ impl Structure {
             Some(center),
         )
     }
+
+    /// Set tensions for SASA calculations. Erros if number of tensions does not match number of atoms.
+    pub fn set_tensions(&mut self, tensions: Vec<f64>) -> Result<()> {
+        if tensions.len() != self.pos.len() {
+            bail!(
+                "Number of tensions ({}) does not match number of atoms ({})",
+                tensions.len(),
+                self.pos.len()
+            );
+        }
+        self.tensions = tensions;
+        Ok(())
+    }
 }
 
 impl std::ops::Add for Structure {
@@ -211,6 +233,7 @@ impl std::ops::Add for Structure {
         s.charges.extend(other.charges);
         s.radii.extend(other.radii);
         s.atom_ids.extend(other.atom_ids);
+        s.tensions.extend(other.tensions);
         s
     }
 }

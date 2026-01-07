@@ -19,6 +19,7 @@ mod icosphere;
 pub mod icotable;
 pub mod report;
 mod sample;
+pub mod sasa;
 mod spherical;
 pub mod structure;
 pub mod table;
