@@ -19,9 +19,11 @@
 
 mod cpu;
 mod gpu;
+mod simd;
 
 pub use cpu::CpuBackend;
 pub use gpu::GpuBackend;
+pub use simd::SimdBackend;
 
 use crate::{structure::Structure, Vector3};
 
