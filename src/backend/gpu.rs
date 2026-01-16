@@ -105,10 +105,11 @@ impl GpuSplineData {
                     coefficients.push([c.u[0] as f32, c.u[1] as f32, c.u[2] as f32, c.u[3] as f32]);
                 }
 
-                // Extract power-law exponent from grid type
+                // Extract power-law exponent from grid type (must be 2 for GPU backend)
                 let power = match stats.grid_type {
-                    GridType::PowerLaw(p) => p as f32,
-                    _ => panic!("GPU backend requires PowerLaw grid type"),
+                    GridType::PowerLaw2 => 2.0_f32,
+                    GridType::PowerLaw(p) if (p - 2.0).abs() < 1e-6 => 2.0_f32,
+                    _ => panic!("GPU backend requires PowerLaw2 or PowerLaw(2.0) grid type"),
                 };
 
                 params.push(GpuSplineParams {
