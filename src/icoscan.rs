@@ -102,43 +102,35 @@ pub fn do_icoscan<B: EnergyBackend>(
 
     // Populate 6D table with inter-particle energies
     if backend.prefers_batch() {
-        // Batched processing (for GPU): collect all poses, compute at once, store results
-        info!("Using batched processing for GPU backend");
+        // Batched processing (for GPU): batch by distance for progress while keeping large batches
+        for r in distances.iter().progress_count(distances.len() as u64) {
+            // Collect all poses for this distance (all omega and vertex combinations)
+            let mut poses: Vec<PoseParams> = Vec::new();
+            let mut data_refs: Vec<_> = Vec::new();
 
-        // Collect all poses
-        let mut all_poses: Vec<PoseParams> = Vec::with_capacity(n_total);
-        for (r, omega) in &r_and_omega {
-            table
-                .get_icospheres(*r, *omega)
-                .expect("invalid (r, omega) value")
-                .flat_iter()
-                .for_each(|(pos_a, pos_b, _)| {
-                    all_poses.push(PoseParams {
-                        r: *r,
-                        omega: *omega,
-                        vertex_i: *pos_a,
-                        vertex_j: *pos_b,
+            for omega in &dihedral_angles {
+                table
+                    .get_icospheres(*r, *omega)
+                    .expect("invalid (r, omega) value")
+                    .flat_iter()
+                    .for_each(|(pos_a, pos_b, data_b)| {
+                        poses.push(PoseParams {
+                            r: *r,
+                            omega: *omega,
+                            vertex_i: *pos_a,
+                            vertex_j: *pos_b,
+                        });
+                        data_refs.push(data_b);
                     });
-                });
-        }
+            }
 
-        // Compute all energies in batch
-        info!("Computing {} energies on GPU...", all_poses.len());
-        let energies = backend.compute_energies(&all_poses);
+            // Compute all energies for this distance in one GPU batch
+            let energies = backend.compute_energies(&poses);
 
-        // Store results back to table
-        let mut energy_idx = 0;
-        for (r, omega) in &r_and_omega {
-            table
-                .get_icospheres(*r, *omega)
-                .expect("invalid (r, omega) value")
-                .flat_iter()
-                .for_each(|(_, _, data_b)| {
-                    data_b
-                        .set(energies[energy_idx])
-                        .expect("Energy already calculated");
-                    energy_idx += 1;
-                });
+            // Store results
+            for (data_b, energy) in data_refs.into_iter().zip(energies.into_iter()) {
+                data_b.set(energy).expect("Energy already calculated");
+            }
         }
     } else {
         // Per-pose processing with rayon parallelization (for CPU)
