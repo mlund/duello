@@ -93,26 +93,6 @@ pub fn do_icoscan<B: EnergyBackend>(
         table.get_size() as f64 / f64::powi(1024.0, 2)
     );
 
-    // Calculate energy of all two-body poses for given mass center separation and dihedral angle
-    // by looping over remaining 4D angular space. Energies are stored on each vertex of the deepest level
-    // icospheres.
-    let calc_energy = |r: f64, omega: f64| {
-        table
-            .get_icospheres(r, omega) // remaining 4D
-            .expect("invalid (r, omega) value")
-            .flat_iter()
-            .for_each(|(pos_a, pos_b, data_b)| {
-                let pose = PoseParams {
-                    r,
-                    omega,
-                    vertex_i: *pos_a,
-                    vertex_j: *pos_b,
-                };
-                let energy = backend.compute_energy(&pose);
-                data_b.set(energy).expect("Energy already calculated");
-            });
-    };
-
     // Pair all mass center separations (r) and dihedral angles (omega)
     let r_and_omega = distances
         .iter()
@@ -120,13 +100,74 @@ pub fn do_icoscan<B: EnergyBackend>(
         .cartesian_product(dihedral_angles.iter().copied())
         .collect_vec();
 
-    // Populate 6D table with inter-particle energies (multi-threaded)
-    r_and_omega
-        .par_iter()
-        .progress_count(r_and_omega.len() as u64)
-        .for_each(|(r, omega)| {
-            calc_energy(*r, *omega);
-        });
+    // Populate 6D table with inter-particle energies
+    if backend.prefers_batch() {
+        // Batched processing (for GPU): collect all poses, compute at once, store results
+        info!("Using batched processing for GPU backend");
+
+        // Collect all poses
+        let mut all_poses: Vec<PoseParams> = Vec::with_capacity(n_total);
+        for (r, omega) in &r_and_omega {
+            table
+                .get_icospheres(*r, *omega)
+                .expect("invalid (r, omega) value")
+                .flat_iter()
+                .for_each(|(pos_a, pos_b, _)| {
+                    all_poses.push(PoseParams {
+                        r: *r,
+                        omega: *omega,
+                        vertex_i: *pos_a,
+                        vertex_j: *pos_b,
+                    });
+                });
+        }
+
+        // Compute all energies in batch
+        info!("Computing {} energies on GPU...", all_poses.len());
+        let energies = backend.compute_energies(&all_poses);
+
+        // Store results back to table
+        let mut energy_idx = 0;
+        for (r, omega) in &r_and_omega {
+            table
+                .get_icospheres(*r, *omega)
+                .expect("invalid (r, omega) value")
+                .flat_iter()
+                .for_each(|(_, _, data_b)| {
+                    data_b
+                        .set(energies[energy_idx])
+                        .expect("Energy already calculated");
+                    energy_idx += 1;
+                });
+        }
+    } else {
+        // Per-pose processing with rayon parallelization (for CPU)
+        info!("Computing {} (r,omega) pairs using CPU backend...", r_and_omega.len());
+        let calc_energy = |r: f64, omega: f64| {
+            table
+                .get_icospheres(r, omega)
+                .expect("invalid (r, omega) value")
+                .flat_iter()
+                .for_each(|(pos_a, pos_b, data_b)| {
+                    let pose = PoseParams {
+                        r,
+                        omega,
+                        vertex_i: *pos_a,
+                        vertex_j: *pos_b,
+                    };
+                    let energy = backend.compute_energy(&pose);
+                    data_b.set(energy).expect("Energy already calculated");
+                });
+        };
+
+        r_and_omega
+            .par_iter()
+            .progress_count(r_and_omega.len() as u64)
+            .for_each(|(r, omega)| {
+                calc_energy(*r, *omega);
+            });
+        info!("Finished computing energies");
+    }
 
     // Write oriented structures to trajectory file
     if let Some(xtcfile) = xtcfile {
@@ -196,10 +237,17 @@ pub fn do_icoscan<B: EnergyBackend>(
     // Calculate partition function as function of r only
     let mut samples: Vec<(Vector3, Sample)> = Vec::default();
     for r in &distances {
-        let partition_func = dihedral_angles
+        let partition_func: Sample = dihedral_angles
             .iter()
             .map(|omega| calc_partition_func(*r, *omega))
             .sum();
+        log::debug!(
+            "r={:.1}: exp_energy={:.4e}, mean_energy={:.4e}, free_energy={:.4e}",
+            r,
+            partition_func.exp_energy(),
+            partition_func.mean_energy(),
+            partition_func.free_energy()
+        );
         samples.push((Vector3::new(0.0, 0.0, *r), partition_func));
     }
 

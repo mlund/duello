@@ -18,8 +18,10 @@
 //! with implementations for CPU (using splined potentials) and GPU (using wgpu).
 
 mod cpu;
+mod gpu;
 
 pub use cpu::CpuBackend;
+pub use gpu::GpuBackend;
 
 use crate::{structure::Structure, Vector3};
 
@@ -40,7 +42,7 @@ pub struct PoseParams {
 ///
 /// Implementations can use different computational strategies:
 /// - `CpuBackend`: Uses splined potentials with rayon parallelization
-/// - `GpuBackend` (future): Uses wgpu compute shaders
+/// - `GpuBackend`: Uses wgpu compute shaders
 pub trait EnergyBackend: Send + Sync {
     /// Compute energy for a single pose.
     ///
@@ -54,6 +56,15 @@ pub trait EnergyBackend: Send + Sync {
     /// GPU backends can override this to batch GPU dispatches.
     fn compute_energies(&self, poses: &[PoseParams]) -> Vec<f64> {
         poses.iter().map(|p| self.compute_energy(p)).collect()
+    }
+
+    /// Returns true if this backend prefers batched processing.
+    ///
+    /// GPU backends return true because they benefit from processing many
+    /// poses at once. CPU backends return false because they use rayon
+    /// for parallelization at a higher level.
+    fn prefers_batch(&self) -> bool {
+        false
     }
 
     /// Get reference to molecule A structure (at origin).
