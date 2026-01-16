@@ -16,7 +16,7 @@ use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use coulomb::{permittivity, DebyeLength, Medium, Salt, Vector3};
 use duello::{
-    backend::{CpuBackend, GpuBackend},
+    backend::{CpuBackend, GpuBackend, SimdBackend},
     energy, icoscan,
     icotable::IcoTable2D,
     structure::{pqr_write_atom, Structure},
@@ -43,6 +43,8 @@ pub enum Backend {
     CpuSplined,
     /// GPU backend using wgpu compute shaders
     Gpu,
+    /// SIMD backend using AVX2 vectorization
+    Simd,
 }
 
 #[derive(Parser)]
@@ -260,8 +262,8 @@ fn do_scan(cmd: &Commands) -> Result<()> {
                 xtcfile,
             )
         }
-        Backend::CpuSplined | Backend::Gpu => {
-            // Create splined matrix (shared between CPU splined and GPU backends)
+        Backend::CpuSplined | Backend::Gpu | Backend::Simd => {
+            // Create splined matrix (shared between CPU splined, GPU, and SIMD backends)
             let splined_matrix = energy::PairMatrix::create_splined_matrix(
                 nonbonded,
                 topology.atomkinds(),
@@ -295,6 +297,20 @@ fn do_scan(cmd: &Commands) -> Result<()> {
                         *dr,
                         *resolution,
                         &gpu_backend,
+                        temperature,
+                        pmf_file,
+                        savetable,
+                        xtcfile,
+                    )
+                }
+                Backend::Simd => {
+                    let simd_backend = SimdBackend::new(ref_a, ref_b, &splined_matrix);
+                    icoscan::do_icoscan(
+                        *rmin,
+                        *rmax,
+                        *dr,
+                        *resolution,
+                        &simd_backend,
                         temperature,
                         pmf_file,
                         savetable,
