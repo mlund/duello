@@ -10,8 +10,8 @@ RUST_LOG="Debug" cargo run --release -- \
     --rmin 40.0 --rmax 150 --dr 1.0 \
     --top topology.yaml \
     --resolution 0.8 \
-    --cutoff 1000 \
-    --molarity 0.005 \
+    --cutoff 200 \
+    --molarity 0.05 \
     #--savetable table.dat.gz \
     #--xtcfile traj.xtc
     --temperature 330

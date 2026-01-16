@@ -16,28 +16,37 @@ use crate::structure::Structure;
 use coulomb::pairwise::{MultipoleEnergy, MultipolePotential, Plain};
 use coulomb::permittivity::ConstantPermittivity;
 use faunus::topology::CustomProperty;
-use faunus::{energy::NonbondedMatrix, topology::AtomKind};
+use faunus::{
+    energy::{NonbondedMatrix, NonbondedMatrixSplined},
+    topology::AtomKind,
+};
 use interatomic::{
-    twobody::{IonIon, IonIonPolar, IsotropicTwobodyEnergy},
+    twobody::{IonIon, IonIonPolar, IsotropicTwobodyEnergy, SplineConfig},
     Vector3,
 };
 use std::{cmp::PartialEq, fmt::Debug};
 
+/// Storage for either standard or splined pair potentials
+enum PotentialStorage {
+    Standard(NonbondedMatrix),
+    Splined(NonbondedMatrixSplined),
+}
+
 /// Pair-matrix of twobody energies for pairs of atom ids
 pub struct PairMatrix {
-    nonbonded: NonbondedMatrix,
+    storage: PotentialStorage,
 }
 
 impl PairMatrix {
-    /// Create a new pair matrix with added Coulomb potential
-    pub fn new_with_coulomb<
+    /// Add Coulomb potential to a nonbonded matrix
+    fn add_coulomb_to_matrix<
         T: MultipoleEnergy + Clone + Send + Sync + Debug + PartialEq + 'static,
     >(
         mut nonbonded: NonbondedMatrix,
         atomkinds: &[AtomKind],
         permittivity: ConstantPermittivity,
         coulomb_method: &T,
-    ) -> Self {
+    ) -> NonbondedMatrix {
         log::info!("Adding Coulomb potential to nonbonded matrix");
         nonbonded
             .get_potentials_mut()
@@ -80,24 +89,80 @@ impl PairMatrix {
                 };
                 *pairpot = std::sync::Arc::new(combined);
             });
-        Self { nonbonded }
+        nonbonded
+    }
+
+    /// Create a new pair matrix with added Coulomb potential
+    pub fn new_with_coulomb<
+        T: MultipoleEnergy + Clone + Send + Sync + Debug + PartialEq + 'static,
+    >(
+        nonbonded: NonbondedMatrix,
+        atomkinds: &[AtomKind],
+        permittivity: ConstantPermittivity,
+        coulomb_method: &T,
+    ) -> Self {
+        let nonbonded =
+            Self::add_coulomb_to_matrix(nonbonded, atomkinds, permittivity, coulomb_method);
+        Self {
+            storage: PotentialStorage::Standard(nonbonded),
+        }
+    }
+
+    /// Create a new pair matrix with Coulomb potential and splined interpolation
+    pub fn new_with_coulomb_splined<
+        T: MultipoleEnergy + Clone + Send + Sync + Debug + PartialEq + 'static,
+    >(
+        nonbonded: NonbondedMatrix,
+        atomkinds: &[AtomKind],
+        permittivity: ConstantPermittivity,
+        coulomb_method: &T,
+        cutoff: f64,
+        n_points: Option<usize>,
+    ) -> Self {
+        let nonbonded =
+            Self::add_coulomb_to_matrix(nonbonded, atomkinds, permittivity, coulomb_method);
+        let config = n_points.map(|n| SplineConfig {
+            n_points: n,
+            shift_energy: false,
+            ..Default::default()
+        });
+        let splined = NonbondedMatrixSplined::new(&nonbonded, cutoff, config);
+        Self {
+            storage: PotentialStorage::Splined(splined),
+        }
     }
 
     /// Sum energy between two set of atomic structures (kJ/mol)
     pub fn sum_energy(&self, a: &Structure, b: &Structure) -> f64 {
-        let potentials = self.nonbonded.get_potentials();
-        let mut energy = 0.0;
-        for i in 0..a.pos.len() {
-            for j in 0..b.pos.len() {
-                let distance_sq = (a.pos[i] - b.pos[j]).norm_squared();
-                let a = a.atom_ids[i];
-                let b = b.atom_ids[j];
-                energy += potentials[(a, b)].isotropic_twobody_energy(distance_sq);
+        let energy = match &self.storage {
+            PotentialStorage::Standard(nonbonded) => {
+                compute_pairwise_energy(a, b, nonbonded.get_potentials())
             }
-        }
+            PotentialStorage::Splined(splined) => {
+                compute_pairwise_energy(a, b, splined.get_potentials())
+            }
+        };
         trace!("molecule-molecule energy: {energy:.2} kJ/mol");
         energy
     }
+}
+
+/// Compute pairwise energy between two structures using a potential matrix
+fn compute_pairwise_energy<P, T>(a: &Structure, b: &Structure, potentials: &P) -> f64
+where
+    P: std::ops::Index<(usize, usize), Output = T>,
+    T: IsotropicTwobodyEnergy,
+{
+    let mut energy = 0.0;
+    for i in 0..a.pos.len() {
+        for j in 0..b.pos.len() {
+            let distance_sq = (a.pos[i] - b.pos[j]).norm_squared();
+            let atom_a = a.atom_ids[i];
+            let atom_b = b.atom_ids[j];
+            energy += potentials[(atom_a, atom_b)].isotropic_twobody_energy(distance_sq);
+        }
+    }
+    energy
 }
 
 /// Calculate accumulated electric potential at point `r` due to charges in `structure`
