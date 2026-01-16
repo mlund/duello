@@ -1213,7 +1213,7 @@ dependencies = [
 [[package]]
 name = "interatomic"
 version = "0.3.0"
-source = "git+https://github.com/mlund/interatomic.git?branch=hermite-spline#e6e401450813f7f1e83be10f1c9f078f68c74000"
+source = "git+https://github.com/mlund/interatomic.git?branch=hermite-spline#71983a715436161c8d55dc2511ac1bb1ea336b3f"
 dependencies = [
  "anyhow",
  "coulomb",

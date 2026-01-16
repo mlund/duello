@@ -16,6 +16,7 @@ use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use coulomb::{permittivity, DebyeLength, Medium, Salt, Vector3};
 use duello::{
+    backend::CpuBackend,
     energy, icoscan,
     icotable::IcoTable2D,
     structure::{pqr_write_atom, Structure},
@@ -29,6 +30,16 @@ extern crate pretty_env_logger;
 extern crate log;
 use iter_num_tools::arange;
 use rand::Rng;
+
+/// Compute backend selection
+#[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
+pub enum Backend {
+    /// CPU backend using splined pair potentials (default)
+    #[default]
+    Cpu,
+    /// GPU backend using wgpu compute shaders (not yet implemented)
+    Gpu,
+}
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -128,6 +139,9 @@ enum Commands {
         /// Export XTC file with all poses
         #[arg(long)]
         xtcfile: Option<PathBuf>,
+        /// Compute backend (cpu or gpu)
+        #[arg(long, value_enum, default_value = "cpu")]
+        backend: Backend,
     },
 }
 
@@ -148,11 +162,16 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         pmf_file,
         savetable,
         xtcfile,
+        backend: backend_type,
     } = cmd
     else {
         bail!("Unknown command");
     };
     assert!(rmin < rmax);
+
+    if matches!(backend_type, Backend::Gpu) {
+        bail!("GPU backend is not yet implemented");
+    }
 
     let mut topology = Topology::from_file_partial(top_file)?;
     topology.finalize_atoms()?;
@@ -210,14 +229,14 @@ fn do_scan(cmd: &Commands) -> Result<()> {
     );
 
     info!("COM range: [{rmin:.1}, {rmax:.1}) in {dr:.1} Å steps 🐾");
+
+    let backend = CpuBackend::new(ref_a, ref_b, pair_matrix);
     icoscan::do_icoscan(
         *rmin,
         *rmax,
         *dr,
         *resolution,
-        ref_a,
-        ref_b,
-        pair_matrix,
+        &backend,
         temperature,
         pmf_file,
         savetable,
