@@ -3,7 +3,7 @@
 example=$(basename "$0" .sh)
 cd examples/${example}
 
-RUST_LOG="Debug" cargo run --release \
+RUST_LOG="Info" cargo run --release \
     -- scan \
     -1 4lzt.xyz \
     -2 4lzt.xyz \
