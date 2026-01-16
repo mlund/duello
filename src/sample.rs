@@ -38,24 +38,18 @@ pub struct Sample {
 impl Sample {
     /// New from energy in kJ/mol and temperature in K
     ///
-    /// For extreme energies (|E/kT| > 700), the Boltzmann factor is clamped to avoid
-    /// overflow/underflow. This corresponds to energies > ~1700 kJ/mol at 298 K.
+    /// For extreme positive energies (E/kT > 700), the Boltzmann factor is clamped
+    /// to avoid underflow. This corresponds to energies > ~1700 kJ/mol at 298 K.
     pub fn new(energy: f64, temperature: f64, degeneracy: f64) -> Self {
         const KJ_PER_J: f64 = 1e-3;
         let thermal_energy = MOLAR_GAS_CONSTANT * temperature * KJ_PER_J; // kJ/mol
         let beta_u = energy / thermal_energy;
 
-        // Clamp extreme values to avoid overflow/underflow
+        // Clamp extreme positive energies to avoid underflow
         // ln(f64::MAX) ≈ f64::MAX_EXP * ln(2) ≈ 709.78
         const MAX_EXP_ARG: f64 = f64::MAX_EXP as f64 * std::f64::consts::LN_2;
         let (exp_energy, exp_energy_m1) = if beta_u > MAX_EXP_ARG {
             // Very large positive energy → Boltzmann factor ≈ 0
-            (0.0, -degeneracy)
-        } else if beta_u < -MAX_EXP_ARG {
-            // Very large negative energy → numerical artifact from spline oscillation
-            // at extremely short distances. These are unphysical and should be treated
-            // as highly repulsive (Boltzmann factor ≈ 0), same as extreme positive energies.
-            log::trace!("Clamping unphysical negative energy: beta_u = {:.2e}", beta_u);
             (0.0, -degeneracy)
         } else {
             (
