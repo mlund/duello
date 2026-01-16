@@ -17,12 +17,12 @@ approx = "0.5"
 clap = { version = "4", features = ["derive"], default-features = false }
 itertools = {version = "0.14"}
 itertools-num = {version = "0.1", default-features = false}
-nalgebra = {version = "0.33", default-features = false}
+nalgebra = {version = "0.34.1", default-features = false}
 rayon = "1.10"
 faunus = { git = "https://github.com/mlund/faunus-rs.git" }
-interatomic = { git = "https://github.com/mlund/interatomic.git", version = "0.3", features = ["serde"] }
+interatomic = { git = "https://github.com/mlund/interatomic.git", features = ["serde"], branch = "hermite-spline" }
 coulomb = { git = "https://github.com/mlund/coulomb.git", version = "0.2.1", features = ["serde"] }
-serde_yaml = "0.9"
+serde_yaml = "0.9.34-deprecated"
 serde = { version = "1.0", features = ["derive"], default-features = false }
 semver = { version = "1.0", features = ["serde"], default-features = false }
 pretty_env_logger = {version = "0.5", default-features = false}
@@ -34,14 +34,14 @@ flate2 = {version = "1.0", default-features = false}
 textplots = "0.8"
 rgb = "0.8"
 nu-ansi-term = "0.50"
-hexasphere = {version = "15.1", features = ["adjacency"]}
+hexasphere = {version = "16.0", features = ["adjacency"]}
 num-traits = "0.2"
 rand = {version = "0.8", default-features = false}
 get-size = {version = "0.1", features = ["derive"], default-features = false}
 physical_constants = "0.5"
 serde_json = {version = "1.0.137", default-features = false}
 xdrfile = "0.3.0"
-glam = "0.29.3"
+glam = "0.30.10"
 
 [dev-dependencies]
 lazy_static = "1.5"
