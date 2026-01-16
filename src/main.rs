@@ -34,9 +34,13 @@ use rand::Rng;
 /// Compute backend selection
 #[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
 pub enum Backend {
-    /// CPU backend using splined pair potentials (default)
+    /// Auto-detect: GPU if available, otherwise CPU
     #[default]
+    Auto,
+    /// CPU backend using exact (non-splined) pair potentials
     Cpu,
+    /// CPU backend using splined pair potentials
+    CpuSplined,
     /// GPU backend using wgpu compute shaders
     Gpu,
 }
@@ -139,8 +143,8 @@ enum Commands {
         /// Export XTC file with all poses
         #[arg(long)]
         xtcfile: Option<PathBuf>,
-        /// Compute backend (cpu or gpu)
-        #[arg(long, value_enum, default_value = "cpu")]
+        /// Compute backend
+        #[arg(long, value_enum, default_value = "auto")]
         backend: Backend,
     },
 }
@@ -187,16 +191,6 @@ fn do_scan(cmd: &Commands) -> Result<()> {
     let multipole = coulomb::pairwise::Plain::new(*cutoff, medium.debye_length());
     let nonbonded = NonbondedMatrix::from_file(top_file, &topology, Some(medium.clone()))?;
 
-    // Create splined matrix (shared between CPU and GPU backends)
-    let splined_matrix = energy::PairMatrix::create_splined_matrix(
-        nonbonded,
-        topology.atomkinds(),
-        medium.permittivity().into(),
-        &multipole,
-        *cutoff,
-        Some(2000),
-    );
-
     let ref_a = Structure::from_xyz(mol1, topology.atomkinds())?;
     let ref_b = Structure::from_xyz(mol2, topology.atomkinds())?;
     if xtcfile.is_some() {
@@ -229,9 +223,30 @@ fn do_scan(cmd: &Commands) -> Result<()> {
 
     info!("COM range: [{rmin:.1}, {rmax:.1}) in {dr:.1} Å steps 🐾");
 
+    // Auto-detect backend: try GPU first, fall back to CPU
+    let backend_type = match backend_type {
+        Backend::Auto => {
+            if GpuBackend::is_available() {
+                info!("Auto-detected GPU backend");
+                Backend::Gpu
+            } else {
+                info!("No GPU available, using CPU backend");
+                Backend::Cpu
+            }
+        }
+        other => *other,
+    };
+
     match backend_type {
+        Backend::Auto => unreachable!(), // Already resolved above
         Backend::Cpu => {
-            let pair_matrix = energy::PairMatrix::from_splined(splined_matrix);
+            // Use exact (non-splined) pair potentials
+            let pair_matrix = energy::PairMatrix::new_with_coulomb(
+                nonbonded,
+                topology.atomkinds(),
+                medium.permittivity().into(),
+                &multipole,
+            );
             let backend = CpuBackend::new(ref_a, ref_b, pair_matrix);
             icoscan::do_icoscan(
                 *rmin,
@@ -245,19 +260,49 @@ fn do_scan(cmd: &Commands) -> Result<()> {
                 xtcfile,
             )
         }
-        Backend::Gpu => {
-            let gpu_backend = GpuBackend::new(ref_a, ref_b, &splined_matrix)?;
-            icoscan::do_icoscan(
-                *rmin,
-                *rmax,
-                *dr,
-                *resolution,
-                &gpu_backend,
-                temperature,
-                pmf_file,
-                savetable,
-                xtcfile,
-            )
+        Backend::CpuSplined | Backend::Gpu => {
+            // Create splined matrix (shared between CPU splined and GPU backends)
+            let splined_matrix = energy::PairMatrix::create_splined_matrix(
+                nonbonded,
+                topology.atomkinds(),
+                medium.permittivity().into(),
+                &multipole,
+                *cutoff,
+                Some(2000),
+            );
+
+            match backend_type {
+                Backend::CpuSplined => {
+                    let pair_matrix = energy::PairMatrix::from_splined(splined_matrix);
+                    let backend = CpuBackend::new(ref_a, ref_b, pair_matrix);
+                    icoscan::do_icoscan(
+                        *rmin,
+                        *rmax,
+                        *dr,
+                        *resolution,
+                        &backend,
+                        temperature,
+                        pmf_file,
+                        savetable,
+                        xtcfile,
+                    )
+                }
+                Backend::Gpu => {
+                    let gpu_backend = GpuBackend::new(ref_a, ref_b, &splined_matrix)?;
+                    icoscan::do_icoscan(
+                        *rmin,
+                        *rmax,
+                        *dr,
+                        *resolution,
+                        &gpu_backend,
+                        temperature,
+                        pmf_file,
+                        savetable,
+                        xtcfile,
+                    )
+                }
+                _ => unreachable!(),
+            }
         }
     }
 }
