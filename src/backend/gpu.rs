@@ -157,6 +157,21 @@ pub struct GpuBackend {
 }
 
 impl GpuBackend {
+    /// Check if a GPU is available for compute.
+    pub fn is_available() -> bool {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .is_some()
+    }
+
     /// Create a new GPU backend.
     ///
     /// # Arguments
