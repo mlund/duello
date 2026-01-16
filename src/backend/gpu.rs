@@ -22,13 +22,16 @@ use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
 
 /// GPU-compatible spline parameters for a single pair type.
+/// Uses PowerLaw grid: r(x) = r_min + (r_max - r_min) * x^power, where x ∈ [0,1]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct GpuSplineParams {
     r_min: f32,
-    inv_delta: f32,
+    r_max: f32,
+    power: f32,        // Power-law exponent (typically 2.0)
     n_coeffs: u32,
     coeff_offset: u32, // Offset into the coefficient buffer
+    _pad: [u32; 3],    // Padding to 32 bytes for alignment
 }
 
 /// GPU-compatible pose parameters.
@@ -80,6 +83,8 @@ struct GpuSplineData {
 impl GpuSplineData {
     /// Extract spline data from NonbondedMatrixSplined.
     fn from_splined_matrix(matrix: &NonbondedMatrixSplined) -> Self {
+        use interatomic::twobody::GridType;
+
         let potentials = matrix.get_potentials();
         let shape = potentials.shape();
         let n_types = shape[0];
@@ -100,13 +105,20 @@ impl GpuSplineData {
                     coefficients.push([c.u[0] as f32, c.u[1] as f32, c.u[2] as f32, c.u[3] as f32]);
                 }
 
+                // Extract power-law exponent from grid type
+                let power = match stats.grid_type {
+                    GridType::PowerLaw(p) => p as f32,
+                    _ => panic!("GPU backend requires PowerLaw grid type"),
+                };
+
                 params.push(GpuSplineParams {
                     r_min: stats.r_min as f32,
-                    inv_delta: (1.0 / stats.delta) as f32,
+                    r_max: stats.r_max as f32,
+                    power,
                     n_coeffs: coeffs.len() as u32,
                     coeff_offset,
+                    _pad: [0; 3],
                 });
-
             }
         }
 
