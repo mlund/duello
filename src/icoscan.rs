@@ -134,7 +134,10 @@ pub fn do_icoscan<B: EnergyBackend>(
         }
     } else {
         // Per-pose processing with rayon parallelization (for CPU)
-        info!("Computing {} (r,omega) pairs using CPU backend...", r_and_omega.len());
+        info!(
+            "Computing {} (r,omega) pairs using CPU backend...",
+            r_and_omega.len()
+        );
         let calc_energy = |r: f64, omega: f64| {
             table
                 .get_icospheres(r, omega)
