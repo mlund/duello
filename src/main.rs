@@ -16,7 +16,7 @@ use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use coulomb::{permittivity, DebyeLength, Medium, Salt, Vector3};
 use duello::{
-    backend::CpuBackend,
+    backend::{CpuBackend, GpuBackend},
     energy, icoscan,
     icotable::IcoTable2D,
     structure::{pqr_write_atom, Structure},
@@ -37,7 +37,7 @@ pub enum Backend {
     /// CPU backend using splined pair potentials (default)
     #[default]
     Cpu,
-    /// GPU backend using wgpu compute shaders (not yet implemented)
+    /// GPU backend using wgpu compute shaders
     Gpu,
 }
 
@@ -169,10 +169,6 @@ fn do_scan(cmd: &Commands) -> Result<()> {
     };
     assert!(rmin < rmax);
 
-    if matches!(backend_type, Backend::Gpu) {
-        bail!("GPU backend is not yet implemented");
-    }
-
     let mut topology = Topology::from_file_partial(top_file)?;
     topology.finalize_atoms()?;
     topology.finalize_molecules()?;
@@ -190,7 +186,9 @@ fn do_scan(cmd: &Commands) -> Result<()> {
 
     let multipole = coulomb::pairwise::Plain::new(*cutoff, medium.debye_length());
     let nonbonded = NonbondedMatrix::from_file(top_file, &topology, Some(medium.clone()))?;
-    let pair_matrix = energy::PairMatrix::new_with_coulomb_splined(
+
+    // Create splined matrix (shared between CPU and GPU backends)
+    let splined_matrix = energy::PairMatrix::create_splined_matrix(
         nonbonded,
         topology.atomkinds(),
         medium.permittivity().into(),
@@ -198,6 +196,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         *cutoff,
         Some(2000),
     );
+
     let ref_a = Structure::from_xyz(mol1, topology.atomkinds())?;
     let ref_b = Structure::from_xyz(mol2, topology.atomkinds())?;
     if xtcfile.is_some() {
@@ -230,18 +229,37 @@ fn do_scan(cmd: &Commands) -> Result<()> {
 
     info!("COM range: [{rmin:.1}, {rmax:.1}) in {dr:.1} Å steps 🐾");
 
-    let backend = CpuBackend::new(ref_a, ref_b, pair_matrix);
-    icoscan::do_icoscan(
-        *rmin,
-        *rmax,
-        *dr,
-        *resolution,
-        &backend,
-        temperature,
-        pmf_file,
-        savetable,
-        xtcfile,
-    )
+    match backend_type {
+        Backend::Cpu => {
+            let pair_matrix = energy::PairMatrix::from_splined(splined_matrix);
+            let backend = CpuBackend::new(ref_a, ref_b, pair_matrix);
+            icoscan::do_icoscan(
+                *rmin,
+                *rmax,
+                *dr,
+                *resolution,
+                &backend,
+                temperature,
+                pmf_file,
+                savetable,
+                xtcfile,
+            )
+        }
+        Backend::Gpu => {
+            let gpu_backend = GpuBackend::new(ref_a, ref_b, &splined_matrix)?;
+            icoscan::do_icoscan(
+                *rmin,
+                *rmax,
+                *dr,
+                *resolution,
+                &gpu_backend,
+                temperature,
+                pmf_file,
+                savetable,
+                xtcfile,
+            )
+        }
+    }
 }
 
 fn do_dipole(cmd: &Commands) -> Result<()> {

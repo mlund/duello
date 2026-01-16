@@ -119,6 +119,30 @@ impl PairMatrix {
         cutoff: f64,
         n_points: Option<usize>,
     ) -> Self {
+        let splined = Self::create_splined_matrix(
+            nonbonded,
+            atomkinds,
+            permittivity,
+            coulomb_method,
+            cutoff,
+            n_points,
+        );
+        Self::from_splined(splined)
+    }
+
+    /// Create a splined matrix with Coulomb potential added.
+    ///
+    /// This is useful when the splined matrix needs to be shared between backends.
+    pub fn create_splined_matrix<
+        T: MultipoleEnergy + Clone + Send + Sync + Debug + PartialEq + 'static,
+    >(
+        nonbonded: NonbondedMatrix,
+        atomkinds: &[AtomKind],
+        permittivity: ConstantPermittivity,
+        coulomb_method: &T,
+        cutoff: f64,
+        n_points: Option<usize>,
+    ) -> NonbondedMatrixSplined {
         let nonbonded =
             Self::add_coulomb_to_matrix(nonbonded, atomkinds, permittivity, coulomb_method);
         let config = n_points.map(|n| SplineConfig {
@@ -126,7 +150,11 @@ impl PairMatrix {
             shift_energy: false,
             ..Default::default()
         });
-        let splined = NonbondedMatrixSplined::new(&nonbonded, cutoff, config);
+        NonbondedMatrixSplined::new(&nonbonded, cutoff, config)
+    }
+
+    /// Create a pair matrix from an existing splined matrix.
+    pub fn from_splined(splined: NonbondedMatrixSplined) -> Self {
         Self {
             storage: PotentialStorage::Splined(splined),
         }
