@@ -34,7 +34,7 @@ use rand::Rng;
 /// Compute backend selection
 #[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
 pub enum Backend {
-    /// Auto-detect: GPU if available, otherwise CPU
+    /// Auto-detect: GPU if available, otherwise CPU splined
     #[default]
     Auto,
     /// CPU backend using exact (non-splined) pair potentials
@@ -223,15 +223,15 @@ fn do_scan(cmd: &Commands) -> Result<()> {
 
     info!("COM range: [{rmin:.1}, {rmax:.1}) in {dr:.1} Å steps 🐾");
 
-    // Auto-detect backend: try GPU first, fall back to CPU
+    // Auto-detect backend: try GPU first, fall back to CPU splined
     let backend_type = match backend_type {
         Backend::Auto => {
             if GpuBackend::is_available() {
                 info!("Auto-detected GPU backend");
                 Backend::Gpu
             } else {
-                info!("No GPU available, using CPU backend");
-                Backend::Cpu
+                info!("No GPU available, using CPU splined backend");
+                Backend::CpuSplined
             }
         }
         other => *other,

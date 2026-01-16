@@ -118,9 +118,9 @@ fn quat_from_axis_angle(axis: vec3<f32>, angle: f32) -> vec4<f32> {
     return vec4<f32>(axis_n.x * s, axis_n.y * s, axis_n.z * s, cos(half_angle));
 }
 
-// Evaluate spline energy using Horner's method with PowerLaw grid
-// Grid mapping: r(x) = r_min + (r_max - r_min) * x^power, where x ∈ [0,1]
-// Inverse: x = ((r - r_min) / (r_max - r_min))^(1/power)
+// Evaluate spline energy using Horner's method with PowerLaw2 grid
+// Grid mapping: r(x) = r_min + (r_max - r_min) * x^2, where x ∈ [0,1]
+// Inverse: x = sqrt((r - r_min) / (r_max - r_min))
 fn spline_energy(pair_idx: u32, r_sq: f32) -> f32 {
     let params = spline_params[pair_idx];
     let r = sqrt(r_sq);
@@ -133,9 +133,9 @@ fn spline_energy(pair_idx: u32, r_sq: f32) -> f32 {
     // Clamp to minimum
     let r_clamped = max(r, params.r_min);
 
-    // Inverse power-law mapping: x = ((r - r_min) / (r_max - r_min))^(1/power)
+    // Inverse power-law mapping with p=2: x = sqrt((r - r_min) / (r_max - r_min))
     let r_range = params.r_max - params.r_min;
-    let x = pow((r_clamped - params.r_min) / r_range, 1.0 / params.power);
+    let x = sqrt((r_clamped - params.r_min) / r_range);
 
     // Grid index and fraction: t = x * (n - 1)
     let t = x * f32(params.n_coeffs - 1u);
