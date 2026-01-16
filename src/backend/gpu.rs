@@ -28,7 +28,7 @@ use wgpu::util::DeviceExt;
 struct GpuSplineParams {
     r_min: f32,
     r_max: f32,
-    power: f32,        // Power-law exponent (typically 2.0)
+    power: f32, // Power-law exponent (typically 2.0)
     n_coeffs: u32,
     coeff_offset: u32, // Offset into the coefficient buffer
     _pad: [u32; 3],    // Padding to 32 bytes for alignment
@@ -42,7 +42,7 @@ struct GpuSplineParams {
 pub struct GpuPoseParams {
     pub r: f32,
     pub omega: f32,
-    pub _pad: [f32; 2],    // Padding to align vertex_i to 16 bytes
+    pub _pad: [f32; 2],     // Padding to align vertex_i to 16 bytes
     pub vertex_i: [f32; 4], // vec4<f32>
     pub vertex_j: [f32; 4], // vec4<f32>
 }
@@ -53,8 +53,18 @@ impl From<&PoseParams> for GpuPoseParams {
             r: p.r as f32,
             omega: p.omega as f32,
             _pad: [0.0, 0.0],
-            vertex_i: [p.vertex_i.x as f32, p.vertex_i.y as f32, p.vertex_i.z as f32, 0.0],
-            vertex_j: [p.vertex_j.x as f32, p.vertex_j.y as f32, p.vertex_j.z as f32, 0.0],
+            vertex_i: [
+                p.vertex_i.x as f32,
+                p.vertex_i.y as f32,
+                p.vertex_i.z as f32,
+                0.0,
+            ],
+            vertex_j: [
+                p.vertex_j.x as f32,
+                p.vertex_j.y as f32,
+                p.vertex_j.z as f32,
+                0.0,
+            ],
         }
     }
 }
