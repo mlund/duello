@@ -13,7 +13,7 @@
 // limitations under the license.
 
 use crate::{
-    energy::{self},
+    backend::{EnergyBackend, PoseParams},
     icotable::Table6D,
     report::report_pmf,
     structure::Structure,
@@ -63,19 +63,19 @@ pub fn orient_structures(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn do_icoscan(
+pub fn do_icoscan<B: EnergyBackend>(
     rmin: f64,
     rmax: f64,
     dr: f64,
     angle_resolution: f64,
-    ref_a: Structure,
-    ref_b: Structure,
-    pair_matrix: energy::PairMatrix,
+    backend: &B,
     temperature: &f64,
     pmf_file: &PathBuf,
     disktable: &Option<PathBuf>,
     xtcfile: &Option<PathBuf>,
 ) -> std::result::Result<(), anyhow::Error> {
+    let ref_a = backend.ref_a();
+    let ref_b = backend.ref_b();
     let table = Table6D::from_resolution(rmin, rmax, dr, angle_resolution)?;
     let n_vertices = table.get(rmin)?.get(0.0)?.len();
     let angle_resolution = (4.0 * PI / n_vertices as f64).sqrt();
@@ -102,9 +102,13 @@ pub fn do_icoscan(
             .expect("invalid (r, omega) value")
             .flat_iter()
             .for_each(|(pos_a, pos_b, data_b)| {
-                let (oriented_a, oriented_b) =
-                    orient_structures(r, omega, *pos_a, *pos_b, &ref_a, &ref_b);
-                let energy = pair_matrix.sum_energy(&oriented_a, &oriented_b);
+                let pose = PoseParams {
+                    r,
+                    omega,
+                    vertex_i: *pos_a,
+                    vertex_j: *pos_b,
+                };
+                let energy = backend.compute_energy(&pose);
                 data_b.set(energy).expect("Energy already calculated");
             });
     };
@@ -160,7 +164,7 @@ pub fn do_icoscan(
                     .flat_iter()
                     .for_each(|(pos_a, pos_b, _data_b)| {
                         let (oriented_a, oriented_b) =
-                            orient_structures(r, omega, *pos_a, *pos_b, &ref_a, &ref_b);
+                            orient_structures(r, omega, *pos_a, *pos_b, ref_a, ref_b);
                         write_frame(&oriented_a, &oriented_b, _data_b.get().unwrap());
                     });
             });

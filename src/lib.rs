@@ -12,6 +12,7 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
+pub mod backend;
 pub mod energy;
 mod fibonacci;
 pub mod icoscan;
