@@ -34,13 +34,13 @@ use rand::Rng;
 /// Compute backend selection
 #[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
 pub enum Backend {
-    /// Auto-detect: GPU if available, otherwise CPU splined
+    /// Auto-detect: GPU if available, otherwise CPU
     #[default]
     Auto,
-    /// CPU backend using exact (non-splined) pair potentials
-    Cpu,
+    /// Reference backend using exact (non-splined) pair potentials
+    Reference,
     /// CPU backend using splined pair potentials
-    CpuSplined,
+    Cpu,
     /// GPU backend using wgpu compute shaders
     Gpu,
     /// SIMD backend using AVX2 vectorization
@@ -225,15 +225,15 @@ fn do_scan(cmd: &Commands) -> Result<()> {
 
     info!("COM range: [{rmin:.1}, {rmax:.1}) in {dr:.1} Å steps 🐾");
 
-    // Auto-detect backend: try GPU first, fall back to CPU splined
+    // Auto-detect backend: try GPU first, fall back to CPU
     let backend_type = match backend_type {
         Backend::Auto => {
             if GpuBackend::is_available() {
                 info!("Auto-detected GPU backend");
                 Backend::Gpu
             } else {
-                info!("No GPU available, using CPU splined backend");
-                Backend::CpuSplined
+                info!("No GPU available, using CPU backend");
+                Backend::Cpu
             }
         }
         other => *other,
@@ -241,7 +241,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
 
     match backend_type {
         Backend::Auto => unreachable!(), // Already resolved above
-        Backend::Cpu => {
+        Backend::Reference => {
             // Use exact (non-splined) pair potentials
             let pair_matrix = energy::PairMatrix::new_with_coulomb(
                 nonbonded,
@@ -262,8 +262,8 @@ fn do_scan(cmd: &Commands) -> Result<()> {
                 xtcfile,
             )
         }
-        Backend::CpuSplined | Backend::Gpu | Backend::Simd => {
-            // Create splined matrix (shared between CPU splined, GPU, and SIMD backends)
+        Backend::Cpu | Backend::Gpu | Backend::Simd => {
+            // Create splined matrix (shared between CPU, GPU, and SIMD backends)
             let splined_matrix = energy::PairMatrix::create_splined_matrix(
                 nonbonded,
                 topology.atomkinds(),
@@ -274,7 +274,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
             );
 
             match backend_type {
-                Backend::CpuSplined => {
+                Backend::Cpu => {
                     let pair_matrix = energy::PairMatrix::from_splined(splined_matrix);
                     let backend = CpuBackend::new(ref_a, ref_b, pair_matrix);
                     icoscan::do_icoscan(
