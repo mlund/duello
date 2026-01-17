@@ -43,7 +43,7 @@ pub enum Backend {
     Cpu,
     /// GPU backend using wgpu compute shaders
     Gpu,
-    /// SIMD backend using AVX2 vectorization
+    /// SIMD backend (AVX2 on x86_64, NEON on aarch64)
     Simd,
 }
 

@@ -45,7 +45,7 @@ pub struct PoseParams {
 /// Implementations can use different computational strategies:
 /// - `CpuBackend`: Uses pair potentials with rayon parallelization
 /// - `GpuBackend`: Uses wgpu compute shaders
-/// - `SimdBackend`: Uses AVX2 vectorization
+/// - `SimdBackend`: Uses SIMD vectorization (AVX2 on x86_64, NEON on aarch64)
 pub trait EnergyBackend: Send + Sync {
     /// Compute energy for a single pose.
     ///

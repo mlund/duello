@@ -12,10 +12,12 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
-//! SIMD backend using the `wide` crate for AVX2 vectorization.
+//! SIMD backend using the `wide` crate for vectorization.
 //!
-//! This backend vectorizes across atom pairs within a single pose,
-//! processing 8 atom pairs simultaneously using f32x8 (AVX2).
+//! This backend vectorizes across atom pairs within a single pose.
+//! The SIMD width is selected at compile time based on target architecture:
+//! - x86_64: f32x8 (AVX2, 256-bit, 8 lanes)
+//! - aarch64: f32x4 (NEON, 128-bit, 4 lanes)
 //!
 //! Pairs are grouped by atom type combination at initialization time,
 //! allowing fully vectorized spline evaluation without scalar gather.
@@ -24,7 +26,44 @@ use super::{EnergyBackend, PoseParams};
 use crate::structure::Structure;
 use faunus::energy::NonbondedMatrixSplined;
 use std::collections::HashMap;
-use wide::{f32x8, CmpLt};
+use wide::CmpLt;
+
+// Compile-time SIMD configuration based on target architecture
+#[cfg(target_arch = "aarch64")]
+mod simd_config {
+    pub use wide::f32x4 as SimdFloat;
+    pub const LANES: usize = 4;
+    pub type SimdArray = [f32; 4];
+
+    #[inline]
+    pub fn simd_new(arr: SimdArray) -> SimdFloat {
+        SimdFloat::new(arr)
+    }
+
+    #[inline]
+    pub fn simd_to_array(v: SimdFloat) -> SimdArray {
+        v.into()
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+mod simd_config {
+    pub use wide::f32x8 as SimdFloat;
+    pub const LANES: usize = 8;
+    pub type SimdArray = [f32; 8];
+
+    #[inline]
+    pub fn simd_new(arr: SimdArray) -> SimdFloat {
+        SimdFloat::new(arr)
+    }
+
+    #[inline]
+    pub fn simd_to_array(v: SimdFloat) -> SimdArray {
+        v.into()
+    }
+}
+
+use simd_config::{simd_new, simd_to_array, SimdArray, SimdFloat, LANES};
 
 /// Spline parameters for a single pair type.
 #[derive(Clone, Copy, Debug)]
@@ -133,7 +172,10 @@ impl PairGroups {
     }
 }
 
-/// SIMD backend for energy calculations using AVX2 vectorization.
+/// SIMD backend for energy calculations.
+///
+/// Uses compile-time selected SIMD width: 8 lanes (AVX2) on x86_64,
+/// 4 lanes (NEON) on aarch64.
 pub struct SimdBackend {
     /// Reference structure for molecule A (centered at origin)
     ref_a: Structure,
@@ -178,8 +220,14 @@ impl SimdBackend {
         let n_unique_pairs: usize = pair_groups.groups.len();
         let total_pairs: usize = pair_groups.groups.iter().map(|g| g.pairs.len()).sum();
 
+        #[cfg(target_arch = "aarch64")]
+        let simd_type = "NEON (f32x4)";
+        #[cfg(not(target_arch = "aarch64"))]
+        let simd_type = "AVX2 (f32x8)";
+
         log::info!(
-            "SIMD backend initialized: {} atoms, {} unique pair types, {} total pairs",
+            "SIMD backend initialized ({}): {} atoms, {} unique pair types, {} total pairs",
+            simd_type,
             ref_a.pos.len() + ref_b.pos.len(),
             n_unique_pairs,
             total_pairs
@@ -199,39 +247,39 @@ impl SimdBackend {
         }
     }
 
-    /// Evaluate spline energy for 8 squared distances with uniform spline parameters.
+    /// Evaluate spline energy for LANES squared distances with uniform spline parameters.
     /// All lanes use the same spline params, enabling full SIMD vectorization.
     #[inline]
-    fn eval_spline_simd(&self, r_sq: f32x8, params: &SimdSplineParams) -> f32x8 {
+    fn eval_spline_simd(&self, r_sq: SimdFloat, params: &SimdSplineParams) -> SimdFloat {
         let r = r_sq.sqrt();
 
         // Cutoff mask: r < r_max
-        let r_max = f32x8::splat(params.r_max);
+        let r_max = SimdFloat::splat(params.r_max);
         let cutoff_mask = r.cmp_lt(r_max);
 
         // Early exit if all distances are beyond cutoff
         if cutoff_mask.none() {
-            return f32x8::ZERO;
+            return SimdFloat::ZERO;
         }
 
         // Clamp to minimum
-        let r_min = f32x8::splat(params.r_min);
+        let r_min = SimdFloat::splat(params.r_min);
         let r_clamped = r.max(r_min);
 
         // Inverse power-law mapping with p=2: x = sqrt((r - r_min) / (r_max - r_min))
-        let r_range = f32x8::splat(params.r_max - params.r_min);
+        let r_range = SimdFloat::splat(params.r_max - params.r_min);
         let x = ((r_clamped - r_min) / r_range).sqrt();
 
         // Grid index and fraction: t = x * (n - 1)
-        let n_coeffs_minus_1 = f32x8::splat((params.n_coeffs - 1) as f32);
+        let n_coeffs_minus_1 = SimdFloat::splat((params.n_coeffs - 1) as f32);
         let t = x * n_coeffs_minus_1;
 
         // Convert to integer indices and fractions
-        let t_arr: [f32; 8] = t.into();
+        let t_arr: SimdArray = simd_to_array(t);
         let max_idx = params.n_coeffs - 2;
 
-        let mut energies = [0.0f32; 8];
-        for lane in 0..8 {
+        let mut energies: SimdArray = [0.0f32; LANES];
+        for lane in 0..LANES {
             let idx = (t_arr[lane] as u32).min(max_idx);
             let frac = t_arr[lane] - idx as f32;
 
@@ -243,7 +291,7 @@ impl SimdBackend {
         }
 
         // Apply cutoff mask
-        cutoff_mask.blend(f32x8::new(energies), f32x8::ZERO)
+        cutoff_mask.blend(simd_new(energies), SimdFloat::ZERO)
     }
 
     /// Evaluate spline energy for a single squared distance (scalar fallback).
@@ -325,18 +373,18 @@ impl SimdBackend {
             let pairs = &group.pairs;
             let n_pairs = pairs.len();
 
-            // Process 8 pairs at a time with full SIMD
+            // Process LANES pairs at a time with full SIMD
             let mut p = 0;
-            while p + 8 <= n_pairs {
-                // Gather positions for 8 pairs
-                let mut ax = [0.0f32; 8];
-                let mut ay = [0.0f32; 8];
-                let mut az = [0.0f32; 8];
-                let mut bx = [0.0f32; 8];
-                let mut by = [0.0f32; 8];
-                let mut bz = [0.0f32; 8];
+            while p + LANES <= n_pairs {
+                // Gather positions for LANES pairs
+                let mut ax: SimdArray = [0.0f32; LANES];
+                let mut ay: SimdArray = [0.0f32; LANES];
+                let mut az: SimdArray = [0.0f32; LANES];
+                let mut bx: SimdArray = [0.0f32; LANES];
+                let mut by: SimdArray = [0.0f32; LANES];
+                let mut bz: SimdArray = [0.0f32; LANES];
 
-                for lane in 0..8 {
+                for lane in 0..LANES {
                     let (i, j) = pairs[p + lane];
                     ax[lane] = self.pos_a_x[i as usize];
                     ay[lane] = self.pos_a_y[i as usize];
@@ -347,19 +395,19 @@ impl SimdBackend {
                 }
 
                 // Compute squared distances
-                let dx = f32x8::new(ax) - f32x8::new(bx);
-                let dy = f32x8::new(ay) - f32x8::new(by);
-                let dz = f32x8::new(az) - f32x8::new(bz);
+                let dx = simd_new(ax) - simd_new(bx);
+                let dy = simd_new(ay) - simd_new(by);
+                let dz = simd_new(az) - simd_new(bz);
                 let r_sq = dx * dx + dy * dy + dz * dz;
 
                 // Evaluate splines with uniform parameters (no gather!)
                 let energies = self.eval_spline_simd(r_sq, params);
 
                 // Horizontal sum
-                let arr: [f32; 8] = energies.into();
+                let arr: SimdArray = simd_to_array(energies);
                 total_energy += arr.iter().sum::<f32>();
 
-                p += 8;
+                p += LANES;
             }
 
             // Handle remainder pairs (scalar)
