@@ -95,7 +95,7 @@ be defined in the topology file under `atoms`.
 The topology also defines the particular pair-potential to use, see below.
 Note that currently, a coulomb potential is automatically added and should
 hence _not_ be specified in the topology.
-The program is written in Rust and attempts to use all available CPU cores.
+The program is written in Rust and attempts to use either GPU or all available CPU cores.
 
 ```sh
 duello scan \
@@ -106,7 +106,8 @@ duello scan \
     --resolution 0.8 \
     --cutoff 1000 \
     --molarity 0.05 \
-    --temperature 298.15
+    --temperature 298.15 \
+    --backend auto # gpu, cpu, simd
 ```
 
 ## Preparing PDB files
