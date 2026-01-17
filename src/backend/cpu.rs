@@ -12,21 +12,22 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
-//! CPU backend using splined pair potentials.
+//! CPU backend for energy calculations.
 
 use super::{EnergyBackend, PoseParams};
 use crate::{energy::PairMatrix, icoscan::orient_structures, structure::Structure};
 
-/// CPU backend for energy calculations using splined pair potentials.
+/// CPU backend for energy calculations.
 ///
 /// Uses the existing `PairMatrix` implementation with rayon parallelization
-/// happening at the caller level (in `do_icoscan`).
+/// happening at the caller level (in `do_icoscan`). Can be used with either
+/// exact or splined pair potentials depending on the `PairMatrix` provided.
 pub struct CpuBackend {
     /// Reference structure for molecule A (centered at origin)
     ref_a: Structure,
     /// Reference structure for molecule B (centered at origin)
     ref_b: Structure,
-    /// Pair potential matrix with splined interpolation
+    /// Pair potential matrix (exact or splined)
     pair_matrix: PairMatrix,
 }
 

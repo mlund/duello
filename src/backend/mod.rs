@@ -15,7 +15,7 @@
 //! Backend abstraction for energy calculations.
 //!
 //! Provides a trait for computing pairwise energies between molecular poses,
-//! with implementations for CPU (using splined potentials) and GPU (using wgpu).
+//! with implementations for CPU, GPU (using wgpu), and SIMD (using AVX2).
 
 mod cpu;
 mod gpu;
@@ -43,8 +43,9 @@ pub struct PoseParams {
 /// Backend trait for computing pairwise energies between molecular poses.
 ///
 /// Implementations can use different computational strategies:
-/// - `CpuBackend`: Uses splined potentials with rayon parallelization
+/// - `CpuBackend`: Uses pair potentials with rayon parallelization
 /// - `GpuBackend`: Uses wgpu compute shaders
+/// - `SimdBackend`: Uses AVX2 vectorization
 pub trait EnergyBackend: Send + Sync {
     /// Compute energy for a single pose.
     ///
