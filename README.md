@@ -95,7 +95,6 @@ be defined in the topology file under `atoms`.
 The topology also defines the particular pair-potential to use, see below.
 Note that currently, a coulomb potential is automatically added and should
 hence _not_ be specified in the topology.
-The program is written in Rust and attempts to use either GPU or all available CPU cores.
 
 ```sh
 duello scan \
@@ -107,8 +106,24 @@ duello scan \
     --cutoff 1000 \
     --molarity 0.05 \
     --temperature 298.15 \
-    --backend auto # gpu, cpu, simd
+    --backend auto
 ```
+
+## Backend Performance
+
+The program is written in Rust and attempts to use either GPU or all available CPU cores.
+The following backends are available, with performance measured on the Calvados3 lysozyme example
+(2.4M poses, 128 atoms per molecule, Apple M4):
+
+| Backend     | Description                    | Poses/ms | Speedup |
+|-------------|--------------------------------|----------|---------|
+| `reference` | Exact potentials (validation)  |       48 |    1.0x |
+| `cpu`       | Splined potentials             |      102 |    2.1x |
+| `simd`      | NEON (aarch64) / AVX2 (x86)    |      131 |    2.7x |
+| `gpu`       | wgpu compute shaders           |     1065 |     22x |
+
+The `auto` backend (default) selects GPU if available, otherwise SIMD.
+All but `reference` use Cubic Hermite splines for pair potentials.
 
 ## Preparing PDB files
 

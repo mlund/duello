@@ -101,6 +101,7 @@ pub fn do_icoscan<B: EnergyBackend>(
         .collect_vec();
 
     // Populate 6D table with inter-particle energies
+    let start_time = std::time::Instant::now();
     if backend.prefers_batch() {
         // Batched processing (for GPU): batch by distance for progress while keeping large batches
         for r in distances.iter().progress_count(distances.len() as u64) {
@@ -161,8 +162,14 @@ pub fn do_icoscan<B: EnergyBackend>(
             .for_each(|(r, omega)| {
                 calc_energy(*r, *omega);
             });
-        info!("Finished computing energies");
     }
+    let elapsed = start_time.elapsed();
+    let poses_per_ms = n_total as f64 / elapsed.as_millis() as f64;
+    info!(
+        "Finished computing energies in {:.2}s ({:.1} poses/ms)",
+        elapsed.as_secs_f64(),
+        poses_per_ms
+    );
 
     // Write oriented structures to trajectory file
     if let Some(xtcfile) = xtcfile {
