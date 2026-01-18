@@ -120,12 +120,15 @@ impl SimdBackend {
             for j in 0..n_types {
                 let spline = &potentials[(i, j)];
 
-                // Verify power-law grid type (required for efficient SIMD)
+                // Verify supported grid type (PowerLaw2 or InverseRsq for efficient SIMD)
                 let stats = spline.stats();
                 match stats.grid_type {
-                    GridType::PowerLaw2 => {}
+                    GridType::PowerLaw2 | GridType::InverseRsq => {}
                     GridType::PowerLaw(p) if (p - 2.0).abs() < 1e-6 => {}
-                    _ => panic!("SIMD backend requires PowerLaw2 or PowerLaw(2.0) grid type"),
+                    _ => panic!(
+                        "SIMD backend requires PowerLaw2, InverseRsq, or PowerLaw(2.0) grid type, got {:?}",
+                        stats.grid_type
+                    ),
                 };
 
                 spline_tables.push(spline.to_simd_f32());
@@ -249,8 +252,8 @@ impl SimdBackend {
                 let dz = simd_f32_from_array(az) - simd_f32_from_array(bz);
                 let r_sq: SimdF32 = dx * dx + dy * dy + dz * dz;
 
-                // Evaluate spline using interatomic's optimized PowerLaw2 implementation
-                let energies = spline.energy_simd_powerlaw2(r_sq);
+                // Evaluate spline using interatomic's SIMD implementation (auto-dispatches)
+                let energies = spline.energy_simd(r_sq);
 
                 // Horizontal sum
                 let arr = simd_f32_to_array(energies);
