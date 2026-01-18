@@ -451,7 +451,7 @@ dependencies = [
 [[package]]
 name = "coulomb"
 version = "0.2.1"
-source = "git+https://github.com/mlund/coulomb.git#44cfc58e8cd3e2f0bbdf4e6b3ee5d03839cdba55"
+source = "git+https://github.com/mlund/coulomb.git#2e01b575769c44c909c641dbc5d3dd86e0e72ab4"
 dependencies = [
  "anyhow",
  "itertools 0.10.5",
@@ -855,7 +855,7 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 [[package]]
 name = "faunus"
 version = "0.1.0"
-source = "git+https://github.com/mlund/faunus-rs.git#f4aa6e9edba5dcc5526719d94d4241f6023db175"
+source = "git+https://github.com/mlund/faunus-rs.git#91ee2b2a7132c3f5825e4ac81266f53f6da2b7f3"
 dependencies = [
  "anyhow",
  "average 0.13.1",
@@ -1481,7 +1481,7 @@ dependencies = [
 [[package]]
 name = "interatomic"
 version = "0.3.0"
-source = "git+https://github.com/mlund/interatomic.git#a8b95a1548bb6edc8b90390059b9f36e53150516"
+source = "git+https://github.com/mlund/interatomic.git#0d111a1fd660ab93a3b465abfb3216e263971f8e"
 dependencies = [
  "anyhow",
  "coulomb",
@@ -3369,6 +3369,6 @@ dependencies = [
 
 [[package]]
 name = "zmij"
-version = "1.0.14"
+version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd8f3f50b848df28f887acb68e41201b5aea6bc8a8dacc00fb40635ff9a72fea"
+checksum = "94f63c051f4fe3c1509da62131a678643c5b6fbdc9273b2b79d4378ebda003d2"

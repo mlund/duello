@@ -87,7 +87,7 @@ impl PairMatrix {
                             + Box::new(pairpot.clone())
                     }
                 };
-                *pairpot = std::sync::Arc::new(combined);
+                *pairpot = interatomic::twobody::ArcPotential(std::sync::Arc::new(combined));
             });
         nonbonded
     }
