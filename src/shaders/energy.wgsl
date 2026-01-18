@@ -4,12 +4,12 @@
 struct SplineParams {
     r_min: f32,
     r_max: f32,
-    power: f32,         // Power-law exponent (typically 2.0)
+    grid_type: u32,     // 0 = PowerLaw2, 1 = InverseRsq
     n_coeffs: u32,
     coeff_offset: u32,
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
+    inv_delta: f32,     // For InverseRsq: (n-1) / (w_max - w_min)
+    w_min: f32,         // For InverseRsq: 1/rsq_max
+    f_at_rmin: f32,     // Force at r_min for linear extrapolation
 }
 
 struct PoseParams {
@@ -118,9 +118,8 @@ fn quat_from_axis_angle(axis: vec3<f32>, angle: f32) -> vec4<f32> {
     return vec4<f32>(axis_n.x * s, axis_n.y * s, axis_n.z * s, cos(half_angle));
 }
 
-// Evaluate spline energy using Horner's method with PowerLaw2 grid
-// Grid mapping: r(x) = r_min + (r_max - r_min) * x^2, where x ∈ [0,1]
-// Inverse: x = sqrt((r - r_min) / (r_max - r_min))
+// Evaluate spline energy using Horner's method
+// Supports PowerLaw2 and InverseRsq grid types
 fn spline_energy(pair_idx: u32, r_sq: f32) -> f32 {
     let params = spline_params[pair_idx];
     let r = sqrt(r_sq);
@@ -130,15 +129,25 @@ fn spline_energy(pair_idx: u32, r_sq: f32) -> f32 {
         return 0.0;
     }
 
-    // Clamp to minimum
+    // Linear extrapolation distance for r < r_min (branchless)
+    let extrap_dist = max(params.r_min - r, 0.0);
+
+    // Clamp to minimum for spline evaluation
     let r_clamped = max(r, params.r_min);
 
-    // Inverse power-law mapping with p=2: x = sqrt((r - r_min) / (r_max - r_min))
-    let r_range = params.r_max - params.r_min;
-    let x = sqrt((r_clamped - params.r_min) / r_range);
+    // Compute grid index based on grid type
+    var t: f32;
+    if params.grid_type == 0u {
+        // PowerLaw2: x = sqrt((r - r_min) / (r_max - r_min))
+        let r_range = params.r_max - params.r_min;
+        let x = sqrt((r_clamped - params.r_min) / r_range);
+        t = x * f32(params.n_coeffs - 1u);
+    } else {
+        // InverseRsq: w = 1/rsq, t = (w - w_min) * inv_delta
+        let w = 1.0 / (r_clamped * r_clamped);
+        t = (w - params.w_min) * params.inv_delta;
+    }
 
-    // Grid index and fraction: t = x * (n - 1)
-    let t = x * f32(params.n_coeffs - 1u);
     let idx = min(u32(t), params.n_coeffs - 2u);
     let frac = t - f32(idx);
 
@@ -146,7 +155,10 @@ fn spline_energy(pair_idx: u32, r_sq: f32) -> f32 {
     let c = spline_coeffs[params.coeff_offset + idx];
 
     // Horner's method: a0 + frac*(a1 + frac*(a2 + frac*a3))
-    return c.x + frac * (c.y + frac * (c.z + frac * c.w));
+    let u_spline = c.x + frac * (c.y + frac * (c.z + frac * c.w));
+
+    // Add linear extrapolation for r < r_min
+    return u_spline + params.f_at_rmin * extrap_dist;
 }
 
 @compute @workgroup_size(64)

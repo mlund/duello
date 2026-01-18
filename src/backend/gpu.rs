@@ -22,16 +22,18 @@ use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
 
 /// GPU-compatible spline parameters for a single pair type.
-/// Uses PowerLaw grid: r(x) = r_min + (r_max - r_min) * x^power, where x ∈ [0,1]
+/// Supports PowerLaw2 and InverseRsq grid types.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct GpuSplineParams {
     r_min: f32,
     r_max: f32,
-    power: f32, // Power-law exponent (typically 2.0)
+    grid_type: u32, // 0 = PowerLaw2, 1 = InverseRsq
     n_coeffs: u32,
     coeff_offset: u32, // Offset into the coefficient buffer
-    _pad: [u32; 3],    // Padding to 32 bytes for alignment
+    inv_delta: f32,    // For InverseRsq: (n-1) / (w_max - w_min)
+    w_min: f32,        // For InverseRsq: 1/rsq_max
+    f_at_rmin: f32,    // Force at r_min for linear extrapolation below r_min
 }
 
 /// GPU-compatible pose parameters.
@@ -93,7 +95,7 @@ struct GpuSplineData {
 impl GpuSplineData {
     /// Extract spline data from NonbondedMatrixSplined.
     fn from_splined_matrix(matrix: &NonbondedMatrixSplined) -> Self {
-        use interatomic::twobody::GridType;
+        use interatomic::twobody::{GridType, IsotropicTwobodyEnergy};
 
         let potentials = matrix.get_potentials();
         let shape = potentials.shape();
@@ -115,20 +117,35 @@ impl GpuSplineData {
                     coefficients.push([c.u[0] as f32, c.u[1] as f32, c.u[2] as f32, c.u[3] as f32]);
                 }
 
-                // Extract power-law exponent from grid type (must be 2 for GPU backend)
-                let power = match stats.grid_type {
-                    GridType::PowerLaw2 => 2.0_f32,
-                    GridType::PowerLaw(p) if (p - 2.0).abs() < 1e-6 => 2.0_f32,
-                    _ => panic!("GPU backend requires PowerLaw2 or PowerLaw(2.0) grid type"),
+                // Get force at r_min for linear extrapolation below r_min
+                let f_at_rmin = spline.isotropic_twobody_force(stats.rsq_min) as f32;
+
+                // Extract grid type parameters
+                let (grid_type, inv_delta, w_min) = match stats.grid_type {
+                    GridType::PowerLaw2 => (0u32, 0.0_f32, 0.0_f32),
+                    GridType::PowerLaw(p) if (p - 2.0).abs() < 1e-6 => (0u32, 0.0_f32, 0.0_f32),
+                    GridType::InverseRsq => {
+                        let rsq_min = stats.r_min * stats.r_min;
+                        let rsq_max = stats.r_max * stats.r_max;
+                        let w_min = 1.0 / rsq_max;
+                        let w_max = 1.0 / rsq_min;
+                        let inv_delta = (stats.n_points - 1) as f64 / (w_max - w_min);
+                        (1u32, inv_delta as f32, w_min as f32)
+                    }
+                    _ => panic!(
+                        "GPU backend requires PowerLaw2, PowerLaw(2.0), or InverseRsq grid type"
+                    ),
                 };
 
                 params.push(GpuSplineParams {
                     r_min: stats.r_min as f32,
                     r_max: stats.r_max as f32,
-                    power,
+                    grid_type,
                     n_coeffs: coeffs.len() as u32,
                     coeff_offset,
-                    _pad: [0; 3],
+                    inv_delta,
+                    w_min,
+                    f_at_rmin,
                 });
             }
         }
