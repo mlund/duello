@@ -23,6 +23,7 @@ use duello::{
     SphericalCoord, UnitQuaternion,
 };
 use faunus::{energy::NonbondedMatrix, topology::Topology};
+use interatomic::twobody::GridType;
 use std::process::ExitCode;
 use std::{f64::consts::PI, fs::File, io::Write, ops::Add, ops::Neg, path::PathBuf};
 extern crate pretty_env_logger;
@@ -30,6 +31,25 @@ extern crate pretty_env_logger;
 extern crate log;
 use iter_num_tools::arange;
 use rand::Rng;
+
+/// Spline grid type selection
+#[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
+pub enum SplineGrid {
+    /// PowerLaw2 grid: denser at short range, uses 2 sqrts for index (default)
+    #[default]
+    Powerlaw2,
+    /// InverseRsq grid: denser at short range, uses only division for index
+    Inversersq,
+}
+
+impl From<SplineGrid> for GridType {
+    fn from(grid: SplineGrid) -> Self {
+        match grid {
+            SplineGrid::Powerlaw2 => GridType::PowerLaw2,
+            SplineGrid::Inversersq => GridType::InverseRsq,
+        }
+    }
+}
 
 /// Compute backend selection
 #[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
@@ -148,6 +168,12 @@ enum Commands {
         /// Compute backend
         #[arg(long, value_enum, default_value = "auto")]
         backend: Backend,
+        /// Spline grid type for interpolation
+        #[arg(long, value_enum, default_value = "powerlaw2")]
+        grid_type: SplineGrid,
+        /// Number of spline grid points (default: 2000)
+        #[arg(long, default_value = "2000")]
+        grid_size: usize,
     },
 }
 
@@ -169,6 +195,8 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         savetable,
         xtcfile,
         backend: backend_type,
+        grid_type,
+        grid_size,
     } = cmd
     else {
         bail!("Unknown command");
@@ -270,7 +298,8 @@ fn do_scan(cmd: &Commands) -> Result<()> {
                 medium.permittivity().into(),
                 &multipole,
                 *cutoff,
-                Some(2000),
+                Some(*grid_size),
+                (*grid_type).into(),
             );
 
             match backend_type {

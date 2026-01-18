@@ -21,7 +21,7 @@ use faunus::{
     topology::AtomKind,
 };
 use interatomic::{
-    twobody::{IonIon, IonIonPolar, IsotropicTwobodyEnergy, SplineConfig},
+    twobody::{GridType, IonIon, IonIonPolar, IsotropicTwobodyEnergy, SplineConfig},
     Vector3,
 };
 use std::{cmp::PartialEq, fmt::Debug};
@@ -118,6 +118,7 @@ impl PairMatrix {
         coulomb_method: &T,
         cutoff: f64,
         n_points: Option<usize>,
+        grid_type: GridType,
     ) -> Self {
         let splined = Self::create_splined_matrix(
             nonbonded,
@@ -126,6 +127,7 @@ impl PairMatrix {
             coulomb_method,
             cutoff,
             n_points,
+            grid_type,
         );
         Self::from_splined(splined)
     }
@@ -142,12 +144,14 @@ impl PairMatrix {
         coulomb_method: &T,
         cutoff: f64,
         n_points: Option<usize>,
+        grid_type: GridType,
     ) -> NonbondedMatrixSplined {
         let nonbonded =
             Self::add_coulomb_to_matrix(nonbonded, atomkinds, permittivity, coulomb_method);
-        let config = n_points.map(|n| SplineConfig {
-            n_points: n,
+        let config = Some(SplineConfig {
+            n_points: n_points.unwrap_or(2000),
             shift_energy: false,
+            grid_type,
             ..Default::default()
         });
         NonbondedMatrixSplined::new(&nonbonded, cutoff, config)
