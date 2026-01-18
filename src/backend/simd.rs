@@ -20,125 +20,21 @@
 //! - aarch64: f32x4 (NEON, 128-bit, 4 lanes)
 //!
 //! Pairs are grouped by atom type combination at initialization time,
-//! allowing fully vectorized spline evaluation without scalar gather.
+//! allowing efficient SIMD evaluation per pair type.
+//!
+//! Spline evaluation uses `interatomic::twobody::SplineTableSimdF32`.
 
 use super::{EnergyBackend, PoseParams};
 use crate::structure::Structure;
 use faunus::energy::NonbondedMatrixSplined;
+use interatomic::twobody::{simd_f32_from_array, simd_f32_to_array, GridType, SimdArrayF32, SimdF32, SplineTableSimdF32, LANES_F32};
 use std::collections::HashMap;
-use wide::CmpLt;
-
-// Compile-time SIMD configuration based on target architecture
-#[cfg(target_arch = "aarch64")]
-mod simd_config {
-    pub use wide::f32x4 as SimdFloat;
-    pub const LANES: usize = 4;
-    pub type SimdArray = [f32; 4];
-
-    #[inline]
-    pub fn simd_new(arr: SimdArray) -> SimdFloat {
-        SimdFloat::new(arr)
-    }
-
-    #[inline]
-    pub fn simd_to_array(v: SimdFloat) -> SimdArray {
-        v.into()
-    }
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-mod simd_config {
-    pub use wide::f32x8 as SimdFloat;
-    pub const LANES: usize = 8;
-    pub type SimdArray = [f32; 8];
-
-    #[inline]
-    pub fn simd_new(arr: SimdArray) -> SimdFloat {
-        SimdFloat::new(arr)
-    }
-
-    #[inline]
-    pub fn simd_to_array(v: SimdFloat) -> SimdArray {
-        v.into()
-    }
-}
-
-use simd_config::{simd_new, simd_to_array, SimdArray, SimdFloat, LANES};
-
-/// Spline parameters for a single pair type.
-#[derive(Clone, Copy, Debug)]
-struct SimdSplineParams {
-    r_min: f32,
-    r_max: f32,
-    n_coeffs: u32,
-    coeff_offset: u32,
-}
-
-/// Extracted spline data for SIMD evaluation.
-struct SimdSplineData {
-    /// Flattened spline coefficients: [pair0_coeff0, pair0_coeff1, ..., pair1_coeff0, ...]
-    /// Each coefficient is [a0, a1, a2, a3]
-    coefficients: Vec<[f32; 4]>,
-    /// Parameters for each pair type (n_types × n_types)
-    params: Vec<SimdSplineParams>,
-    /// Number of atom types
-    n_types: usize,
-}
-
-impl SimdSplineData {
-    /// Extract spline data from NonbondedMatrixSplined.
-    fn from_splined_matrix(matrix: &NonbondedMatrixSplined) -> Self {
-        use interatomic::twobody::GridType;
-
-        let potentials = matrix.get_potentials();
-        let shape = potentials.shape();
-        let n_types = shape[0];
-
-        let mut coefficients = Vec::new();
-        let mut params = Vec::with_capacity(n_types * n_types);
-
-        for i in 0..n_types {
-            for j in 0..n_types {
-                let spline = &potentials[(i, j)];
-                let stats = spline.stats();
-                let coeffs = spline.coefficients();
-
-                let coeff_offset = coefficients.len() as u32;
-
-                // Extract energy coefficients (u[0..4]) for each interval
-                for c in coeffs {
-                    coefficients.push([c.u[0] as f32, c.u[1] as f32, c.u[2] as f32, c.u[3] as f32]);
-                }
-
-                // Verify power-law grid type
-                match stats.grid_type {
-                    GridType::PowerLaw2 => {}
-                    GridType::PowerLaw(p) if (p - 2.0).abs() < 1e-6 => {}
-                    _ => panic!("SIMD backend requires PowerLaw2 or PowerLaw(2.0) grid type"),
-                };
-
-                params.push(SimdSplineParams {
-                    r_min: stats.r_min as f32,
-                    r_max: stats.r_max as f32,
-                    n_coeffs: coeffs.len() as u32,
-                    coeff_offset,
-                });
-            }
-        }
-
-        Self {
-            coefficients,
-            params,
-            n_types,
-        }
-    }
-}
 
 /// A group of atom pairs that share the same pair type (same spline parameters).
 struct PairGroup {
     /// Atom indices: (index_in_A, index_in_B)
     pairs: Vec<(u32, u32)>,
-    /// The pair type index into spline_data.params
+    /// The pair type index into spline_tables
     pair_idx: u32,
 }
 
@@ -175,7 +71,7 @@ impl PairGroups {
 /// SIMD backend for energy calculations.
 ///
 /// Uses compile-time selected SIMD width: 8 lanes (AVX2) on x86_64,
-/// 4 lanes (NEON) on aarch64.
+/// 4 lanes (NEON) on aarch64. Spline evaluation delegated to interatomic.
 pub struct SimdBackend {
     /// Reference structure for molecule A (centered at origin)
     ref_a: Structure,
@@ -189,8 +85,8 @@ pub struct SimdBackend {
     pos_b_x: Vec<f32>,
     pos_b_y: Vec<f32>,
     pos_b_z: Vec<f32>,
-    /// Spline data
-    spline_data: SimdSplineData,
+    /// Spline tables from interatomic (one per pair type, flattened n_types × n_types)
+    spline_tables: Vec<SplineTableSimdF32>,
     /// Precomputed pair groups (pairs grouped by atom type combination)
     pair_groups: PairGroups,
 }
@@ -214,8 +110,29 @@ impl SimdBackend {
         let atom_ids_a: Vec<u32> = ref_a.atom_ids.iter().map(|&id| id as u32).collect();
         let atom_ids_b: Vec<u32> = ref_b.atom_ids.iter().map(|&id| id as u32).collect();
 
-        let spline_data = SimdSplineData::from_splined_matrix(splined_matrix);
-        let pair_groups = PairGroups::new(&atom_ids_a, &atom_ids_b, spline_data.n_types as u32);
+        // Convert splined potentials to f32 SIMD tables
+        let potentials = splined_matrix.get_potentials();
+        let shape = potentials.shape();
+        let n_types = shape[0];
+
+        let mut spline_tables = Vec::with_capacity(n_types * n_types);
+        for i in 0..n_types {
+            for j in 0..n_types {
+                let spline = &potentials[(i, j)];
+
+                // Verify power-law grid type (required for efficient SIMD)
+                let stats = spline.stats();
+                match stats.grid_type {
+                    GridType::PowerLaw2 => {}
+                    GridType::PowerLaw(p) if (p - 2.0).abs() < 1e-6 => {}
+                    _ => panic!("SIMD backend requires PowerLaw2 or PowerLaw(2.0) grid type"),
+                };
+
+                spline_tables.push(spline.to_simd_f32());
+            }
+        }
+
+        let pair_groups = PairGroups::new(&atom_ids_a, &atom_ids_b, n_types as u32);
 
         let n_unique_pairs: usize = pair_groups.groups.len();
         let total_pairs: usize = pair_groups.groups.iter().map(|g| g.pairs.len()).sum();
@@ -242,77 +159,9 @@ impl SimdBackend {
             pos_b_x,
             pos_b_y,
             pos_b_z,
-            spline_data,
+            spline_tables,
             pair_groups,
         }
-    }
-
-    /// Evaluate spline energy for LANES squared distances with uniform spline parameters.
-    /// All lanes use the same spline params, enabling full SIMD vectorization.
-    #[inline]
-    fn eval_spline_simd(&self, r_sq: SimdFloat, params: &SimdSplineParams) -> SimdFloat {
-        let r = r_sq.sqrt();
-
-        // Cutoff mask: r < r_max
-        let r_max = SimdFloat::splat(params.r_max);
-        let cutoff_mask = r.cmp_lt(r_max);
-
-        // Early exit if all distances are beyond cutoff
-        if cutoff_mask.none() {
-            return SimdFloat::ZERO;
-        }
-
-        // Clamp to minimum
-        let r_min = SimdFloat::splat(params.r_min);
-        let r_clamped = r.max(r_min);
-
-        // Inverse power-law mapping with p=2: x = sqrt((r - r_min) / (r_max - r_min))
-        let r_range = SimdFloat::splat(params.r_max - params.r_min);
-        let x = ((r_clamped - r_min) / r_range).sqrt();
-
-        // Grid index and fraction: t = x * (n - 1)
-        let n_coeffs_minus_1 = SimdFloat::splat((params.n_coeffs - 1) as f32);
-        let t = x * n_coeffs_minus_1;
-
-        // Convert to integer indices and fractions
-        let t_arr: SimdArray = simd_to_array(t);
-        let max_idx = params.n_coeffs - 2;
-
-        let mut energies: SimdArray = [0.0f32; LANES];
-        for lane in 0..LANES {
-            let idx = (t_arr[lane] as u32).min(max_idx);
-            let frac = t_arr[lane] - idx as f32;
-
-            // Fetch coefficients for this interval
-            let c = self.spline_data.coefficients[(params.coeff_offset + idx) as usize];
-
-            // Horner's method: a0 + frac*(a1 + frac*(a2 + frac*a3))
-            energies[lane] = c[0] + frac * (c[1] + frac * (c[2] + frac * c[3]));
-        }
-
-        // Apply cutoff mask
-        cutoff_mask.blend(simd_new(energies), SimdFloat::ZERO)
-    }
-
-    /// Evaluate spline energy for a single squared distance (scalar fallback).
-    #[inline]
-    fn eval_spline_scalar(&self, r_sq: f32, params: &SimdSplineParams) -> f32 {
-        let r = r_sq.sqrt();
-
-        if r >= params.r_max {
-            return 0.0;
-        }
-
-        let r_clamped = r.max(params.r_min);
-        let r_range = params.r_max - params.r_min;
-        let x = ((r_clamped - params.r_min) / r_range).sqrt();
-
-        let t = x * (params.n_coeffs - 1) as f32;
-        let idx = (t as u32).min(params.n_coeffs - 2);
-        let frac = t - idx as f32;
-
-        let c = self.spline_data.coefficients[(params.coeff_offset + idx) as usize];
-        c[0] + frac * (c[1] + frac * (c[2] + frac * c[3]))
     }
 
     /// Compute energy for a single pose using SIMD with pair grouping.
@@ -369,22 +218,22 @@ impl SimdBackend {
         let mut total_energy = 0.0f32;
 
         for group in &self.pair_groups.groups {
-            let params = &self.spline_data.params[group.pair_idx as usize];
+            let spline = &self.spline_tables[group.pair_idx as usize];
             let pairs = &group.pairs;
             let n_pairs = pairs.len();
 
-            // Process LANES pairs at a time with full SIMD
+            // Process LANES_F32 pairs at a time with full SIMD
             let mut p = 0;
-            while p + LANES <= n_pairs {
-                // Gather positions for LANES pairs
-                let mut ax: SimdArray = [0.0f32; LANES];
-                let mut ay: SimdArray = [0.0f32; LANES];
-                let mut az: SimdArray = [0.0f32; LANES];
-                let mut bx: SimdArray = [0.0f32; LANES];
-                let mut by: SimdArray = [0.0f32; LANES];
-                let mut bz: SimdArray = [0.0f32; LANES];
+            while p + LANES_F32 <= n_pairs {
+                // Gather positions for LANES_F32 pairs
+                let mut ax: SimdArrayF32 = [0.0f32; LANES_F32];
+                let mut ay: SimdArrayF32 = [0.0f32; LANES_F32];
+                let mut az: SimdArrayF32 = [0.0f32; LANES_F32];
+                let mut bx: SimdArrayF32 = [0.0f32; LANES_F32];
+                let mut by: SimdArrayF32 = [0.0f32; LANES_F32];
+                let mut bz: SimdArrayF32 = [0.0f32; LANES_F32];
 
-                for lane in 0..LANES {
+                for lane in 0..LANES_F32 {
                     let (i, j) = pairs[p + lane];
                     ax[lane] = self.pos_a_x[i as usize];
                     ay[lane] = self.pos_a_y[i as usize];
@@ -395,19 +244,19 @@ impl SimdBackend {
                 }
 
                 // Compute squared distances
-                let dx = simd_new(ax) - simd_new(bx);
-                let dy = simd_new(ay) - simd_new(by);
-                let dz = simd_new(az) - simd_new(bz);
-                let r_sq = dx * dx + dy * dy + dz * dz;
+                let dx = simd_f32_from_array(ax) - simd_f32_from_array(bx);
+                let dy = simd_f32_from_array(ay) - simd_f32_from_array(by);
+                let dz = simd_f32_from_array(az) - simd_f32_from_array(bz);
+                let r_sq: SimdF32 = dx * dx + dy * dy + dz * dz;
 
-                // Evaluate splines with uniform parameters (no gather!)
-                let energies = self.eval_spline_simd(r_sq, params);
+                // Evaluate spline using interatomic's optimized PowerLaw2 implementation
+                let energies = spline.energy_simd_powerlaw2(r_sq);
 
                 // Horizontal sum
-                let arr: SimdArray = simd_to_array(energies);
+                let arr = simd_f32_to_array(energies);
                 total_energy += arr.iter().sum::<f32>();
 
-                p += LANES;
+                p += LANES_F32;
             }
 
             // Handle remainder pairs (scalar)
@@ -418,7 +267,7 @@ impl SimdBackend {
                 let dz = self.pos_a_z[i as usize] - trans_b_z[j as usize];
                 let r_sq = dx * dx + dy * dy + dz * dz;
 
-                total_energy += self.eval_spline_scalar(r_sq, params);
+                total_energy += spline.energy(r_sq);
                 p += 1;
             }
         }
