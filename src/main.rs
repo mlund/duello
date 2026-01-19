@@ -33,21 +33,76 @@ use iter_num_tools::arange;
 use rand::Rng;
 
 /// Spline grid type selection
-#[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, Default)]
 pub enum SplineGrid {
     /// PowerLaw2 grid: denser at short range, uses 2 sqrts for index (default)
     #[default]
     Powerlaw2,
     /// InverseRsq grid: denser at short range, uses only division for index
-    Inversersq,
+    InvR2,
 }
 
 impl From<SplineGrid> for GridType {
     fn from(grid: SplineGrid) -> Self {
         match grid {
             SplineGrid::Powerlaw2 => GridType::PowerLaw2,
-            SplineGrid::Inversersq => GridType::InverseRsq,
+            SplineGrid::InvR2 => GridType::InverseRsq,
         }
+    }
+}
+
+/// Grid interpolation options parsed from "type=X,size=Y,shift=bool" format
+#[derive(Clone, Copy, Debug)]
+pub struct GridOptions {
+    pub grid_type: SplineGrid,
+    pub size: usize,
+    pub shift: bool,
+}
+
+impl Default for GridOptions {
+    fn default() -> Self {
+        Self {
+            grid_type: SplineGrid::Powerlaw2,
+            size: 2000,
+            shift: true,
+        }
+    }
+}
+
+impl std::str::FromStr for GridOptions {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut opts = GridOptions::default();
+        for part in s.split(',') {
+            let (key, value) = part
+                .split_once('=')
+                .ok_or_else(|| format!("expected key=value, got '{part}'"))?;
+            match key.trim() {
+                "type" => {
+                    opts.grid_type = match value.trim().to_lowercase().as_str() {
+                        "powerlaw2" => SplineGrid::Powerlaw2,
+                        "invr2" | "inversersq" => SplineGrid::InvR2,
+                        _ => return Err(format!("unknown grid type '{value}'")),
+                    };
+                }
+                "size" => {
+                    opts.size = value
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("invalid size '{value}'"))?;
+                }
+                "shift" => {
+                    opts.shift = match value.trim().to_lowercase().as_str() {
+                        "true" | "1" | "yes" => true,
+                        "false" | "0" | "no" => false,
+                        _ => return Err(format!("invalid shift value '{value}'")),
+                    };
+                }
+                _ => return Err(format!("unknown option '{key}'")),
+            }
+        }
+        Ok(opts)
     }
 }
 
@@ -168,12 +223,9 @@ enum Commands {
         /// Compute backend
         #[arg(long, value_enum, default_value = "auto")]
         backend: Backend,
-        /// Spline grid type for interpolation
-        #[arg(long, value_enum, default_value = "powerlaw2")]
-        grid_type: SplineGrid,
-        /// Number of spline grid points (default: 2000)
-        #[arg(long, default_value = "2000")]
-        grid_size: usize,
+        /// Grid interpolation: type=powerlaw2|invr2,size=N,shift=bool
+        #[arg(long, default_value = "type=powerlaw2,size=2000,shift=true")]
+        grid: GridOptions,
     },
 }
 
@@ -195,8 +247,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         savetable,
         xtcfile,
         backend: backend_type,
-        grid_type,
-        grid_size,
+        grid,
     } = cmd
     else {
         bail!("Unknown command");
@@ -298,8 +349,9 @@ fn do_scan(cmd: &Commands) -> Result<()> {
                 medium.permittivity().into(),
                 &multipole,
                 *cutoff,
-                Some(*grid_size),
-                (*grid_type).into(),
+                Some(grid.size),
+                grid.grid_type.into(),
+                grid.shift,
             );
 
             match backend_type {

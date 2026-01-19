@@ -106,8 +106,21 @@ duello scan \
     --cutoff 1000 \
     --molarity 0.05 \
     --temperature 298.15 \
-    --backend auto
+    --backend auto \
+    --grid "type=powerlaw2,size=2000,shift=true"
 ```
+
+## Spline Grid Options
+
+The `--grid` option controls interpolation of pair potentials:
+
+| Key     | Values               | Default     | Description                              |
+|---------|----------------------|-------------|------------------------------------------|
+| `type`  | `powerlaw2`, `invr2` | `powerlaw2` | Grid spacing (invr2 avoids sqrt in eval) |
+| `size`  | integer              | `2000`      | Number of grid points                    |
+| `shift` | `true`, `false`      | `true`      | Shift energy to zero at cutoff           |
+
+Example: `--grid "type=invr2,size=1500,shift=false"`
 
 ## Backend Performance
 

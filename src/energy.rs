@@ -119,6 +119,7 @@ impl PairMatrix {
         cutoff: f64,
         n_points: Option<usize>,
         grid_type: GridType,
+        shift_energy: bool,
     ) -> Self {
         let splined = Self::create_splined_matrix(
             nonbonded,
@@ -128,6 +129,7 @@ impl PairMatrix {
             cutoff,
             n_points,
             grid_type,
+            shift_energy,
         );
         Self::from_splined(splined)
     }
@@ -145,12 +147,13 @@ impl PairMatrix {
         cutoff: f64,
         n_points: Option<usize>,
         grid_type: GridType,
+        shift_energy: bool,
     ) -> NonbondedMatrixSplined {
         let nonbonded =
             Self::add_coulomb_to_matrix(nonbonded, atomkinds, permittivity, coulomb_method);
         let config = Some(SplineConfig {
             n_points: n_points.unwrap_or(2000),
-            shift_energy: false,
+            shift_energy,
             grid_type,
             ..Default::default()
         });
