@@ -194,9 +194,12 @@ binary package on pipy.org.
 
 ## Create `pip` package using Maturin via a Docker image:
 
+Run this on MacOS, linux (x86 and arm) to get all architectures:
+
 ```sh
-docker run --rm -v $(pwd):/io ghcr.io/pyo3/maturin publish -u __token__ -p PYPI_TOKEN
+docker run --rm -v $(pwd):/io ghcr.io/pyo3/maturin::v1.11.5 publish -u __token__ -p PYPI_TOKEN
 ```
+
 
 For local Maturin installs, follow the steps below.
 
