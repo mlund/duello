@@ -20,8 +20,8 @@ itertools-num = {version = "0.1", default-features = false}
 nalgebra = {version = "0.34.1", default-features = false}
 rayon = "1.10"
 faunus = { git = "https://github.com/mlund/faunus-rs.git" }
-interatomic = { path = "../interatomic", features = ["serde"] }
-coulomb = { git = "https://github.com/mlund/coulomb.git", version = "0.2.1", features = ["serde"] }
+interatomic = { git = "https://github.com/mlund/interatomic.git", features = ["serde"] }
+coulomb = { git = "https://github.com/mlund/coulomb.git", features = ["serde"] }
 serde_yaml = "0.9.34-deprecated"
 serde = { version = "1.0", features = ["derive"], default-features = false }
 semver = { version = "1.0", features = ["serde"], default-features = false }
@@ -50,11 +50,10 @@ bytemuck = { version = "1.21", features = ["derive"] }
 [dev-dependencies]
 lazy_static = "1.5"
 
+[patch.crates-io]
+coulomb = { git = "https://github.com/mlund/coulomb.git" }
+
 [profile.release]
 strip = true     # Automatically strip symbols from the binary.
 lto = true       # Link-time optimization
-
-# Patch interatomic for all dependencies to use local version
-[patch."https://github.com/mlund/interatomic.git"]
-interatomic = { path = "../interatomic" }
 
