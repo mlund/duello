@@ -67,8 +67,9 @@ K_d^{-1} = 2 N_A\left (B_2^{hs} - B_2\right )
 $$
 
 <p align="center">
-  <img src="assets/illustration.png" alt="crates.io", height="200">
+  <img height="200" alt="Image" src="https://github.com/user-attachments/assets/8d68eb85-6aa1-49e9-9d8d-75f91cdf1687" />
 </p>
+
 
 # Installation
 
