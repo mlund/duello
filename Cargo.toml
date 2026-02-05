@@ -40,7 +40,7 @@ rand = {version = "0.8", default-features = false}
 get-size = {version = "0.1", features = ["derive"], default-features = false}
 physical_constants = "0.5"
 serde_json = {version = "1.0.137", default-features = false}
-xdrfile = "0.3.0"
+molly = "0.5"
 glam = "0.30.10"
 wide = "0.7"
 wgpu = "23"

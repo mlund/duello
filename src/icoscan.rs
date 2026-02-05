@@ -31,7 +31,7 @@ use std::{
     io::{BufWriter, Write},
     path::PathBuf,
 };
-use xdrfile::{Frame, Trajectory, XTCTrajectory};
+use molly::{Frame, XTCWriter};
 
 /// Orient two reference structures to given 6D point and return the two structures
 ///
@@ -174,12 +174,15 @@ pub fn do_icoscan<B: EnergyBackend>(
     // Write oriented structures to trajectory file
     if let Some(xtcfile) = xtcfile {
         info!("Writing trajectory file {}", xtcfile.display());
-        let mut traj = XTCTrajectory::open_write(xtcfile)?;
+        let mut traj = XTCWriter::create(xtcfile)?;
         let mut energy_file =
             BufWriter::new(open_compressed(&xtcfile.with_extension("energy.dat.gz"))?);
         writeln!(energy_file, "# Energy (kJ/mol)").expect("Failed to write header");
-        let mut frame_cnt: usize = 0;
-        let mut frame = Frame::new();
+        let mut frame_cnt: u32 = 0;
+        let mut frame = Frame {
+            precision: 1000.0,
+            ..Default::default()
+        };
         let n = r_and_omega.len();
 
         // Create new XTC frame from two structures and append to trajectory
@@ -187,13 +190,13 @@ pub fn do_icoscan<B: EnergyBackend>(
             frame.step = frame_cnt;
             frame.time = frame_cnt as f32;
             frame_cnt += 1;
-            frame.coords = oriented_a
+            frame.positions = oriented_a
                 .pos
                 .iter()
                 .chain(oriented_b.pos.iter())
-                .map(|&p| [p.x as f32 * 0.1, p.y as f32 * 0.1, p.z as f32 * 0.1]) // angstrom to nm
+                .flat_map(|&p| [p.x as f32 * 0.1, p.y as f32 * 0.1, p.z as f32 * 0.1]) // angstrom to nm
                 .collect();
-            traj.write(&frame).expect("Failed to write XTC frame");
+            traj.write_frame(&frame).expect("Failed to write XTC frame");
             writeln!(energy_file, "{energy:.6}").expect("Failed to write energy to file");
         };
 
