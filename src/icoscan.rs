@@ -19,7 +19,7 @@ use crate::{
     structure::Structure,
     Sample, UnitQuaternion, Vector3,
 };
-use faunus::aux::open_compressed;
+use faunus::auxiliary::open_compressed;
 use get_size::GetSize;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use iter_num_tools::arange;
