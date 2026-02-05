@@ -72,14 +72,14 @@ $$
 
 # Installation
 
-Binary packages are available for Linux and MacOS through PyPI.org:
+Binary packages are available through PyPI.org:
 
 ```console
 pip install duello
 ```
 
 If you have a [Rust toolchain](https://www.rust-lang.org/learn/get-started) installed,
-you may alternatively build and install directly from the source code:
+you may alternatively build and install from source:
 
 ```sh
 cargo install --git https://github.com/mlund/duello

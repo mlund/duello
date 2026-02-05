@@ -19,7 +19,7 @@ itertools = {version = "0.14"}
 itertools-num = {version = "0.1", default-features = false}
 nalgebra = {version = "0.34.1", default-features = false}
 rayon = "1.10"
-faunus = { git = "https://github.com/mlund/faunus-rs.git" }
+faunus = { git = "https://github.com/mlund/faunus-rs.git", default-features = false }
 interatomic = { git = "https://github.com/mlund/interatomic.git", features = ["serde"] }
 coulomb = { git = "https://github.com/mlund/coulomb.git", features = ["serde"] }
 serde_yaml = "0.9.34-deprecated"

@@ -272,24 +272,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd16c4719339c4530435d38e511904438d07cce7950afa3718a84ac36c10e89e"
 
 [[package]]
-name = "chemfiles"
-version = "0.10.41"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c2765083950cdde2b21e491edf458c59ab247d27336e9637e3cc7bead724aff"
-dependencies = [
- "chemfiles-sys",
-]
-
-[[package]]
-name = "chemfiles-sys"
-version = "0.10.41"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00b42b868610adae00ecc6af80edc12b25353b0d125b13d30417207bf5072a78"
-dependencies = [
- "cmake",
-]
-
-[[package]]
 name = "chrono"
 version = "0.4.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -340,15 +322,6 @@ name = "clap_lex"
 version = "0.7.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3e64b0cc0439b12df2fa678eae89a1c56a529fd067a9115f7827f1fffd22b32"
-
-[[package]]
-name = "cmake"
-version = "0.1.57"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75443c44cd6b379beb8c5b45d85d0773baf31cce901fe7bb252f4eff3008ef7d"
-dependencies = [
- "cc",
-]
 
 [[package]]
 name = "codespan-reporting"
@@ -745,7 +718,7 @@ dependencies = [
 
 [[package]]
 name = "duello"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "approx",
@@ -855,11 +828,10 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 [[package]]
 name = "faunus"
 version = "0.1.0"
-source = "git+https://github.com/mlund/faunus-rs.git#c16310e9497b33aeb5fc84efd5f85bc73624ce5e"
+source = "git+https://github.com/mlund/faunus-rs.git#0eabe1c62165ad602f61df54eb6b8c7d0a1c6b9b"
 dependencies = [
  "anyhow",
  "average 0.13.1",
- "chemfiles",
  "clap",
  "coulomb",
  "derive-getters",
