@@ -45,8 +45,8 @@ pub enum SplineGrid {
 impl From<SplineGrid> for GridType {
     fn from(grid: SplineGrid) -> Self {
         match grid {
-            SplineGrid::Powerlaw2 => GridType::PowerLaw2,
-            SplineGrid::InvR2 => GridType::InverseRsq,
+            SplineGrid::Powerlaw2 => Self::PowerLaw2,
+            SplineGrid::InvR2 => Self::InverseRsq,
         }
     }
 }
@@ -73,7 +73,7 @@ impl std::str::FromStr for GridOptions {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut opts = GridOptions::default();
+        let mut opts = Self::default();
         for part in s.split(',') {
             let (key, value) = part
                 .split_once('=')

@@ -38,7 +38,7 @@ impl CpuBackend {
     /// * `ref_a` - Reference structure for molecule A (should be centered at origin)
     /// * `ref_b` - Reference structure for molecule B (should be centered at origin)
     /// * `pair_matrix` - Pair potential matrix for computing energies
-    pub fn new(ref_a: Structure, ref_b: Structure, pair_matrix: PairMatrix) -> Self {
+    pub const fn new(ref_a: Structure, ref_b: Structure, pair_matrix: PairMatrix) -> Self {
         Self {
             ref_a,
             ref_b,

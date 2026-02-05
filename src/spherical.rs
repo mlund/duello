@@ -61,7 +61,7 @@ impl SphericalCoord {
         let theta = (cartesian.z / r).acos();
         let phi = cartesian.y.atan2(cartesian.x);
         // Ensure phi is in the range [0..2pi)
-        let phi = (phi + 2.0 * PI) % (2.0 * PI);
+        let phi = 2.0f64.mul_add(PI, phi) % (2.0 * PI);
         Self::new(r, theta, phi)
     }
     /// Create cartesian coordinates from spherical coordinates

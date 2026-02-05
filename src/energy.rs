@@ -161,7 +161,7 @@ impl PairMatrix {
     }
 
     /// Create a pair matrix from an existing splined matrix.
-    pub fn from_splined(splined: NonbondedMatrixSplined) -> Self {
+    pub const fn from_splined(splined: NonbondedMatrixSplined) -> Self {
         Self {
             storage: PotentialStorage::Splined(splined),
         }

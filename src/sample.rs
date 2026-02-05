@@ -82,7 +82,9 @@ impl Sample {
     }
     /// Heat capacity C/R
     pub fn heat_capacity(&self) -> f64 {
-        (self.mean_squared_energy() - self.mean_energy().powi(2)) / self.thermal_energy.powi(2)
+        self.mean_energy()
+            .mul_add(-self.mean_energy(), self.mean_squared_energy())
+            / self.thermal_energy.powi(2)
     }
     /// Free energy (kJ / mol)
     pub fn free_energy(&self) -> f64 {

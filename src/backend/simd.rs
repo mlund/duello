@@ -268,7 +268,7 @@ impl SimdBackend {
                 let dx = self.pos_a_x[i as usize] - trans_b_x[j as usize];
                 let dy = self.pos_a_y[i as usize] - trans_b_y[j as usize];
                 let dz = self.pos_a_z[i as usize] - trans_b_z[j as usize];
-                let r_sq = dx * dx + dy * dy + dz * dz;
+                let r_sq = dz.mul_add(dz, dx.mul_add(dx, dy * dy));
 
                 total_energy += spline.energy(r_sq);
                 p += 1;

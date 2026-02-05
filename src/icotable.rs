@@ -210,7 +210,7 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
             return Vector3::new(0.0, 1.0, 0.0);
         }
         // Check if P in edge region of AB, if so return projection of P onto AB
-        let vc = d1 * d4 - d3 * d2;
+        let vc = d1.mul_add(d4, -(d3 * d2));
         if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
             let v = d1 / (d1 - d3);
             return Vector3::new(1.0 - v, v, 0.0);
@@ -223,13 +223,13 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
             return Vector3::new(0.0, 0.0, 1.0);
         }
         // Check if P in edge region of AC, if so return projection of P onto AC
-        let vb = d5 * d2 - d1 * d6;
+        let vb = d5.mul_add(d2, -(d1 * d6));
         if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
             let w = d2 / (d2 - d6);
             return Vector3::new(1.0 - w, 0.0, w);
         }
         // Check if P in edge region of BC, if so return projection of P onto BC
-        let va = d3 * d6 - d5 * d4;
+        let va = d3.mul_add(d6, -(d5 * d4));
         if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
             let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
             return Vector3::new(0.0, 1.0 - w, w);
@@ -247,6 +247,7 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
     /// - https://en.wikipedia.org/wiki/Barycentric_coordinate_system
     /// - http://realtimecollisiondetection.net/
     /// - https://gamedev.stackexchange.com/questions/23743/whats-the-most-efficient-way-to-find-barycentric-coordinates
+    #[allow(clippy::suspicious_operation_groupings)] // d01 * d01 is intentional (d01²)
     pub fn naive_barycentric(&self, p: &Vector3, face: &Face) -> Vector3 {
         let (a, b, c) = self.face_positions(face);
         let ab = b - a;
@@ -257,9 +258,9 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
         let d11 = ac.dot(&ac);
         let d20 = ap.dot(&ab);
         let d21 = ap.dot(&ac);
-        let denom = d00 * d11 - d01 * d01;
-        let v = (d11 * d20 - d01 * d21) / denom;
-        let w = (d00 * d21 - d01 * d20) / denom;
+        let denom = d00.mul_add(d11, -(d01 * d01));
+        let v = d11.mul_add(d20, -(d01 * d21)) / denom;
+        let w = d00.mul_add(d21, -(d01 * d20)) / denom;
         let u = 1.0 - v - w;
         Vector3::new(u, v, w)
     }

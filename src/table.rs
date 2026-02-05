@@ -34,7 +34,7 @@ pub struct PaddedTable<T: Clone + GetSize> {
 impl<T: Clone + GetSize> PaddedTable<T> {
     pub fn new(min: f64, max: f64, step: f64, initial_value: T) -> Self {
         assert!(min < max && step > 0.0);
-        let n = ((max - min + 2.0 * step) / step + 0.5) as usize;
+        let n = (2.0f64.mul_add(step, max - min) / step + 0.5) as usize;
         Self {
             min: min - step,
             _max: max + step,
@@ -50,7 +50,7 @@ impl<T: Clone + GetSize> PaddedTable<T> {
         self.data
             .iter()
             .enumerate()
-            .map(move |(i, value)| (min + i as f64 * res, value))
+            .map(move |(i, value)| ((i as f64).mul_add(res, min), value))
     }
 
     /// Get minimum key value (inclusive)
