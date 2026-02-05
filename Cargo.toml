@@ -29,7 +29,7 @@ pretty_env_logger = {version = "0.5", default-features = false}
 log = "0.4"
 average = "0.16"
 iter_num_tools = "0.7"
-indicatif = {version = "*", features = ["rayon"], default-features = false }
+indicatif = {version = "0.18", features = ["rayon"], default-features = false }
 flate2 = {version = "1.0", default-features = false}
 textplots = "0.8"
 rgb = "0.8"
