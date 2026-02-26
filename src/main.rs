@@ -14,7 +14,7 @@
 
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
-use coulomb::{permittivity, DebyeLength, Medium, Salt, Vector3};
+use interatomic::coulomb::{permittivity, DebyeLength, Medium, Salt, Vector3};
 use duello::{
     backend::{CpuBackend, GpuBackend, SimdBackend},
     energy, icoscan,
@@ -269,7 +269,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         _ => Medium::salt_water(*temperature, Salt::SodiumChloride, *molarity),
     };
 
-    let multipole = coulomb::pairwise::Plain::new(*cutoff, medium.debye_length());
+    let multipole = interatomic::coulomb::pairwise::Plain::new(*cutoff, medium.debye_length());
     let nonbonded = NonbondedMatrix::from_file(top_file, &topology, Some(medium.clone()))?;
 
     let ref_a = Structure::from_xyz(mol1, topology.atomkinds())?;
@@ -523,7 +523,7 @@ fn do_potential(cmd: &Commands) -> Result<()> {
 
     // Electrolyte background
     let medium = Medium::salt_water(*temperature, Salt::SodiumChloride, *molarity);
-    let multipole = coulomb::pairwise::Plain::new(*cutoff, medium.debye_length());
+    let multipole = interatomic::coulomb::pairwise::Plain::new(*cutoff, medium.debye_length());
 
     let icotable = IcoTable2D::<f64>::from_min_points(n_points)?;
     icotable.set_vertex_data(|_, v| {

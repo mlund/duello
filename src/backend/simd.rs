@@ -27,7 +27,7 @@
 use super::{EnergyBackend, PoseParams};
 use crate::structure::Structure;
 use faunus::energy::NonbondedMatrixSplined;
-use interatomic::twobody::{simd_f32_from_array, simd_f32_to_array, GridType, SimdArrayF32, SimdF32, SplineTableSimdF32, LANES_F32};
+use interatomic::twobody::{GridType, SplineTableSimdF32};
 use std::collections::HashMap;
 
 /// A group of atom pairs that share the same pair type (same spline parameters).
@@ -223,56 +223,19 @@ impl SimdBackend {
         for group in &self.pair_groups.groups {
             let spline = &self.spline_tables[group.pair_idx as usize];
             let pairs = &group.pairs;
-            let n_pairs = pairs.len();
 
-            // Process LANES_F32 pairs at a time with full SIMD
-            let mut p = 0;
-            while p + LANES_F32 <= n_pairs {
-                // Gather positions for LANES_F32 pairs
-                let mut ax: SimdArrayF32 = [0.0f32; LANES_F32];
-                let mut ay: SimdArrayF32 = [0.0f32; LANES_F32];
-                let mut az: SimdArrayF32 = [0.0f32; LANES_F32];
-                let mut bx: SimdArrayF32 = [0.0f32; LANES_F32];
-                let mut by: SimdArrayF32 = [0.0f32; LANES_F32];
-                let mut bz: SimdArrayF32 = [0.0f32; LANES_F32];
+            // Compute all r² values for this group
+            let rsq_vec: Vec<f32> = pairs
+                .iter()
+                .map(|&(i, j)| {
+                    let dx = self.pos_a_x[i as usize] - trans_b_x[j as usize];
+                    let dy = self.pos_a_y[i as usize] - trans_b_y[j as usize];
+                    let dz = self.pos_a_z[i as usize] - trans_b_z[j as usize];
+                    dz.mul_add(dz, dx.mul_add(dx, dy * dy))
+                })
+                .collect();
 
-                for lane in 0..LANES_F32 {
-                    let (i, j) = pairs[p + lane];
-                    ax[lane] = self.pos_a_x[i as usize];
-                    ay[lane] = self.pos_a_y[i as usize];
-                    az[lane] = self.pos_a_z[i as usize];
-                    bx[lane] = trans_b_x[j as usize];
-                    by[lane] = trans_b_y[j as usize];
-                    bz[lane] = trans_b_z[j as usize];
-                }
-
-                // Compute squared distances
-                let dx = simd_f32_from_array(ax) - simd_f32_from_array(bx);
-                let dy = simd_f32_from_array(ay) - simd_f32_from_array(by);
-                let dz = simd_f32_from_array(az) - simd_f32_from_array(bz);
-                let r_sq: SimdF32 = dx * dx + dy * dy + dz * dz;
-
-                // Evaluate spline using interatomic's SIMD implementation (auto-dispatches)
-                let energies = spline.energy_simd(r_sq);
-
-                // Horizontal sum
-                let arr = simd_f32_to_array(energies);
-                total_energy += arr.iter().sum::<f32>();
-
-                p += LANES_F32;
-            }
-
-            // Handle remainder pairs (scalar)
-            while p < n_pairs {
-                let (i, j) = pairs[p];
-                let dx = self.pos_a_x[i as usize] - trans_b_x[j as usize];
-                let dy = self.pos_a_y[i as usize] - trans_b_y[j as usize];
-                let dz = self.pos_a_z[i as usize] - trans_b_z[j as usize];
-                let r_sq = dz.mul_add(dz, dx.mul_add(dx, dy * dy));
-
-                total_energy += spline.energy(r_sq);
-                p += 1;
-            }
+            total_energy += spline.energy_batch(&rsq_vec);
         }
 
         total_energy

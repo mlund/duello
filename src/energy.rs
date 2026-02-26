@@ -13,8 +13,8 @@
 // limitations under the license.
 
 use crate::structure::Structure;
-use coulomb::pairwise::{MultipoleEnergy, MultipolePotential, Plain};
-use coulomb::permittivity::ConstantPermittivity;
+use interatomic::coulomb::pairwise::{MultipoleEnergy, MultipolePotential, Plain};
+use interatomic::coulomb::permittivity::ConstantPermittivity;
 use faunus::topology::CustomProperty;
 use faunus::{
     energy::{NonbondedMatrix, NonbondedMatrixSplined},
@@ -157,7 +157,7 @@ impl PairMatrix {
             grid_type,
             ..Default::default()
         });
-        NonbondedMatrixSplined::new(&nonbonded, cutoff, config)
+        NonbondedMatrixSplined::from_nonbonded(&nonbonded, cutoff, config)
     }
 
     /// Create a pair matrix from an existing splined matrix.
