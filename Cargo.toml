@@ -33,7 +33,7 @@ flate2 = {version = "1.0", default-features = false}
 textplots = "0.8"
 rgb = "0.8"
 nu-ansi-term = "0.50"
-hexasphere = {version = "16.0", features = ["adjacency"]}
+hexasphere = {version = "18.0", features = ["adjacency"]}
 num-traits = "0.2"
 rand = {version = "0.8", default-features = false}
 get-size = {version = "0.1", features = ["derive"], default-features = false}
