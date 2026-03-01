@@ -42,7 +42,7 @@ serde_json = {version = "1.0.137", default-features = false}
 molly = "0.5"
 glam = "0.30.10"
 wide = "0.7"
-wgpu = "23"
+wgpu = "28"
 pollster = "0.4"
 bytemuck = { version = "1.21", features = ["derive"] }
 
