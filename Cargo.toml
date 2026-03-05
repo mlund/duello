@@ -19,8 +19,8 @@ itertools = {version = "0.14"}
 itertools-num = {version = "0.1", default-features = false}
 nalgebra = {version = "0.34.1", default-features = false}
 rayon = "1.10"
-faunus = { path = "../faunus-rs/faunus", default-features = false }
-interatomic = { path = "../interatomic", features = ["serde", "gpu"] }
+faunus = { git = "https://github.com/mlund/faunus-rs", default-features = false }
+interatomic = { git = "https://github.com/mlund/interatomic.git", rev = "0d37074", features = ["serde", "gpu"] }
 serde_yaml = "0.9.34-deprecated"
 serde = { version = "1.0", features = ["derive"], default-features = false }
 semver = { version = "1.0", features = ["serde"], default-features = false }

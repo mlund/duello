@@ -763,6 +763,7 @@ dependencies = [
 [[package]]
 name = "faunus"
 version = "0.1.0"
+source = "git+https://github.com/mlund/faunus-rs#2ca37596055ae6d835eb4ff0369acb46e236a196"
 dependencies = [
  "anyhow",
  "average 0.13.1",
@@ -1326,6 +1327,7 @@ dependencies = [
 [[package]]
 name = "interatomic"
 version = "0.4.0"
+source = "git+https://github.com/mlund/interatomic.git?rev=0d37074#0d3707424f0d17ab7b7b612c82739a5356905d47"
 dependencies = [
  "anyhow",
  "bytemuck",
