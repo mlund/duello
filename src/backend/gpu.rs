@@ -18,23 +18,10 @@ use super::{EnergyBackend, PoseParams};
 use crate::structure::Structure;
 use bytemuck::{Pod, Zeroable};
 use faunus::energy::NonbondedMatrixSplined;
+use interatomic::gpu::{GpuGridType, GpuSplineData, InverseRsq, PowerLaw2};
+use interatomic::twobody::GridType;
 use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
-
-/// GPU-compatible spline parameters for a single pair type.
-/// Supports PowerLaw2 and InverseRsq grid types.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-struct GpuSplineParams {
-    r_min: f32,
-    r_max: f32,
-    grid_type: u32, // 0 = PowerLaw2, 1 = InverseRsq
-    n_coeffs: u32,
-    coeff_offset: u32, // Offset into the coefficient buffer
-    inv_delta: f32,    // For InverseRsq: (n-1) / (w_max - w_min)
-    w_min: f32,        // For InverseRsq: 1/rsq_max
-    f_at_rmin: f32,    // Force at r_min for linear extrapolation below r_min
-}
 
 /// GPU-compatible pose parameters.
 /// Note: WGSL struct alignment requires vec4 to be 16-byte aligned,
@@ -81,82 +68,6 @@ struct GpuUniforms {
     n_poses: u32,
 }
 
-/// Extracted spline data ready for GPU upload.
-struct GpuSplineData {
-    /// Flattened spline coefficients: [pair0_coeff0, pair0_coeff1, ..., pair1_coeff0, ...]
-    /// Each coefficient is vec4<f32> = [a0, a1, a2, a3]
-    coefficients: Vec<[f32; 4]>,
-    /// Parameters for each pair type (n_types × n_types)
-    params: Vec<GpuSplineParams>,
-    /// Number of atom types
-    n_types: usize,
-}
-
-impl GpuSplineData {
-    /// Extract spline data from NonbondedMatrixSplined.
-    fn from_splined_matrix(matrix: &NonbondedMatrixSplined) -> Self {
-        use interatomic::twobody::{GridType, IsotropicTwobodyEnergy};
-
-        let potentials = matrix.get_potentials();
-        let shape = potentials.shape();
-        let n_types = shape[0];
-
-        let mut coefficients = Vec::new();
-        let mut params = Vec::with_capacity(n_types * n_types);
-
-        for i in 0..n_types {
-            for j in 0..n_types {
-                let spline = &potentials[(i, j)];
-                let stats = spline.stats();
-                let coeffs = spline.coefficients();
-
-                let coeff_offset = coefficients.len() as u32;
-
-                // Extract energy coefficients (u[0..4]) for each interval
-                for c in coeffs {
-                    coefficients.push([c.u[0] as f32, c.u[1] as f32, c.u[2] as f32, c.u[3] as f32]);
-                }
-
-                // Get force at r_min for linear extrapolation below r_min
-                let f_at_rmin = spline.isotropic_twobody_force(stats.rsq_min) as f32;
-
-                // Extract grid type parameters
-                let (grid_type, inv_delta, w_min) = match stats.grid_type {
-                    GridType::PowerLaw2 => (0u32, 0.0_f32, 0.0_f32),
-                    GridType::PowerLaw(p) if (p - 2.0).abs() < 1e-6 => (0u32, 0.0_f32, 0.0_f32),
-                    GridType::InverseRsq => {
-                        let rsq_min = stats.r_min * stats.r_min;
-                        let rsq_max = stats.r_max * stats.r_max;
-                        let w_min = 1.0 / rsq_max;
-                        let w_max = 1.0 / rsq_min;
-                        let inv_delta = (stats.n_points - 1) as f64 / (w_max - w_min);
-                        (1u32, inv_delta as f32, w_min as f32)
-                    }
-                    _ => panic!(
-                        "GPU backend requires PowerLaw2, PowerLaw(2.0), or InverseRsq grid type"
-                    ),
-                };
-
-                params.push(GpuSplineParams {
-                    r_min: stats.r_min as f32,
-                    r_max: stats.r_max as f32,
-                    grid_type,
-                    n_coeffs: coeffs.len() as u32,
-                    coeff_offset,
-                    inv_delta,
-                    w_min,
-                    f_at_rmin,
-                });
-            }
-        }
-
-        Self {
-            coefficients,
-            params,
-            n_types,
-        }
-    }
-}
 
 /// GPU backend for energy calculations using wgpu compute shaders.
 pub struct GpuBackend {
@@ -200,18 +111,30 @@ impl GpuBackend {
         .is_some()
     }
 
-    /// Create a new GPU backend.
-    ///
-    /// # Arguments
-    /// * `ref_a` - Reference structure for molecule A
-    /// * `ref_b` - Reference structure for molecule B
-    /// * `splined_matrix` - Splined pair potentials matrix
+    /// Create a new GPU backend, auto-detecting grid type from the splined matrix.
     pub fn new(
         ref_a: Structure,
         ref_b: Structure,
         splined_matrix: &NonbondedMatrixSplined,
     ) -> anyhow::Result<Self> {
-        // Initialize wgpu
+        let grid_type = splined_matrix
+            .get_potentials()
+            .iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("Empty spline matrix"))?
+            .grid_type();
+        match grid_type {
+            GridType::PowerLaw2 => Self::new_typed::<PowerLaw2>(ref_a, ref_b, splined_matrix),
+            GridType::InverseRsq => Self::new_typed::<InverseRsq>(ref_a, ref_b, splined_matrix),
+            other => anyhow::bail!("GPU backend requires PowerLaw2 or InverseRsq grid, got {other:?}"),
+        }
+    }
+
+    fn new_typed<G: GpuGridType>(
+        ref_a: Structure,
+        ref_b: Structure,
+        splined_matrix: &NonbondedMatrixSplined,
+    ) -> anyhow::Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
@@ -239,17 +162,17 @@ impl GpuBackend {
         let device = Arc::new(device);
         let queue = Arc::new(queue);
 
-        // Extract spline data
-        let spline_data = GpuSplineData::from_splined_matrix(splined_matrix);
-        let n_atom_types = spline_data.n_types as u32;
+        let potentials = splined_matrix.get_potentials();
+        let n_atom_types = potentials.shape()[0] as u32;
+        let spline_data = GpuSplineData::<G>::from_potentials(potentials.iter());
 
-        // Create shader module
+        // Prepend grid-type-specific WGSL (SplineParams, SplineCoeffs, spline_index_eps)
+        let shader_source = format!("{}\n{}", G::SPLINE_WGSL, include_str!("../shaders/energy.wgsl"));
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Energy Compute Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/energy.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
 
-        // Create bind group layout
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Energy Bind Group Layout"),
             entries: &[
@@ -344,14 +267,12 @@ impl GpuBackend {
             ],
         });
 
-        // Create pipeline layout
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Energy Pipeline Layout"),
             bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
         });
 
-        // Create compute pipeline
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Energy Compute Pipeline"),
             layout: Some(&pipeline_layout),
@@ -361,16 +282,15 @@ impl GpuBackend {
             cache: None,
         });
 
-        // Create constant buffers
         let spline_coeffs_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Spline Coefficients"),
-            contents: bytemuck::cast_slice(&spline_data.coefficients),
+            contents: spline_data.coefficients_as_bytes(),
             usage: wgpu::BufferUsages::STORAGE,
         });
 
         let spline_params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Spline Params"),
-            contents: bytemuck::cast_slice(&spline_data.params),
+            contents: spline_data.params_as_bytes(),
             usage: wgpu::BufferUsages::STORAGE,
         });
 
@@ -429,7 +349,7 @@ impl GpuBackend {
         });
 
         log::info!(
-            "GPU backend initialized: {} spline coefficients, {} atom types, {} + {} atoms",
+            "GPU backend: {} coefficients, {} atom types, {} + {} atoms",
             spline_data.coefficients.len(),
             n_atom_types,
             n_atoms_a,
