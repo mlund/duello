@@ -173,15 +173,23 @@ impl PairMatrix {
     /// Sum energy between two set of atomic structures (kJ/mol)
     pub fn sum_energy(&self, a: &Structure, b: &Structure) -> f64 {
         let energy = match &self.storage {
-            PotentialStorage::Standard(nonbonded) => {
-                compute_pairwise_energy(a, b, nonbonded.get_potentials())
-            }
-            PotentialStorage::Splined(splined) => {
-                compute_pairwise_energy(a, b, splined.get_potentials())
-            }
+            PotentialStorage::Standard(nb) => compute_pairwise_energy(a, b, nb.get_potentials()),
+            PotentialStorage::Splined(sp) => compute_pairwise_energy(a, b, sp.get_potentials()),
         };
         trace!("molecule-molecule energy: {energy:.2} kJ/mol");
         energy
+    }
+
+    /// Sum energy between all atoms in a structure and a single test atom (kJ/mol)
+    pub fn energy_with_atom(&self, structure: &Structure, atom_id: usize, pos: &Vector3) -> f64 {
+        match &self.storage {
+            PotentialStorage::Standard(nb) => {
+                single_atom_energy(structure, atom_id, pos, nb.get_potentials())
+            }
+            PotentialStorage::Splined(sp) => {
+                single_atom_energy(structure, atom_id, pos, sp.get_potentials())
+            }
+        }
     }
 }
 
@@ -201,6 +209,28 @@ where
         }
     }
     energy
+}
+
+/// Compute energy between all atoms in a structure and a single test atom
+fn single_atom_energy<P, T>(
+    structure: &Structure,
+    atom_id: usize,
+    pos: &Vector3,
+    potentials: &P,
+) -> f64
+where
+    P: std::ops::Index<(usize, usize), Output = T>,
+    T: IsotropicTwobodyEnergy,
+{
+    structure
+        .pos
+        .iter()
+        .zip(structure.atom_ids.iter())
+        .map(|(atom_pos, &aid)| {
+            let dist_sq = (atom_pos - pos).norm_squared();
+            potentials[(aid, atom_id)].isotropic_twobody_energy(dist_sq)
+        })
+        .sum()
 }
 
 /// Calculate accumulated electric potential at point `r` due to charges in `structure`

@@ -139,6 +139,28 @@ The following backends are available, with performance measured on the Calvados3
 The `auto` backend (default) selects GPU if available, otherwise SIMD.
 All but `reference` use Cubic Hermite splines for pair potentials.
 
+## Atom Scan
+
+For simulations involving a rigid body and mobile atoms (e.g. ions), the full 6D scan is unnecessary.
+The `atom-scan` subcommand computes a 3D table (R, theta, phi) of interaction energies between a
+rigid body and a single test atom type, using Yukawa electrostatics and short-range pair potentials
+from the topology:
+
+```sh
+duello atom-scan \
+    --mol1 4lzt.xyz \
+    --atom Na \
+    --rmin 2.0 --rmax 60 --dr 0.5 \
+    --top topology.yaml \
+    --resolution 0.5 \
+    --cutoff 150 \
+    --molarity 0.02 \
+    --output atom_table.bin.gz
+```
+
+The output is a flat binary table (`Table3DFlat`) that can be loaded for fast lookup
+with barycentric interpolation on the icosphere mesh.
+
 ## Preparing PDB files
 
 The following uses `pdb2xyz` to create a coarse grained XYZ file and Calvados topology for Duello:

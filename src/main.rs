@@ -18,10 +18,13 @@ use duello::{
     backend::{CpuBackend, GpuBackend, SimdBackend},
     energy, icoscan,
     structure::{pqr_write_atom, Structure},
-    SphericalCoord, UnitQuaternion, Vector3,
+    IcoTable2D, SphericalCoord, UnitQuaternion, Vector3,
 };
-use faunus::{energy::NonbondedMatrix, topology::Topology};
-use icotable::IcoTable2D;
+use faunus::{
+    energy::NonbondedMatrix,
+    topology::{FindByName, Topology},
+};
+use icotable::table::PaddedTable;
 use interatomic::coulomb::{permittivity, DebyeLength, Medium, Salt};
 use interatomic::twobody::{GridType, SplineConfig};
 use std::process::ExitCode;
@@ -174,6 +177,43 @@ enum Commands {
         /// Temperature in K
         #[arg(short = 'T', long, default_value = "298.15")]
         temperature: f64,
+    },
+
+    /// Scan angles and tabulate energy between a rigid body and a single atom
+    AtomScan {
+        /// Path to rigid body XYZ file
+        #[arg(short = '1', long)]
+        mol1: PathBuf,
+        /// Name of atom type to scan (looked up in topology)
+        #[arg(long)]
+        atom: String,
+        /// Angular resolution in radians
+        #[arg(short = 'r', long, default_value = "0.1")]
+        resolution: f64,
+        /// Minimum mass center distance
+        #[arg(long)]
+        rmin: f64,
+        /// Maximum mass center distance
+        #[arg(long)]
+        rmax: f64,
+        /// Mass center distance step
+        #[arg(long)]
+        dr: f64,
+        /// YAML file with atom definitions (names, charges, etc.)
+        #[arg(short = 'a', long = "top")]
+        topology: PathBuf,
+        /// 1:1 salt molarity in mol/l
+        #[arg(short = 'M', long, default_value = "0.1")]
+        molarity: f64,
+        /// Cutoff distance for pair-wise interactions (angstroms)
+        #[arg(long, default_value = "50.0")]
+        cutoff: f64,
+        /// Temperature in K
+        #[arg(short = 'T', long, default_value = "298.15")]
+        temperature: f64,
+        /// Output binary table path (.gz suffix enables gzip compression)
+        #[arg(short = 'o', long, default_value = "atom_table.bin.gz")]
+        output: PathBuf,
     },
 
     /// Scan angles and tabulate energy between two rigid bodies
@@ -379,6 +419,85 @@ fn do_scan(cmd: &Commands) -> Result<()> {
     }
 }
 
+/// Compute radial+angular energy table between a rigid body and a single test atom
+fn do_atom_scan(cmd: &Commands) -> Result<()> {
+    let Commands::AtomScan {
+        mol1,
+        atom,
+        resolution,
+        rmin,
+        rmax,
+        dr,
+        topology: top_file,
+        molarity,
+        cutoff,
+        temperature,
+        output,
+    } = cmd
+    else {
+        bail!("Unknown command");
+    };
+    anyhow::ensure!(rmin < rmax, "rmin ({rmin}) must be less than rmax ({rmax})");
+
+    let mut topology = Topology::from_file_partial(top_file)?;
+    topology.finalize_atoms()?;
+    topology.finalize_molecules()?;
+    faunus::topology::set_missing_epsilon(topology.atomkinds_mut(), 2.479);
+
+    let medium = Medium::salt_water(*temperature, Salt::SodiumChloride, *molarity);
+    let multipole = interatomic::coulomb::pairwise::Plain::new(*cutoff, medium.debye_length());
+    let nonbonded = NonbondedMatrix::from_file(top_file, &topology, Some(medium.clone()))?;
+
+    let pair_matrix = energy::PairMatrix::new_with_coulomb(
+        nonbonded,
+        topology.atomkinds(),
+        medium.permittivity().into(),
+        &multipole,
+    );
+
+    let ref_a = Structure::from_xyz(mol1, topology.atomkinds())?;
+    let atomkinds = topology.atomkinds();
+    let test_atom_kind = atomkinds
+        .find_name(atom)
+        .ok_or_else(|| anyhow::anyhow!("Unknown atom type: {atom}"))?;
+    let test_atom_id = test_atom_kind.id();
+
+    info!("{medium}");
+    info!("Rigid body net-charge: {:.2}e", ref_a.net_charge());
+    info!("Test atom: {atom} (id={test_atom_id})");
+
+    let n_points = (4.0 * PI / resolution.powi(2)).round() as usize;
+    let template = IcoTable2D::<f64>::from_min_points(n_points)?;
+    info!(
+        "Icosphere: {} vertices, resolution = {:.3} rad",
+        template.len(),
+        template.angle_resolution()
+    );
+    info!("COM range: [{rmin:.1}, {rmax:.1}) in {dr:.1} Å steps");
+
+    let mut table = PaddedTable::new(*rmin, *rmax, *dr, template);
+
+    for (r, ico_table) in table.iter_mut() {
+        if r < *rmin || r > *rmax {
+            continue;
+        }
+        ico_table.set_vertex_data(|_, vertex_pos| {
+            let test_pos = vertex_pos.normalize().scale(r);
+            pair_matrix.energy_with_atom(&ref_a, test_atom_id, &test_pos)
+        })?;
+    }
+
+    let flat = icotable::Table3DFlat::<f32>::try_from(&table)?;
+    flat.save(output)?;
+    info!(
+        "Saved 3D table ({} R bins × {} vertices) to {}",
+        flat.n_r,
+        flat.n_vertices,
+        output.display()
+    );
+    Ok(())
+}
+
 fn do_dipole(cmd: &Commands) -> Result<()> {
     let Commands::Dipole {
         output,
@@ -552,6 +671,7 @@ fn do_main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Some(cmd) => match cmd {
+            Commands::AtomScan { .. } => do_atom_scan(&cmd)?,
             Commands::Dipole { .. } => do_dipole(&cmd)?,
             Commands::Scan { .. } => do_scan(&cmd)?,
             Commands::Potential { .. } => do_potential(&cmd)?,
