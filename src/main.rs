@@ -350,7 +350,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
                 grid_type: grid.grid_type.into(),
                 ..Default::default()
             };
-            let splined_matrix = energy::PairMatrix::create_splined_matrix(
+            let splined_matrix = energy::PairMatrix::create_splined_potentials(
                 nonbonded,
                 topology.atomkinds(),
                 medium.permittivity().into(),

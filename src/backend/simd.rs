@@ -26,7 +26,7 @@
 
 use super::{EnergyBackend, PoseParams};
 use crate::structure::Structure;
-use faunus::energy::NonbondedMatrixSplined;
+use crate::energy::SplinedPotentials;
 use interatomic::twobody::{GridType, SplineTableSimdF32};
 use std::collections::HashMap;
 
@@ -128,7 +128,7 @@ impl SimdBackend {
     pub fn new(
         ref_a: Structure,
         ref_b: Structure,
-        splined_matrix: &NonbondedMatrixSplined,
+        splined_matrix: &SplinedPotentials,
     ) -> Self {
         // Convert positions to SoA layout
         let pos_a_x: Vec<f32> = ref_a.pos.iter().map(|p| p.x as f32).collect();
@@ -143,7 +143,7 @@ impl SimdBackend {
         let atom_ids_b: Vec<u32> = ref_b.atom_ids.iter().map(|&id| id as u32).collect();
 
         // Convert splined potentials to f32 SIMD tables
-        let potentials = splined_matrix.get_potentials();
+        let potentials = splined_matrix.inner().get_potentials();
         let shape = potentials.shape();
         let n_types = shape[0];
 

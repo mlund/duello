@@ -17,7 +17,7 @@
 use super::{EnergyBackend, PoseParams};
 use crate::structure::Structure;
 use bytemuck::{Pod, Zeroable};
-use faunus::energy::NonbondedMatrixSplined;
+use crate::energy::SplinedPotentials;
 use interatomic::gpu::{GpuGridType, GpuSplineData, InverseRsq, PowerLaw2};
 use interatomic::twobody::GridType;
 use std::sync::{Arc, Mutex};
@@ -114,9 +114,10 @@ impl GpuBackend {
     pub fn new(
         ref_a: Structure,
         ref_b: Structure,
-        splined_matrix: &NonbondedMatrixSplined,
+        splined_matrix: &SplinedPotentials,
     ) -> anyhow::Result<Self> {
         let grid_type = splined_matrix
+            .inner()
             .get_potentials()
             .iter()
             .next()
@@ -134,7 +135,7 @@ impl GpuBackend {
     fn new_typed<G: GpuGridType>(
         ref_a: Structure,
         ref_b: Structure,
-        splined_matrix: &NonbondedMatrixSplined,
+        splined_matrix: &SplinedPotentials,
     ) -> anyhow::Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
@@ -163,7 +164,7 @@ impl GpuBackend {
         let device = Arc::new(device);
         let queue = Arc::new(queue);
 
-        let potentials = splined_matrix.get_potentials();
+        let potentials = splined_matrix.inner().get_potentials();
         let n_atom_types = potentials.shape()[0] as u32;
         let spline_data = GpuSplineData::<G>::from_potentials(potentials.iter());
 

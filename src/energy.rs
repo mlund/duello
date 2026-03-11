@@ -24,6 +24,18 @@ use interatomic::coulomb::permittivity::ConstantPermittivity;
 use interatomic::twobody::{IonIon, IonIonPolar, IsotropicTwobodyEnergy, SplineConfig};
 use std::{cmp::PartialEq, fmt::Debug};
 
+/// Wrapper around splined pair potentials, hiding the upstream faunus type.
+///
+/// Created via `PairMatrix::create_splined_potentials` and consumed by backend constructors.
+pub struct SplinedPotentials(NonbondedMatrixSplined);
+
+impl SplinedPotentials {
+    /// Access the inner splined matrix (for backend initialization).
+    pub(crate) fn inner(&self) -> &NonbondedMatrixSplined {
+        &self.0
+    }
+}
+
 /// Storage for either standard or splined pair potentials
 enum PotentialStorage {
     Standard(NonbondedMatrix),
@@ -117,7 +129,7 @@ impl PairMatrix {
         cutoff: f64,
         spline_config: SplineConfig,
     ) -> Self {
-        let splined = Self::create_splined_matrix(
+        let splined = Self::create_splined_potentials(
             nonbonded,
             atomkinds,
             permittivity,
@@ -128,10 +140,11 @@ impl PairMatrix {
         Self::from_splined(splined)
     }
 
-    /// Create a splined matrix with Coulomb potential added.
+    /// Create splined potentials with Coulomb potential added.
     ///
-    /// This is useful when the splined matrix needs to be shared between backends.
-    pub fn create_splined_matrix<
+    /// Returns a `SplinedPotentials` wrapper that can be shared between backends
+    /// or converted into a `PairMatrix` via `from_splined`.
+    pub fn create_splined_potentials<
         T: MultipoleEnergy + Clone + Send + Sync + Debug + PartialEq + 'static,
     >(
         nonbonded: NonbondedMatrix,
@@ -140,16 +153,20 @@ impl PairMatrix {
         coulomb_method: &T,
         cutoff: f64,
         spline_config: SplineConfig,
-    ) -> NonbondedMatrixSplined {
+    ) -> SplinedPotentials {
         let nonbonded =
             Self::add_coulomb_to_matrix(nonbonded, atomkinds, permittivity, coulomb_method);
-        NonbondedMatrixSplined::from_nonbonded(&nonbonded, cutoff, Some(spline_config))
+        SplinedPotentials(NonbondedMatrixSplined::from_nonbonded(
+            &nonbonded,
+            cutoff,
+            Some(spline_config),
+        ))
     }
 
-    /// Create a pair matrix from an existing splined matrix.
-    pub const fn from_splined(splined: NonbondedMatrixSplined) -> Self {
+    /// Create a pair matrix from splined potentials.
+    pub fn from_splined(splined: SplinedPotentials) -> Self {
         Self {
-            storage: PotentialStorage::Splined(splined),
+            storage: PotentialStorage::Splined(splined.0),
         }
     }
 
