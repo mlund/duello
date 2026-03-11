@@ -68,6 +68,38 @@ impl PairGroups {
     }
 }
 
+/// Apply the same orientation transform as `orient_structures`, but in f32/glam.
+///
+/// Returns the final position of molecule B's atom after rotation and translation.
+/// The sequence is: rotate by q1*q2, translate along z by r, then rotate by q3.
+pub(crate) fn orient_position_f32(pos: glam::Vec3, pose: &PoseParams) -> glam::Vec3 {
+    let zaxis = glam::Vec3::new(0.0005, 0.0005, 1.0).normalize();
+    let neg_zaxis = -zaxis;
+
+    let vertex_i = glam::Vec3::new(
+        pose.vertex_i.x as f32,
+        pose.vertex_i.y as f32,
+        pose.vertex_i.z as f32,
+    )
+    .normalize();
+    let vertex_j = glam::Vec3::new(
+        pose.vertex_j.x as f32,
+        pose.vertex_j.y as f32,
+        pose.vertex_j.z as f32,
+    )
+    .normalize();
+
+    let q1 = glam::Quat::from_rotation_arc(vertex_j, neg_zaxis);
+    let q2 = glam::Quat::from_axis_angle(zaxis, pose.omega as f32);
+    let q3 = glam::Quat::from_rotation_arc(zaxis, vertex_i);
+    let q12 = q1 * q2;
+    let r_vec = glam::Vec3::new(0.0, 0.0, pose.r as f32);
+
+    let rotated = q12 * pos;
+    let translated = rotated + r_vec;
+    q3 * translated
+}
+
 /// SIMD backend for energy calculations.
 ///
 /// Uses compile-time selected SIMD width: 8 lanes (AVX2) on x86_64,
@@ -168,50 +200,21 @@ impl SimdBackend {
     }
 
     /// Compute energy for a single pose using SIMD with pair grouping.
+    ///
+    /// The quaternion orientation sequence here mirrors `orient_structures` in icoscan.rs
+    /// but uses f32/glam instead of f64/nalgebra to enable SIMD vectorization.
+    /// Both must produce equivalent rotations — see `test_simd_cpu_orientation_agreement`.
     fn compute_energy_simd(&self, pose: &PoseParams) -> f32 {
         let n_b = self.pos_b_x.len();
 
-        // Build transformation quaternions
-        let zaxis = glam::Vec3::new(0.0005, 0.0005, 1.0).normalize();
-        let neg_zaxis = -zaxis;
-
-        let vertex_i = glam::Vec3::new(
-            pose.vertex_i.x as f32,
-            pose.vertex_i.y as f32,
-            pose.vertex_i.z as f32,
-        )
-        .normalize();
-        let vertex_j = glam::Vec3::new(
-            pose.vertex_j.x as f32,
-            pose.vertex_j.y as f32,
-            pose.vertex_j.z as f32,
-        )
-        .normalize();
-
-        // q1: rotate vertex_j to -z axis
-        let q1 = glam::Quat::from_rotation_arc(vertex_j, neg_zaxis);
-        // q2: rotate around z by omega
-        let q2 = glam::Quat::from_axis_angle(zaxis, pose.omega as f32);
-        // q3: rotate z axis to vertex_i
-        let q3 = glam::Quat::from_rotation_arc(zaxis, vertex_i);
-
-        // Combined rotation q12 = q1 * q2
-        let q12 = q1 * q2;
-
-        // Translation vector
-        let r_vec = glam::Vec3::new(0.0, 0.0, pose.r as f32);
-
-        // Transform all B positions
+        // Transform all B positions using the same rotation sequence as orient_structures
         let mut trans_b_x = Vec::with_capacity(n_b);
         let mut trans_b_y = Vec::with_capacity(n_b);
         let mut trans_b_z = Vec::with_capacity(n_b);
 
         for j in 0..n_b {
             let pos_b = glam::Vec3::new(self.pos_b_x[j], self.pos_b_y[j], self.pos_b_z[j]);
-            let rotated = q12 * pos_b;
-            let translated = rotated + r_vec;
-            let final_pos = q3 * translated;
-
+            let final_pos = orient_position_f32(pos_b, pose);
             trans_b_x.push(final_pos.x);
             trans_b_y.push(final_pos.y);
             trans_b_z.push(final_pos.z);
