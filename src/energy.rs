@@ -20,10 +20,8 @@ use faunus::{
     energy::{NonbondedMatrix, NonbondedMatrixSplined},
     topology::AtomKind,
 };
-use interatomic::{
-    twobody::{GridType, IonIon, IonIonPolar, IsotropicTwobodyEnergy, SplineConfig},
-    Vector3,
-};
+use crate::Vector3;
+use interatomic::twobody::{GridType, IonIon, IonIonPolar, IsotropicTwobodyEnergy, SplineConfig};
 use std::{cmp::PartialEq, fmt::Debug};
 
 /// Storage for either standard or splined pair potentials

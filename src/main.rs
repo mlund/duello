@@ -14,13 +14,13 @@
 
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
-use interatomic::coulomb::{permittivity, DebyeLength, Medium, Salt, Vector3};
+use interatomic::coulomb::{permittivity, DebyeLength, Medium, Salt};
 use duello::{
     backend::{CpuBackend, GpuBackend, SimdBackend},
     energy, icoscan,
     icotable::IcoTable2D,
     structure::{pqr_write_atom, Structure},
-    SphericalCoord, UnitQuaternion,
+    SphericalCoord, UnitQuaternion, Vector3,
 };
 use faunus::{energy::NonbondedMatrix, topology::Topology};
 use interatomic::twobody::GridType;
