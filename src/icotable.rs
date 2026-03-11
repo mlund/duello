@@ -112,7 +112,7 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
     /// Generate table based on an existing vertices pointer and optionally set default data
     pub fn from_vertices(vertices: Arc<Vec<Vertex>>, data: Option<T>) -> Self {
         let num_vertices = vertices.len();
-        let data = data.map(|d| OnceLock::from(d));
+        let data = data.map(OnceLock::from);
         Self {
             vertices,
             data: vec![data.unwrap_or_default(); num_vertices],
@@ -137,6 +137,7 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
         table
     }
 
+    /// Average angular spacing between vertices, derived from equal-area partitioning of 4π
     pub fn angle_resolution(&self) -> f64 {
         let n_points = self.data.len();
         (4.0 * PI / n_points as f64).sqrt()
@@ -310,30 +311,27 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
     pub fn nearest_face(&self, point: &Vector3) -> Face {
         let point = point.normalize();
         let nearest = self.nearest_vertex(&point);
-        let face: Face = self
+        // Find the two closest neighbors to form a triangle with the nearest vertex
+        let (a, b) = self
             .get_neighbors(nearest)
             .iter()
-            .cloned()
+            .copied()
             .map(|i| {
                 (
-                    i,
+                    i as usize,
                     (self.get_normalized_pos(i as usize) - point).norm_squared(),
                 )
             })
-            .sorted_by(|a, b| a.1.partial_cmp(&b.1).unwrap()) // sort ascending
-            .map(|(i, _)| i as usize) // keep only indices
-            .take(2) // take two next nearest distances
+            .sorted_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .map(|(i, _)| i)
+            .take(2)
             .collect_tuple()
-            .map(|(a, b)| [a, b, nearest]) // append nearest
-            .expect("Face requires exactly three indices")
-            .iter()
-            .copied()
-            .sorted_unstable() // we want sorted indices
-            .collect_vec() // collect into array
-            .try_into()
-            .unwrap();
+            .expect("Face requires at least two neighbors");
 
-        assert_eq!(face.iter().unique().count(), 3);
+        let mut face = [a, b, nearest];
+        // Sorted indices ensure canonical face representation for consistent lookups
+        face.sort_unstable();
+        debug_assert_eq!(face.iter().unique().count(), 3);
         face
     }
 }
@@ -402,9 +400,8 @@ impl Table6D {
         let icosphere = make_icosphere(n_points)?;
         let weights = make_weights(&icosphere);
 
-        // Scale vertices by their relative weights. This is just a simple way to store the
-        // weights in the vertices, so that we can use them later
-        // NOTE: Normalize vertices before use in geometric operations!
+        // Encode integration weights into vertex magnitudes so they propagate
+        // through the table without extra storage. Normalize before geometric use!
         let mut vertices = make_vertices(&icosphere);
         vertices
             .iter_mut()
@@ -470,11 +467,12 @@ pub(crate) fn vmd_draw(
     let num_faces = icosphere.get_all_indices().len() / 3;
     let path = path.with_extension(format!("faces{num_faces}.vmd"));
     let mut stream = std::fs::File::create(path)?;
+    let points = icosphere.raw_points();
+    let scale = scale.unwrap_or(1.0);
     icosphere.get_all_indices().chunks(3).try_for_each(|c| {
-        let scale = scale.unwrap_or(1.0);
-        let a = icosphere.raw_points()[c[0] as usize] * scale;
-        let b = icosphere.raw_points()[c[1] as usize] * scale;
-        let c = icosphere.raw_points()[c[2] as usize] * scale;
+        let a = points[c[0] as usize] * scale;
+        let b = points[c[1] as usize] * scale;
+        let c = points[c[2] as usize] * scale;
         writeln!(stream, "draw color {color}")?;
         writeln!(
             stream,

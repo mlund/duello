@@ -30,7 +30,7 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::{
     f64::consts::PI,
     io::{BufWriter, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 /// Configuration for a 6D icoscan
@@ -74,15 +74,13 @@ pub(crate) fn orient_structures(
     (ref_a.clone(), mol_b)
 }
 
-pub fn do_icoscan<B: EnergyBackend>(
-    config: &ScanConfig,
-    backend: &B,
-) -> std::result::Result<(), anyhow::Error> {
+pub fn do_icoscan<B: EnergyBackend>(config: &ScanConfig, backend: &B) -> anyhow::Result<()> {
     let ref_a = backend.ref_a();
     let ref_b = backend.ref_b();
     let table =
         Table6D::from_resolution(config.rmin, config.rmax, config.dr, config.angle_resolution)?;
     let n_vertices = table.get(config.rmin)?.get(0.0)?.len();
+    // Average angular spacing between icosphere vertices
     let angle_resolution = (4.0 * PI / n_vertices as f64).sqrt();
     let dihedral_angles = arange(0.0..2.0 * PI, angle_resolution).collect_vec();
     let distances = arange(config.rmin..config.rmax, config.dr).collect_vec();
@@ -95,7 +93,7 @@ pub fn do_icoscan<B: EnergyBackend>(
         n_vertices,
         n_vertices,
         n_total,
-        table.get_size() as f64 / f64::powi(1024.0, 2)
+        table.get_size() as f64 / 1e6
     );
 
     // Pair all mass center separations (r) and dihedral angles (omega)
@@ -134,7 +132,7 @@ pub fn do_icoscan<B: EnergyBackend>(
             let energies = backend.compute_energies(&poses);
 
             // Store results
-            for (data_b, energy) in data_refs.into_iter().zip(energies.into_iter()) {
+            for (data_b, energy) in data_refs.into_iter().zip(energies) {
                 data_b.set(energy).expect("Energy already calculated");
             }
         }
@@ -176,50 +174,8 @@ pub fn do_icoscan<B: EnergyBackend>(
         poses_per_ms
     );
 
-    // Write oriented structures to trajectory file
     if let Some(xtcfile) = &config.xtcfile {
-        info!("Writing trajectory file {}", xtcfile.display());
-        let mut traj = XTCWriter::create(xtcfile)?;
-        let mut energy_file =
-            BufWriter::new(open_compressed(&xtcfile.with_extension("energy.dat.gz"))?);
-        writeln!(energy_file, "# Energy (kJ/mol)").expect("Failed to write header");
-        let mut frame_cnt: u32 = 0;
-        let mut frame = Frame {
-            precision: 1000.0,
-            ..Default::default()
-        };
-        let n = r_and_omega.len();
-
-        // Create new XTC frame from two structures and append to trajectory
-        let mut write_frame = |oriented_a: &Structure, oriented_b: &Structure, energy| {
-            frame.step = frame_cnt;
-            frame.time = frame_cnt as f32;
-            frame_cnt += 1;
-            frame.positions = oriented_a
-                .pos
-                .iter()
-                .chain(oriented_b.pos.iter())
-                .flat_map(|&p| [p.x as f32 * 0.1, p.y as f32 * 0.1, p.z as f32 * 0.1]) // angstrom to nm
-                .collect();
-            traj.write_frame(&frame).expect("Failed to write XTC frame");
-            writeln!(energy_file, "{energy:.6}").expect("Failed to write energy to file");
-        };
-
-        r_and_omega
-            .into_iter()
-            .progress_count(n as u64)
-            .for_each(|(r, omega)| {
-                table
-                    .get_icospheres(r, omega) // remaining 4D
-                    .expect("invalid (r, omega) value")
-                    .flat_iter()
-                    .for_each(|(pos_a, pos_b, _data_b)| {
-                        let (oriented_a, oriented_b) =
-                            orient_structures(r, omega, *pos_a, *pos_b, ref_a, ref_b);
-                        write_frame(&oriented_a, &oriented_b, _data_b.get().unwrap());
-                    });
-            });
-        info!("Wrote {frame_cnt} frames to trajectory file");
+        write_trajectory(xtcfile, &table, &r_and_omega, ref_a, ref_b)?;
     }
 
     // Partition function contribution for single (r, omega) point
@@ -245,24 +201,78 @@ pub fn do_icoscan<B: EnergyBackend>(
     }
 
     // Calculate partition function as function of r only
-    let mut samples: Vec<(Vector3, Sample)> = Vec::default();
-    for r in &distances {
-        let partition_func: Sample = dihedral_angles
-            .iter()
-            .map(|omega| calc_partition_func(*r, *omega))
-            .sum();
-        log::debug!(
-            "r={:.1}: exp_energy={:.4e}, mean_energy={:.4e}, free_energy={:.4e}",
-            r,
-            partition_func.exp_energy(),
-            partition_func.mean_energy(),
-            partition_func.free_energy()
-        );
-        samples.push((Vector3::new(0.0, 0.0, *r), partition_func));
-    }
+    let samples: Vec<(Vector3, Sample)> = distances
+        .iter()
+        .map(|r| {
+            let partition_func: Sample = dihedral_angles
+                .iter()
+                .map(|omega| calc_partition_func(*r, *omega))
+                .sum();
+            log::debug!(
+                "r={:.1}: exp_energy={:.4e}, mean_energy={:.4e}, free_energy={:.4e}",
+                r,
+                partition_func.exp_energy(),
+                partition_func.mean_energy(),
+                partition_func.free_energy()
+            );
+            (Vector3::new(0.0, 0.0, *r), partition_func)
+        })
+        .collect();
 
     let masses = (ref_a.total_mass(), ref_b.total_mass());
 
-    report_pmf(samples.as_slice(), &config.pmf_file, Some(masses))?;
+    report_pmf(&samples, &config.pmf_file, Some(masses))?;
+    Ok(())
+}
+
+/// Write oriented structures and energies to XTC trajectory and companion energy file.
+fn write_trajectory(
+    xtcfile: &Path,
+    table: &Table6D,
+    r_and_omega: &[(f64, f64)],
+    ref_a: &Structure,
+    ref_b: &Structure,
+) -> anyhow::Result<()> {
+    info!("Writing trajectory file {}", xtcfile.display());
+    let mut traj = XTCWriter::create(xtcfile)?;
+    let mut energy_file =
+        BufWriter::new(open_compressed(&xtcfile.with_extension("energy.dat.gz"))?);
+    writeln!(energy_file, "# Energy (kJ/mol)").expect("Failed to write header");
+    let mut frame_cnt: u32 = 0;
+    let mut frame = Frame {
+        precision: 1000.0,
+        ..Default::default()
+    };
+
+    let mut write_frame = |oriented_a: &Structure, oriented_b: &Structure, energy| {
+        frame.step = frame_cnt;
+        frame.time = frame_cnt as f32;
+        frame_cnt += 1;
+        frame.positions = oriented_a
+            .pos
+            .iter()
+            .chain(oriented_b.pos.iter())
+            .flat_map(|&p| [p.x as f32 * 0.1, p.y as f32 * 0.1, p.z as f32 * 0.1])
+            .collect();
+        traj.write_frame(&frame).expect("Failed to write XTC frame");
+        writeln!(energy_file, "{energy:.6}").expect("Failed to write energy to file");
+    };
+
+    let n = r_and_omega.len();
+    r_and_omega
+        .iter()
+        .progress_count(n as u64)
+        .for_each(|(r, omega)| {
+            table
+                .get_icospheres(*r, *omega)
+                .expect("invalid (r, omega) value")
+                .flat_iter()
+                .for_each(|(pos_a, pos_b, data_b)| {
+                    let (oriented_a, oriented_b) =
+                        orient_structures(*r, *omega, *pos_a, *pos_b, ref_a, ref_b);
+                    write_frame(&oriented_a, &oriented_b, data_b.get().unwrap());
+                });
+        });
+    info!("Wrote {frame_cnt} frames to trajectory file");
     Ok(())
 }
