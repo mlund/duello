@@ -33,12 +33,24 @@ use std::{
     path::PathBuf,
 };
 
+/// Configuration for a 6D icoscan
+pub struct ScanConfig {
+    pub rmin: f64,
+    pub rmax: f64,
+    pub dr: f64,
+    pub angle_resolution: f64,
+    pub temperature: f64,
+    pub pmf_file: PathBuf,
+    pub disktable: Option<PathBuf>,
+    pub xtcfile: Option<PathBuf>,
+}
+
 /// Orient two reference structures to given 6D point and return the two structures
 ///
 /// Structure A is kept fixed at origin while structure B is rotated and translated
 /// to the given 6D point (r, omega, 2 x vertex positions). The given reference structures
 /// are assumed to be centered at the origin.
-pub fn orient_structures(
+pub(crate) fn orient_structures(
     r: f64,
     omega: f64,
     vertex_i: Vector3,
@@ -62,25 +74,18 @@ pub fn orient_structures(
     (ref_a.clone(), mol_b)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn do_icoscan<B: EnergyBackend>(
-    rmin: f64,
-    rmax: f64,
-    dr: f64,
-    angle_resolution: f64,
+    config: &ScanConfig,
     backend: &B,
-    temperature: &f64,
-    pmf_file: &PathBuf,
-    disktable: &Option<PathBuf>,
-    xtcfile: &Option<PathBuf>,
 ) -> std::result::Result<(), anyhow::Error> {
     let ref_a = backend.ref_a();
     let ref_b = backend.ref_b();
-    let table = Table6D::from_resolution(rmin, rmax, dr, angle_resolution)?;
-    let n_vertices = table.get(rmin)?.get(0.0)?.len();
+    let table =
+        Table6D::from_resolution(config.rmin, config.rmax, config.dr, config.angle_resolution)?;
+    let n_vertices = table.get(config.rmin)?.get(0.0)?.len();
     let angle_resolution = (4.0 * PI / n_vertices as f64).sqrt();
     let dihedral_angles = arange(0.0..2.0 * PI, angle_resolution).collect_vec();
-    let distances = arange(rmin..rmax, dr).collect_vec();
+    let distances = arange(config.rmin..config.rmax, config.dr).collect_vec();
     let n_total = distances.len() * dihedral_angles.len() * n_vertices * n_vertices;
 
     info!(
@@ -172,7 +177,7 @@ pub fn do_icoscan<B: EnergyBackend>(
     );
 
     // Write oriented structures to trajectory file
-    if let Some(xtcfile) = xtcfile {
+    if let Some(xtcfile) = &config.xtcfile {
         info!("Writing trajectory file {}", xtcfile.display());
         let mut traj = XTCWriter::create(xtcfile)?;
         let mut energy_file =
@@ -225,13 +230,13 @@ pub fn do_icoscan<B: EnergyBackend>(
             |sum, (vertex_i, vertex_j, data_b)| {
                 let degeneracy = vertex_i.norm() * vertex_j.norm();
                 let energy = data_b.get().unwrap(); // kJ/mol
-                sum + Sample::new(*energy, *temperature, degeneracy)
+                sum + Sample::new(*energy, config.temperature, degeneracy)
             },
         )
     };
 
     // Save table to disk
-    if let Some(savetable) = disktable {
+    if let Some(savetable) = &config.disktable {
         log::info!("Saving 6D table to {}", savetable.display());
         let mut stream = BufWriter::new(open_compressed(savetable)?);
         for r in distances.iter().progress_count(distances.len() as u64) {
@@ -258,6 +263,6 @@ pub fn do_icoscan<B: EnergyBackend>(
 
     let masses = (ref_a.total_mass(), ref_b.total_mass());
 
-    report_pmf(samples.as_slice(), pmf_file, Some(masses))?;
+    report_pmf(samples.as_slice(), &config.pmf_file, Some(masses))?;
     Ok(())
 }

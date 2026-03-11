@@ -28,12 +28,12 @@ use wgpu::util::DeviceExt;
 /// so we add padding after omega.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct GpuPoseParams {
-    pub r: f32,
-    pub omega: f32,
-    pub _pad: [f32; 2],     // Padding to align vertex_i to 16 bytes
-    pub vertex_i: [f32; 4], // vec4<f32>
-    pub vertex_j: [f32; 4], // vec4<f32>
+pub(crate) struct GpuPoseParams {
+    pub(crate) r: f32,
+    pub(crate) omega: f32,
+    pub(crate) _pad: [f32; 2],     // Padding to align vertex_i to 16 bytes
+    pub(crate) vertex_i: [f32; 4], // vec4<f32>
+    pub(crate) vertex_j: [f32; 4], // vec4<f32>
 }
 
 impl From<&PoseParams> for GpuPoseParams {

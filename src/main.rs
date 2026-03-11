@@ -318,6 +318,17 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         other => *other,
     };
 
+    let scan_config = icoscan::ScanConfig {
+        rmin: *rmin,
+        rmax: *rmax,
+        dr: *dr,
+        angle_resolution: *resolution,
+        temperature: *temperature,
+        pmf_file: pmf_file.clone(),
+        disktable: savetable.clone(),
+        xtcfile: xtcfile.clone(),
+    };
+
     match backend_type {
         Backend::Auto => unreachable!(), // Already resolved above
         Backend::Reference => {
@@ -329,17 +340,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
                 &multipole,
             );
             let backend = CpuBackend::new(ref_a, ref_b, pair_matrix);
-            icoscan::do_icoscan(
-                *rmin,
-                *rmax,
-                *dr,
-                *resolution,
-                &backend,
-                temperature,
-                pmf_file,
-                savetable,
-                xtcfile,
-            )
+            icoscan::do_icoscan(&scan_config, &backend)
         }
         Backend::Cpu | Backend::Gpu | Backend::Simd => {
             // Create splined matrix (shared between CPU, GPU, and SIMD backends)
@@ -362,45 +363,15 @@ fn do_scan(cmd: &Commands) -> Result<()> {
                 Backend::Cpu => {
                     let pair_matrix = energy::PairMatrix::from_splined(splined_matrix);
                     let backend = CpuBackend::new(ref_a, ref_b, pair_matrix);
-                    icoscan::do_icoscan(
-                        *rmin,
-                        *rmax,
-                        *dr,
-                        *resolution,
-                        &backend,
-                        temperature,
-                        pmf_file,
-                        savetable,
-                        xtcfile,
-                    )
+                    icoscan::do_icoscan(&scan_config, &backend)
                 }
                 Backend::Gpu => {
                     let gpu_backend = GpuBackend::new(ref_a, ref_b, &splined_matrix)?;
-                    icoscan::do_icoscan(
-                        *rmin,
-                        *rmax,
-                        *dr,
-                        *resolution,
-                        &gpu_backend,
-                        temperature,
-                        pmf_file,
-                        savetable,
-                        xtcfile,
-                    )
+                    icoscan::do_icoscan(&scan_config, &gpu_backend)
                 }
                 Backend::Simd => {
                     let simd_backend = SimdBackend::new(ref_a, ref_b, &splined_matrix);
-                    icoscan::do_icoscan(
-                        *rmin,
-                        *rmax,
-                        *dr,
-                        *resolution,
-                        &simd_backend,
-                        temperature,
-                        pmf_file,
-                        savetable,
-                        xtcfile,
-                    )
+                    icoscan::do_icoscan(&scan_config, &simd_backend)
                 }
                 _ => unreachable!(),
             }
@@ -478,7 +449,7 @@ fn do_dipole(cmd: &Commands) -> Result<()> {
             rotated_icosphere.transform_vertex_positions(|v| q.transform_vector(v));
             partition_func_interpolated += rotated_icosphere
                 .iter()
-                .map(|(pos, _, _)| icotable.interpolate(pos))
+                .map(|(pos, _)| icotable.interpolate(pos))
                 .sum::<f64>()
                 / rotated_icosphere.len() as f64;
         }

@@ -76,29 +76,37 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
     pub fn get_normalized_pos(&self, index: usize) -> Vector3 {
         self.vertices[index].pos.normalize()
     }
-    /// Get i'th data or `None`` if uninitialized
-    pub fn get_data(&self, index: usize) -> &OnceLock<T> {
-        &self.data[index]
+    /// Get i'th data or `None` if uninitialized
+    pub fn get_data(&self, index: usize) -> Option<&T> {
+        self.data[index].get()
     }
     /// Get i'th neighbors
     pub fn get_neighbors(&self, index: usize) -> &[u16] {
         &self.vertices[index].neighbors
     }
-    /// Get i'th vertex normalized position; neighborlist; and data
-    pub fn get(&self, index: usize) -> (&Vector3, &[u16], &OnceLock<T>) {
+    /// Get i'th vertex normalized position; neighborlist; and data (as OnceLock for write access)
+    fn get_with_lock(&self, index: usize) -> (&Vector3, &[u16], &OnceLock<T>) {
         (
             &self.vertices[index].pos,
             &self.vertices[index].neighbors,
-            self.get_data(index),
+            &self.data[index],
         )
     }
     /// Iterate over vertex positions
     pub fn iter_positions(&self) -> impl Iterator<Item = &Vector3> {
         self.iter_vertices().map(|v| &v.pos)
     }
-    /// Iterate over vertex positions; neighborlists; and data
-    pub fn iter(&self) -> impl Iterator<Item = (&Vector3, &[u16], &OnceLock<T>)> {
-        (0..self.data.len()).map(move |i| self.get(i))
+    /// Iterate over vertex positions and data
+    pub fn iter(&self) -> impl Iterator<Item = (&Vector3, Option<&T>)> {
+        self.vertices
+            .iter()
+            .zip(self.data.iter())
+            .map(|(v, d)| (&v.pos, d.get()))
+    }
+
+    /// Iterate over vertex positions; neighborlists; and data (as OnceLock for write access)
+    fn iter_with_lock(&self) -> impl Iterator<Item = (&Vector3, &[u16], &OnceLock<T>)> {
+        (0..self.data.len()).map(move |i| self.get_with_lock(i))
     }
 
     /// Generate table based on an existing vertices pointer and optionally set default data
@@ -152,11 +160,13 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
             self.data.iter().any(|v| v.get().is_none()),
             "Data already set for some vertices"
         );
-        self.iter().enumerate().try_for_each(|(i, (pos, _, data))| {
-            let value = f(i, pos);
-            ensure!(data.set(value).is_ok(), "Data already set for vertex {}", i);
-            Ok(())
-        })
+        self.iter_with_lock()
+            .enumerate()
+            .try_for_each(|(i, (pos, _, data))| {
+                let value = f(i, pos);
+                ensure!(data.set(value).is_ok(), "Data already set for vertex {}", i);
+                Ok(())
+            })
     }
 
     /// Discard data associated with each vertex
@@ -331,7 +341,7 @@ impl<T: Clone + GetSize> IcoTable2D<T> {
 impl Display for IcoTable2D<f64> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "# x y z θ φ data")?;
-        for (pos, _, data) in self.iter() {
+        for (pos, data) in self.iter() {
             let spherical = SphericalCoord::from_cartesian(*pos);
             writeln!(
                 f,
@@ -349,13 +359,13 @@ impl Display for IcoTable2D<f64> {
 }
 
 impl IcoTable4D {
-    /// Get flat iterator that runs over all pairs of (&pos_a, &pos_b, &OnceLockf64)
-    pub fn flat_iter(&self) -> impl Iterator<Item = (&Vector3, &Vector3, &OnceLock<f64>)> {
-        self.iter().flat_map(|(pos_a, _, data_a)| {
+    /// Get flat iterator that runs over all pairs of (&pos_a, &pos_b, &OnceLock<f64>)
+    pub(crate) fn flat_iter(&self) -> impl Iterator<Item = (&Vector3, &Vector3, &OnceLock<f64>)> {
+        self.iter_with_lock().flat_map(|(pos_a, _, data_a)| {
             data_a
                 .get()
                 .unwrap()
-                .iter()
+                .iter_with_lock()
                 .map(move |(pos_b, _, data_b)| (pos_a, pos_b, data_b))
         })
     }
@@ -377,10 +387,8 @@ impl IcoTable4D {
         let data_ab = Matrix3::from_fn(|i, j| {
             *self
                 .get_data(face_a[i])
-                .get()
                 .unwrap()
                 .get_data(face_b[j])
-                .get()
                 .unwrap()
         });
         (bary_a.transpose() * data_ab * bary_b).to_scalar()

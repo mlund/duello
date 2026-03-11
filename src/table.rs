@@ -87,7 +87,7 @@ impl<T: Clone + GetSize> PaddedTable<T> {
         let index = self.to_index(key)?;
 
         if index == 0 || index == n - 1 {
-            // anyhow::bail!("Cannot set value in padded region")
+            anyhow::bail!("Cannot set value in padded region")
         } else if index == 1 {
             self.data[n - 1] = value.clone();
         } else if index == n - 2 {
@@ -150,8 +150,8 @@ mod tests {
         assert_eq!(*table.get(0.9).unwrap(), 10.0);
 
         // error if direct insertion in padded regions
-        // assert!(table.set(0.0 - dx, 0.0).is_err());
-        // assert!(table.set(1.0, 0.0).is_err());
+        assert!(table.set(0.0 - dx, 0.0).is_err());
+        assert!(table.set(1.0, 0.0).is_err());
 
         // check lower padding
         assert_eq!(table.to_index(0.0 - dx).unwrap(), 0);
