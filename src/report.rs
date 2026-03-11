@@ -12,9 +12,9 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
+use crate::Vector3;
 use crate::{Sample, VirialCoeff};
 use anyhow::{bail, Context};
-use crate::Vector3;
 use nu_ansi_term::Color::{Red, Yellow};
 use rgb::RGB8;
 use std::{fs::File, io::Write, path::PathBuf};

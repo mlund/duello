@@ -13,15 +13,15 @@
 // limitations under the license.
 
 use crate::structure::Structure;
-use interatomic::coulomb::pairwise::{MultipoleEnergy, MultipolePotential, Plain};
-use interatomic::coulomb::permittivity::ConstantPermittivity;
+use crate::Vector3;
 use faunus::topology::CustomProperty;
 use faunus::{
     energy::{NonbondedMatrix, NonbondedMatrixSplined},
     topology::AtomKind,
 };
-use crate::Vector3;
-use interatomic::twobody::{GridType, IonIon, IonIonPolar, IsotropicTwobodyEnergy, SplineConfig};
+use interatomic::coulomb::pairwise::{MultipoleEnergy, MultipolePotential, Plain};
+use interatomic::coulomb::permittivity::ConstantPermittivity;
+use interatomic::twobody::{IonIon, IonIonPolar, IsotropicTwobodyEnergy, SplineConfig};
 use std::{cmp::PartialEq, fmt::Debug};
 
 /// Storage for either standard or splined pair potentials
@@ -115,9 +115,7 @@ impl PairMatrix {
         permittivity: ConstantPermittivity,
         coulomb_method: &T,
         cutoff: f64,
-        n_points: Option<usize>,
-        grid_type: GridType,
-        shift_energy: bool,
+        spline_config: SplineConfig,
     ) -> Self {
         let splined = Self::create_splined_matrix(
             nonbonded,
@@ -125,9 +123,7 @@ impl PairMatrix {
             permittivity,
             coulomb_method,
             cutoff,
-            n_points,
-            grid_type,
-            shift_energy,
+            spline_config,
         );
         Self::from_splined(splined)
     }
@@ -143,19 +139,11 @@ impl PairMatrix {
         permittivity: ConstantPermittivity,
         coulomb_method: &T,
         cutoff: f64,
-        n_points: Option<usize>,
-        grid_type: GridType,
-        shift_energy: bool,
+        spline_config: SplineConfig,
     ) -> NonbondedMatrixSplined {
         let nonbonded =
             Self::add_coulomb_to_matrix(nonbonded, atomkinds, permittivity, coulomb_method);
-        let config = Some(SplineConfig {
-            n_points: n_points.unwrap_or(2000),
-            shift_energy,
-            grid_type,
-            ..Default::default()
-        });
-        NonbondedMatrixSplined::from_nonbonded(&nonbonded, cutoff, config)
+        NonbondedMatrixSplined::from_nonbonded(&nonbonded, cutoff, Some(spline_config))
     }
 
     /// Create a pair matrix from an existing splined matrix.

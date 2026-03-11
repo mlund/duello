@@ -14,7 +14,6 @@
 
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
-use interatomic::coulomb::{permittivity, DebyeLength, Medium, Salt};
 use duello::{
     backend::{CpuBackend, GpuBackend, SimdBackend},
     energy, icoscan,
@@ -23,7 +22,8 @@ use duello::{
     SphericalCoord, UnitQuaternion, Vector3,
 };
 use faunus::{energy::NonbondedMatrix, topology::Topology};
-use interatomic::twobody::GridType;
+use interatomic::coulomb::{permittivity, DebyeLength, Medium, Salt};
+use interatomic::twobody::{GridType, SplineConfig};
 use std::process::ExitCode;
 use std::{f64::consts::PI, fs::File, io::Write, ops::Add, ops::Neg, path::PathBuf};
 extern crate pretty_env_logger;
@@ -343,15 +343,19 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         }
         Backend::Cpu | Backend::Gpu | Backend::Simd => {
             // Create splined matrix (shared between CPU, GPU, and SIMD backends)
+            let spline_config = SplineConfig {
+                n_points: grid.size,
+                shift_energy: grid.shift,
+                grid_type: grid.grid_type.into(),
+                ..Default::default()
+            };
             let splined_matrix = energy::PairMatrix::create_splined_matrix(
                 nonbonded,
                 topology.atomkinds(),
                 medium.permittivity().into(),
                 &multipole,
                 *cutoff,
-                Some(grid.size),
-                grid.grid_type.into(),
-                grid.shift,
+                spline_config,
             );
 
             match backend_type {

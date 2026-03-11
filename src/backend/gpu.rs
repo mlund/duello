@@ -68,7 +68,6 @@ struct GpuUniforms {
     n_poses: u32,
 }
 
-
 /// GPU backend for energy calculations using wgpu compute shaders.
 pub struct GpuBackend {
     device: Arc<wgpu::Device>,
@@ -126,7 +125,9 @@ impl GpuBackend {
         match grid_type {
             GridType::PowerLaw2 => Self::new_typed::<PowerLaw2>(ref_a, ref_b, splined_matrix),
             GridType::InverseRsq => Self::new_typed::<InverseRsq>(ref_a, ref_b, splined_matrix),
-            other => anyhow::bail!("GPU backend requires PowerLaw2 or InverseRsq grid, got {other:?}"),
+            other => {
+                anyhow::bail!("GPU backend requires PowerLaw2 or InverseRsq grid, got {other:?}")
+            }
         }
     }
 
@@ -167,7 +168,11 @@ impl GpuBackend {
         let spline_data = GpuSplineData::<G>::from_potentials(potentials.iter());
 
         // Prepend grid-type-specific WGSL (SplineParams, SplineCoeffs, spline_index_eps)
-        let shader_source = format!("{}\n{}", G::SPLINE_WGSL, include_str!("../shaders/energy.wgsl"));
+        let shader_source = format!(
+            "{}\n{}",
+            G::SPLINE_WGSL,
+            include_str!("../shaders/energy.wgsl")
+        );
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Energy Compute Shader"),
             source: wgpu::ShaderSource::Wgsl(shader_source.into()),

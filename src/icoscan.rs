@@ -24,6 +24,7 @@ use get_size::GetSize;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use iter_num_tools::arange;
 use itertools::Itertools;
+use molly::{Frame, XTCWriter};
 use nalgebra::UnitVector3;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::{
@@ -31,7 +32,6 @@ use std::{
     io::{BufWriter, Write},
     path::PathBuf,
 };
-use molly::{Frame, XTCWriter};
 
 /// Orient two reference structures to given 6D point and return the two structures
 ///
