@@ -15,9 +15,9 @@
 //! GPU backend using wgpu compute shaders.
 
 use super::{EnergyBackend, PoseParams};
+use crate::energy::SplinedPotentials;
 use crate::structure::Structure;
 use bytemuck::{Pod, Zeroable};
-use crate::energy::SplinedPotentials;
 use interatomic::gpu::{GpuGridType, GpuSplineData, InverseRsq, PowerLaw2};
 use interatomic::twobody::GridType;
 use std::sync::{Arc, Mutex};

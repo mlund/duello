@@ -52,8 +52,8 @@ impl EnergyBackend for CpuBackend {
         let (oriented_a, oriented_b) = orient_structures(
             pose.r,
             pose.omega,
-            pose.vertex_i,
-            pose.vertex_j,
+            &pose.vertex_i,
+            &pose.vertex_j,
             &self.ref_a,
             &self.ref_b,
         );

@@ -14,10 +14,9 @@
 
 use crate::{
     backend::{EnergyBackend, PoseParams},
-    icotable::Table6D,
     report::report_pmf,
     structure::Structure,
-    Sample, UnitQuaternion, Vector3,
+    Sample, Table6D, Vector3,
 };
 use faunus::auxiliary::open_compressed;
 use get_size::GetSize;
@@ -25,7 +24,6 @@ use indicatif::{ParallelProgressIterator, ProgressIterator};
 use iter_num_tools::arange;
 use itertools::Itertools;
 use molly::{Frame, XTCWriter};
-use nalgebra::UnitVector3;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::{
     f64::consts::PI,
@@ -41,36 +39,25 @@ pub struct ScanConfig {
     pub angle_resolution: f64,
     pub temperature: f64,
     pub pmf_file: PathBuf,
-    pub disktable: Option<PathBuf>,
     pub xtcfile: Option<PathBuf>,
+    /// Save binary 6D table for Faunus lookup (.gz suffix enables gzip compression)
+    pub save_table: Option<PathBuf>,
 }
 
-/// Orient two reference structures to given 6D point and return the two structures
+/// Orient two reference structures to a given 6D point.
 ///
-/// Structure A is kept fixed at origin while structure B is rotated and translated
-/// to the given 6D point (r, omega, 2 x vertex positions). The given reference structures
-/// are assumed to be centered at the origin.
+/// Structure A is kept at origin; structure B is rotated and translated.
 pub(crate) fn orient_structures(
     r: f64,
     omega: f64,
-    vertex_i: Vector3,
-    vertex_j: Vector3,
+    vertex_i: &Vector3,
+    vertex_j: &Vector3,
     ref_a: &Structure,
     ref_b: &Structure,
 ) -> (Structure, Structure) {
-    let vertex_i = vertex_i.normalize();
-    let vertex_j = vertex_j.normalize();
-    let r_vec = Vector3::new(0.0, 0.0, r);
-    // Z axis cannot be *exactly* parallel to r_vec; see nalgebra::rotation_between
-    let zaxis = UnitVector3::new_normalize(Vector3::new(0.0005, 0.0005, 1.0));
-    let to_neg_zaxis = |p| UnitQuaternion::rotation_between(p, &-zaxis).unwrap();
-    let around_z = |angle| UnitQuaternion::from_axis_angle(&zaxis, angle);
-    let q1 = to_neg_zaxis(&vertex_j);
-    let q2 = around_z(omega);
-    let q3 = UnitQuaternion::rotation_between(&zaxis, &vertex_i).unwrap();
-    let mut mol_b = ref_b.clone(); // initially at origin
-    mol_b.transform(|pos| (q1 * q2).transform_vector(&pos));
-    mol_b.transform(|pos| q3.transform_vector(&(pos + r_vec)));
+    let (_, q_b, separation) = icotable::orient(r, omega, vertex_i, vertex_j);
+    let mut mol_b = ref_b.clone();
+    mol_b.transform(|pos| q_b.transform_vector(&pos) + separation);
     (ref_a.clone(), mol_b)
 }
 
@@ -191,13 +178,11 @@ pub fn do_icoscan<B: EnergyBackend>(config: &ScanConfig, backend: &B) -> anyhow:
         )
     };
 
-    // Save table to disk
-    if let Some(savetable) = &config.disktable {
-        log::info!("Saving 6D table to {}", savetable.display());
-        let mut stream = BufWriter::new(open_compressed(savetable)?);
-        for r in distances.iter().progress_count(distances.len() as u64) {
-            table.stream_angular_space(*r, &mut stream)?;
-        }
+    // Save binary 6D table for Faunus lookup
+    if let Some(path) = &config.save_table {
+        log::info!("Saving binary 6D table to {}", path.display());
+        let flat = icotable::Table6DFlat::<f32>::try_from(&table)?;
+        flat.save(path)?;
     }
 
     // Calculate partition function as function of r only
@@ -269,7 +254,7 @@ fn write_trajectory(
                 .flat_iter()
                 .for_each(|(pos_a, pos_b, data_b)| {
                     let (oriented_a, oriented_b) =
-                        orient_structures(*r, *omega, *pos_a, *pos_b, ref_a, ref_b);
+                        orient_structures(*r, *omega, pos_a, pos_b, ref_a, ref_b);
                     write_frame(&oriented_a, &oriented_b, data_b.get().unwrap());
                 });
         });

@@ -17,11 +17,11 @@ use clap::{Parser, Subcommand};
 use duello::{
     backend::{CpuBackend, GpuBackend, SimdBackend},
     energy, icoscan,
-    icotable::IcoTable2D,
     structure::{pqr_write_atom, Structure},
     SphericalCoord, UnitQuaternion, Vector3,
 };
 use faunus::{energy::NonbondedMatrix, topology::Topology};
+use icotable::IcoTable2D;
 use interatomic::coulomb::{permittivity, DebyeLength, Medium, Salt};
 use interatomic::twobody::{GridType, SplineConfig};
 use std::process::ExitCode;
@@ -214,7 +214,7 @@ enum Commands {
         /// Output file for PMF
         #[arg(long = "pmf", default_value = "pmf.dat")]
         pmf_file: PathBuf,
-        /// Save table to disk (use .gz suffix for compression)
+        /// Save binary 6D table for Faunus lookup (.gz suffix enables gzip compression)
         #[arg(long)]
         savetable: Option<PathBuf>,
         /// Export XTC file with all poses
@@ -325,8 +325,8 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         angle_resolution: *resolution,
         temperature: *temperature,
         pmf_file: pmf_file.clone(),
-        disktable: savetable.clone(),
         xtcfile: xtcfile.clone(),
+        save_table: savetable.clone(),
     };
 
     match backend_type {

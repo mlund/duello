@@ -133,8 +133,14 @@ mod tests {
         ];
 
         for pose in &poses {
-            let (_, oriented_b) =
-                orient_structures(pose.r, pose.omega, pose.vertex_i, pose.vertex_j, &ref_a, &ref_b);
+            let (_, oriented_b) = orient_structures(
+                pose.r,
+                pose.omega,
+                &pose.vertex_i,
+                &pose.vertex_j,
+                &ref_a,
+                &ref_b,
+            );
 
             for (i, ref_pos) in ref_b.pos.iter().enumerate() {
                 let glam_pos =

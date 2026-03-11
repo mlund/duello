@@ -15,28 +15,20 @@
 pub mod backend;
 pub mod energy;
 pub mod icoscan;
-mod icosphere;
-pub mod icotable;
 pub mod report;
 mod sample;
-mod spherical;
 pub mod structure;
-pub mod table;
-mod vertex;
 mod virial;
+
 pub use sample::Sample;
-pub use spherical::SphericalCoord;
-pub use vertex::*;
 pub use virial::VirialCoeff;
-extern crate pretty_env_logger;
+
 #[macro_use]
 extern crate log;
 
-extern crate flate2;
-
-pub type IcoSphere = hexasphere::Subdivided<(), hexasphere::shapes::IcoSphereBase>;
-pub type Matrix3 = nalgebra::Matrix3<f64>;
-pub type Vector3 = nalgebra::Vector3<f64>;
-pub type UnitQuaternion = nalgebra::UnitQuaternion<f64>;
-
-pub use icosphere::*;
+// Icosphere table types, coordinate transforms, and nalgebra aliases live in
+// the shared `icotable` crate to avoid duplication with Faunus.
+pub use icotable::{
+    make_icosphere, make_icosphere_vertices, make_vertices, make_weights, Face, IcoSphere,
+    IcoTable2D, IcoTable4D, Matrix3, SphericalCoord, Table6D, UnitQuaternion, Vector3, Vertex,
+};

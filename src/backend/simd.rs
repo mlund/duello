@@ -25,8 +25,8 @@
 //! Spline evaluation uses `interatomic::twobody::SplineTableSimdF32`.
 
 use super::{EnergyBackend, PoseParams};
-use crate::structure::Structure;
 use crate::energy::SplinedPotentials;
+use crate::structure::Structure;
 use interatomic::twobody::{GridType, SplineTableSimdF32};
 use std::collections::HashMap;
 
@@ -73,8 +73,8 @@ impl PairGroups {
 /// Returns the final position of molecule B's atom after rotation and translation.
 /// The sequence is: rotate by q1*q2, translate along z by r, then rotate by q3.
 pub(crate) fn orient_position_f32(pos: glam::Vec3, pose: &PoseParams) -> glam::Vec3 {
-    let zaxis = glam::Vec3::new(0.0005, 0.0005, 1.0).normalize();
-    let neg_zaxis = -zaxis;
+    let zaxis = glam::Vec3::Z;
+    let neg_zaxis = glam::Vec3::NEG_Z;
 
     let vertex_i = glam::Vec3::new(
         pose.vertex_i.x as f32,
@@ -89,6 +89,7 @@ pub(crate) fn orient_position_f32(pos: glam::Vec3, pose: &PoseParams) -> glam::V
     )
     .normalize();
 
+    // glam::from_rotation_arc handles anti-parallel vectors correctly
     let q1 = glam::Quat::from_rotation_arc(vertex_j, neg_zaxis);
     let q2 = glam::Quat::from_axis_angle(zaxis, pose.omega as f32);
     let q3 = glam::Quat::from_rotation_arc(zaxis, vertex_i);
@@ -125,11 +126,7 @@ pub struct SimdBackend {
 
 impl SimdBackend {
     /// Create a new SIMD backend.
-    pub fn new(
-        ref_a: Structure,
-        ref_b: Structure,
-        splined_matrix: &SplinedPotentials,
-    ) -> Self {
+    pub fn new(ref_a: Structure, ref_b: Structure, splined_matrix: &SplinedPotentials) -> Self {
         // Convert positions to SoA layout
         let pos_a_x: Vec<f32> = ref_a.pos.iter().map(|p| p.x as f32).collect();
         let pos_a_y: Vec<f32> = ref_a.pos.iter().map(|p| p.y as f32).collect();
