@@ -35,17 +35,8 @@ impl SphericalCoord {
     pub const fn theta(&self) -> f64 {
         self.theta
     }
-    /// Polar angle, theta (0..pi)
-    pub const fn polar_angle(&self) -> f64 {
-        self.theta
-    }
     /// Azimuthal angle, phi (0..2pi)
-    #[inline(always)]
     pub const fn phi(&self) -> f64 {
-        self.phi
-    }
-    /// Azimuthal angle, phi (0..2pi)
-    pub const fn azimuthal_angle(&self) -> f64 {
         self.phi
     }
     pub const fn new(r: f64, theta: f64, phi: f64) -> Self {

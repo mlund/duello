@@ -485,18 +485,6 @@ pub(crate) fn vmd_draw(
     Ok(())
 }
 
-/// Get list of all faces from an icosphere
-fn _get_faces_from_icosphere(icosphere: IcoSphere) -> Vec<Face> {
-    icosphere
-        .get_all_indices()
-        .chunks(3)
-        .map(|c| {
-            let v = vec![c[0] as usize, c[1] as usize, c[2] as usize];
-            v.try_into().unwrap()
-        })
-        .collect_vec()
-}
-
 impl IcoTable2D<f64> {
     /// Get data for a point on the surface using barycentric interpolation
     /// https://en.wikipedia.org/wiki/Barycentric_coordinate_system#Interpolation_on_a_triangular_unstructured_grid
