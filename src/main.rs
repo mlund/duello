@@ -26,7 +26,7 @@ use faunus::{
 };
 use icotable::table::PaddedTable;
 use interatomic::coulomb::{permittivity, DebyeLength, Medium, Salt};
-use interatomic::twobody::{GridType, SplineConfig};
+use interatomic::twobody::{GridTrim, GridType, SplineConfig};
 use std::process::ExitCode;
 use std::{f64::consts::PI, fs::File, io::Write, ops::Add, ops::Neg, path::PathBuf};
 extern crate pretty_env_logger;
@@ -60,14 +60,17 @@ pub struct GridOptions {
     pub grid_type: SplineGrid,
     pub size: usize,
     pub shift: bool,
+    /// If set, cap |U(r_min)| to reduce f32 precision loss on GPU/SIMD
+    pub energy_cap: Option<f64>,
 }
 
 impl Default for GridOptions {
     fn default() -> Self {
         Self {
             grid_type: SplineGrid::Powerlaw2,
-            size: 2000,
+            size: 500,
             shift: true,
+            energy_cap: Some(25.0),
         }
     }
 }
@@ -101,6 +104,14 @@ impl std::str::FromStr for GridOptions {
                         "false" | "0" | "no" => false,
                         _ => return Err(format!("invalid shift value '{value}'")),
                     };
+                }
+                "energy_cap" => {
+                    opts.energy_cap = Some(
+                        value
+                            .trim()
+                            .parse()
+                            .map_err(|_| format!("invalid energy_cap '{value}'"))?,
+                    );
                 }
                 _ => return Err(format!("unknown option '{key}'")),
             }
@@ -264,8 +275,12 @@ enum Commands {
         #[arg(long, value_enum, default_value = "auto")]
         backend: Backend,
         /// Grid interpolation: type=powerlaw2|invr2,size=N,shift=bool
-        #[arg(long, default_value = "type=powerlaw2,size=2000,shift=true")]
+        #[arg(long, default_value = "type=powerlaw2,size=500,shift=true,energy_cap=25")]
         grid: GridOptions,
+        /// Short-range spline cutoff for GPU/SIMD split path (angstroms).
+        /// Defaults to --cutoff if not set. Set to SR potential range for best accuracy.
+        #[arg(long)]
+        sr_cutoff: Option<f64>,
     },
 }
 
@@ -288,6 +303,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         xtcfile,
         backend: backend_type,
         grid,
+        sr_cutoff,
     } = cmd
     else {
         bail!("Unknown command");
@@ -369,6 +385,18 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         save_table: savetable.clone(),
     };
 
+    let grid_trim = match grid.energy_cap {
+        Some(cap) => GridTrim::RepulsiveDecay { energy_cap: cap },
+        None => GridTrim::NoTrim,
+    };
+    let spline_config = SplineConfig {
+        n_points: grid.size,
+        shift_energy: grid.shift,
+        grid_type: grid.grid_type.into(),
+        grid_trim,
+        ..Default::default()
+    };
+
     match backend_type {
         Backend::Auto => unreachable!(), // Already resolved above
         Backend::Reference => {
@@ -382,14 +410,8 @@ fn do_scan(cmd: &Commands) -> Result<()> {
             let backend = CpuBackend::new(ref_a, ref_b, pair_matrix);
             icoscan::do_icoscan(&scan_config, &backend)
         }
-        Backend::Cpu | Backend::Gpu | Backend::Simd => {
-            // Create splined matrix (shared between CPU, GPU, and SIMD backends)
-            let spline_config = SplineConfig {
-                n_points: grid.size,
-                shift_energy: grid.shift,
-                grid_type: grid.grid_type.into(),
-                ..Default::default()
-            };
+        Backend::Cpu => {
+            // CPU backend: combined spline (SR + Coulomb together)
             let splined_matrix = energy::PairMatrix::create_splined_potentials(
                 nonbonded,
                 topology.atomkinds(),
@@ -398,19 +420,57 @@ fn do_scan(cmd: &Commands) -> Result<()> {
                 *cutoff,
                 spline_config,
             );
+            let pair_matrix = energy::PairMatrix::from_splined(splined_matrix);
+            let backend = CpuBackend::new(ref_a, ref_b, pair_matrix);
+            icoscan::do_icoscan(&scan_config, &backend)
+        }
+        Backend::Gpu | Backend::Simd => {
+            // Split path: spline only SR potential, evaluate Coulomb analytically.
+            // This avoids polynomial ringing caused by the SR hard cutoff
+            // discontinuity when both SR+Coulomb are combined in a single spline.
+            let n_types = topology.atomkinds().len();
+            let coulomb_params = energy::extract_coulomb_params(
+                topology.atomkinds(),
+                medium.permittivity().into(),
+                multipole.kappa(),
+            );
+
+            let (splined_matrix, coulomb) = match coulomb_params {
+                Some(cp) => {
+                    let sr_cut = sr_cutoff.unwrap_or(*cutoff);
+                    info!("Split path: SR spline (cutoff={sr_cut:.1} Å) + analytical Coulomb");
+                    (
+                        energy::PairMatrix::create_sr_splined_potentials(
+                            nonbonded,
+                            sr_cut,
+                            spline_config,
+                        ),
+                        cp,
+                    )
+                }
+                None => {
+                    info!("Fallback: combined spline (cutoff={cutoff:.1} Å)");
+                    let sp = energy::PairMatrix::create_splined_potentials(
+                        nonbonded,
+                        topology.atomkinds(),
+                        medium.permittivity().into(),
+                        &multipole,
+                        *cutoff,
+                        spline_config,
+                    );
+                    (sp, energy::CoulombParams::zero(n_types))
+                }
+            };
 
             match backend_type {
-                Backend::Cpu => {
-                    let pair_matrix = energy::PairMatrix::from_splined(splined_matrix);
-                    let backend = CpuBackend::new(ref_a, ref_b, pair_matrix);
-                    icoscan::do_icoscan(&scan_config, &backend)
-                }
                 Backend::Gpu => {
-                    let gpu_backend = GpuBackend::new(ref_a, ref_b, &splined_matrix)?;
+                    let gpu_backend =
+                        GpuBackend::new(ref_a, ref_b, &splined_matrix, &coulomb)?;
                     icoscan::do_icoscan(&scan_config, &gpu_backend)
                 }
                 Backend::Simd => {
-                    let simd_backend = SimdBackend::new(ref_a, ref_b, &splined_matrix);
+                    let simd_backend =
+                        SimdBackend::new(ref_a, ref_b, &splined_matrix, &coulomb);
                     icoscan::do_icoscan(&scan_config, &simd_backend)
                 }
                 _ => unreachable!(),

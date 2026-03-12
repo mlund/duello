@@ -17,6 +17,10 @@ struct Uniforms {
     n_atoms_b: u32,
     n_atom_types: u32,
     n_poses: u32,
+    kappa: f32,
+    _pad1: u32,
+    _pad2: u32,
+    _pad3: u32,
 }
 
 @group(0) @binding(0) var<storage, read> spline_coeffs: array<SplineCoeffs>;
@@ -27,6 +31,7 @@ struct Uniforms {
 @group(0) @binding(5) var<storage, read> poses: array<PoseParams>;
 @group(0) @binding(6) var<storage, read_write> energies: array<f32>;
 @group(0) @binding(7) var<uniform> uniforms: Uniforms;
+@group(0) @binding(8) var<storage, read> coulomb_prefactors: array<f32>;
 
 // Quaternion multiplication: q1 * q2
 // Quaternion format: (x, y, z, w) where w is scalar
@@ -110,10 +115,19 @@ fn quat_from_axis_angle(axis: vec3<f32>, angle: f32) -> vec4<f32> {
     return vec4<f32>(axis_n.x * s, axis_n.y * s, axis_n.z * s, cos(half_angle));
 }
 
+// Analytical Coulomb/Yukawa energy: prefactor * exp(-κr) / r
+// Evaluated analytically (not splined) to avoid polynomial ringing from the
+// SR potential's hard cutoff discontinuity inside the spline grid.
+// No distance cutoff — Yukawa decays exponentially; exp() is single-cycle on GPU.
+fn coulomb_energy(pair_idx: u32, r: f32) -> f32 {
+    let prefactor = coulomb_prefactors[pair_idx];
+    if prefactor == 0.0 { return 0.0; } // skip uncharged pairs
+    return prefactor * exp(-uniforms.kappa * r) / r;
+}
+
 // Evaluate spline energy using Horner's method
-fn spline_energy(pair_idx: u32, r_sq: f32) -> f32 {
+fn spline_energy(pair_idx: u32, r: f32) -> f32 {
     let params = spline_params[pair_idx];
-    let r = sqrt(r_sq);
 
     if r >= params.r_max {
         return 0.0;
@@ -132,7 +146,8 @@ fn spline_energy(pair_idx: u32, r_sq: f32) -> f32 {
     // Horner's method: a0 + frac*(a1 + frac*(a2 + frac*a3))
     let u_spline = c.x + frac * (c.y + frac * (c.z + frac * c.w));
 
-    return u_spline + params.f_at_rmin * extrap_dist;
+    // Slope = 2·r_min·f_at_rmin (derivative of U w.r.t. r, from -dU/d(r²) convention)
+    return u_spline + 2.0 * params.r_min * params.f_at_rmin * extrap_dist;
 }
 
 @compute @workgroup_size(64)
@@ -188,9 +203,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let pair_idx = id_a * uniforms.n_atom_types + id_b;
 
             let diff = pos_a - pos_b;
-            let r_sq = dot(diff, diff);
+            let r = sqrt(dot(diff, diff));
 
-            total_energy += spline_energy(pair_idx, r_sq);
+            total_energy += spline_energy(pair_idx, r) + coulomb_energy(pair_idx, r);
         }
     }
 

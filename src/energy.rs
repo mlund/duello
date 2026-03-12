@@ -24,6 +24,80 @@ use interatomic::coulomb::permittivity::ConstantPermittivity;
 use interatomic::twobody::{IonIon, IonIonPolar, IsotropicTwobodyEnergy, SplineConfig};
 use std::{cmp::PartialEq, fmt::Debug};
 
+/// Get excess polarizability (Å³) from the custom "alpha" property of an atom kind.
+fn get_alpha(atom: &AtomKind) -> f64 {
+    atom.get_property("alpha").map_or(0.0, |v| {
+        f64::try_from(v).expect("Failed to convert alpha to f64")
+    })
+}
+
+/// Check if an atom pair requires ion-induced dipole interaction.
+fn needs_polarization(alpha1: f64, charge1: f64, alpha2: f64, charge2: f64) -> bool {
+    (alpha1 * charge2).abs() > 1e-6 || (alpha2 * charge1).abs() > 1e-6
+}
+
+/// Coulomb parameters for analytical evaluation in GPU/SIMD backends.
+///
+/// Splining the combined SR+Coulomb potential causes polynomial ringing when the
+/// SR hard cutoff (~20Å) falls inside the spline grid. Evaluating Coulomb/Yukawa
+/// analytically as `prefactor * exp(-kappa * r) / r` avoids this entirely.
+pub struct CoulombParams {
+    /// Per-pair prefactors in kJ/mol·Å, indexed as `[id_a * n_types + id_b]`.
+    /// Each entry = `ELECTRIC_PREFACTOR * z_i * z_j / ε_r`.
+    /// Zero prefactor means no electrostatic interaction for that pair.
+    pub prefactors: Vec<f32>,
+    /// Inverse Debye screening length κ (1/Å). 0.0 for unscreened Coulomb.
+    pub kappa: f32,
+}
+
+impl CoulombParams {
+    /// Create zero-valued Coulomb params (no analytical Coulomb contribution).
+    pub fn zero(n_types: usize) -> Self {
+        Self {
+            prefactors: vec![0.0; n_types * n_types],
+            kappa: 0.0,
+        }
+    }
+}
+
+/// Extract Coulomb prefactors for analytical evaluation.
+///
+/// Returns `None` if any pair requires ion-induced dipole interaction (IonIonPolar),
+/// whose energy formula is too complex for the simple `prefactor * exp(-κr) / r`
+/// analytical path. In that case the caller falls back to the combined spline.
+pub fn extract_coulomb_params(
+    atomkinds: &[AtomKind],
+    permittivity: ConstantPermittivity,
+    kappa: Option<f64>,
+) -> Option<CoulombParams> {
+    let n_types = atomkinds.len();
+    let eps_r = f64::from(permittivity);
+    let to_kjmol = interatomic::ELECTRIC_PREFACTOR / eps_r;
+
+    // Pre-compute per-type alpha and charge to avoid repeated property lookups
+    let alphas: Vec<f64> = atomkinds.iter().map(get_alpha).collect();
+    let charges: Vec<f64> = atomkinds.iter().map(AtomKind::charge).collect();
+
+    let mut prefactors = vec![0.0f32; n_types * n_types];
+    for i in 0..n_types {
+        for j in 0..n_types {
+            if needs_polarization(alphas[i], charges[i], alphas[j], charges[j]) {
+                log::warn!(
+                    "Ion-induced dipole detected for pair ({i}, {j}); \
+                     analytical Coulomb not supported, using combined spline"
+                );
+                return None;
+            }
+            prefactors[i * n_types + j] = (to_kjmol * charges[i] * charges[j]) as f32;
+        }
+    }
+
+    Some(CoulombParams {
+        prefactors,
+        kappa: kappa.unwrap_or(0.0) as f32,
+    })
+}
+
 /// Wrapper around splined pair potentials, hiding the upstream faunus type.
 ///
 /// Created via `PairMatrix::create_splined_potentials` and consumed by backend constructors.
@@ -62,21 +136,13 @@ impl PairMatrix {
             .get_potentials_mut()
             .indexed_iter_mut()
             .for_each(|((i, j), pairpot)| {
-                // Fetch excess polarizability for the two atom kinds from the
-                // custom "alpha" field, if it exists. Add to topology atoms like this:
-                // `custom: {alpha: 50.0}`
-                let get_alpha = |atom: &AtomKind| {
-                    atom.get_property("alpha").map_or(0.0, |v| {
-                        f64::try_from(v).expect("Failed to convert alpha to f64")
-                    })
-                };
                 let alpha1 = get_alpha(&atomkinds[i]);
                 let alpha2 = get_alpha(&atomkinds[j]);
                 let charge1 = atomkinds[i].charge();
                 let charge2 = atomkinds[j].charge();
                 let charge_product = charge1 * charge2;
                 let use_polarization =
-                    (alpha1 * charge2).abs() > 1e-6 || (alpha2 * charge1).abs() > 1e-6;
+                    needs_polarization(alpha1, charge1, alpha2, charge2);
 
                 if use_polarization {
                     log::debug!(
@@ -156,6 +222,24 @@ impl PairMatrix {
     ) -> SplinedPotentials {
         let nonbonded =
             Self::add_coulomb_to_matrix(nonbonded, atomkinds, permittivity, coulomb_method);
+        SplinedPotentials(NonbondedMatrixSplined::from_nonbonded(
+            &nonbonded,
+            cutoff,
+            Some(spline_config),
+        ))
+    }
+
+    /// Create SR-only splined potentials (without Coulomb).
+    ///
+    /// The SR potential (e.g. Ashbaugh-Hatch) has a finite cutoff that creates a
+    /// discontinuity when combined with Coulomb inside a single spline. Splining
+    /// SR alone avoids this; Coulomb is added analytically by GPU/SIMD backends.
+    pub fn create_sr_splined_potentials(
+        nonbonded: NonbondedMatrix,
+        cutoff: f64,
+        spline_config: SplineConfig,
+    ) -> SplinedPotentials {
+        log::info!("Creating SR-only spline (no Coulomb) with cutoff {cutoff:.1} Å");
         SplinedPotentials(NonbondedMatrixSplined::from_nonbonded(
             &nonbonded,
             cutoff,

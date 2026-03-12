@@ -25,7 +25,7 @@
 //! Spline evaluation uses `interatomic::twobody::SplineTableSimdF32`.
 
 use super::{EnergyBackend, PoseParams};
-use crate::energy::SplinedPotentials;
+use crate::energy::{CoulombParams, SplinedPotentials};
 use crate::structure::Structure;
 use interatomic::twobody::{GridType, SplineTableSimdF32};
 use std::collections::HashMap;
@@ -122,11 +122,20 @@ pub struct SimdBackend {
     spline_tables: Vec<SplineTableSimdF32>,
     /// Precomputed pair groups (pairs grouped by atom type combination)
     pair_groups: PairGroups,
+    /// Coulomb prefactors per pair type (n_types²), kJ/mol·Å
+    coulomb_prefactors: Vec<f32>,
+    /// Inverse Debye screening length κ (1/Å), 0.0 for unscreened
+    kappa: f32,
 }
 
 impl SimdBackend {
     /// Create a new SIMD backend.
-    pub fn new(ref_a: Structure, ref_b: Structure, splined_matrix: &SplinedPotentials) -> Self {
+    pub fn new(
+        ref_a: Structure,
+        ref_b: Structure,
+        splined_matrix: &SplinedPotentials,
+        coulomb: &CoulombParams,
+    ) -> Self {
         // Convert positions to SoA layout
         let pos_a_x: Vec<f32> = ref_a.pos.iter().map(|p| p.x as f32).collect();
         let pos_a_y: Vec<f32> = ref_a.pos.iter().map(|p| p.y as f32).collect();
@@ -193,6 +202,8 @@ impl SimdBackend {
             pos_b_z,
             spline_tables,
             pair_groups,
+            coulomb_prefactors: coulomb.prefactors.clone(),
+            kappa: coulomb.kappa,
         }
     }
 
@@ -201,6 +212,10 @@ impl SimdBackend {
     /// The quaternion orientation sequence here mirrors `orient_structures` in icoscan.rs
     /// but uses f32/glam instead of f64/nalgebra to enable SIMD vectorization.
     /// Both must produce equivalent rotations — see `test_simd_cpu_orientation_agreement`.
+    ///
+    /// Note: spline and Coulomb energies are accumulated separately (batched SIMD vs scalar),
+    /// so f32 summation order differs slightly from the GPU backend. This is expected and
+    /// not worth fixing as it would degrade performance or code clarity.
     fn compute_energy_simd(&self, pose: &PoseParams) -> f32 {
         let n_b = self.pos_b_x.len();
 
@@ -236,6 +251,16 @@ impl SimdBackend {
                 .collect();
 
             total_energy += spline.energy_batch(&rsq_vec);
+
+            // Analytical Coulomb/Yukawa (not splined to avoid ringing from SR cutoff)
+            let prefactor = self.coulomb_prefactors[group.pair_idx as usize];
+            if prefactor.abs() > 1e-12 { // skip uncharged pair types
+                let kappa = self.kappa;
+                for &rsq in &rsq_vec {
+                    let r = rsq.sqrt();
+                    total_energy += prefactor * (-kappa * r).exp() / r;
+                }
+            }
         }
 
         total_energy

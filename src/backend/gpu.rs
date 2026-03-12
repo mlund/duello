@@ -15,7 +15,7 @@
 //! GPU backend using wgpu compute shaders.
 
 use super::{EnergyBackend, PoseParams};
-use crate::energy::SplinedPotentials;
+use crate::energy::{CoulombParams, SplinedPotentials};
 use crate::structure::Structure;
 use bytemuck::{Pod, Zeroable};
 use interatomic::gpu::{GpuGridType, GpuSplineData, InverseRsq, PowerLaw2};
@@ -66,6 +66,8 @@ struct GpuUniforms {
     n_atoms_b: u32,
     n_atom_types: u32,
     n_poses: u32,
+    kappa: f32,
+    _pad: [u32; 3],
 }
 
 /// GPU backend for energy calculations using wgpu compute shaders.
@@ -80,6 +82,7 @@ pub struct GpuBackend {
     ref_pos_a_buffer: wgpu::Buffer,
     ref_pos_b_buffer: wgpu::Buffer,
     atom_ids_buffer: wgpu::Buffer,
+    coulomb_prefactors_buffer: wgpu::Buffer,
     uniform_buffer: wgpu::Buffer,
     // Reference structures
     ref_a: Structure,
@@ -88,6 +91,8 @@ pub struct GpuBackend {
     n_atoms_a: u32,
     n_atoms_b: u32,
     n_atom_types: u32,
+    // Coulomb screening parameter
+    kappa: f32,
     // Maximum batch size
     max_batch_size: usize,
     // Mutex for serializing GPU submissions (wgpu doesn't handle concurrent submissions well)
@@ -115,6 +120,7 @@ impl GpuBackend {
         ref_a: Structure,
         ref_b: Structure,
         splined_matrix: &SplinedPotentials,
+        coulomb: &CoulombParams,
     ) -> anyhow::Result<Self> {
         let grid_type = splined_matrix
             .inner()
@@ -124,8 +130,12 @@ impl GpuBackend {
             .ok_or_else(|| anyhow::anyhow!("Empty spline matrix"))?
             .grid_type();
         match grid_type {
-            GridType::PowerLaw2 => Self::new_typed::<PowerLaw2>(ref_a, ref_b, splined_matrix),
-            GridType::InverseRsq => Self::new_typed::<InverseRsq>(ref_a, ref_b, splined_matrix),
+            GridType::PowerLaw2 => {
+                Self::new_typed::<PowerLaw2>(ref_a, ref_b, splined_matrix, coulomb)
+            }
+            GridType::InverseRsq => {
+                Self::new_typed::<InverseRsq>(ref_a, ref_b, splined_matrix, coulomb)
+            }
             other => {
                 anyhow::bail!("GPU backend requires PowerLaw2 or InverseRsq grid, got {other:?}")
             }
@@ -136,6 +146,7 @@ impl GpuBackend {
         ref_a: Structure,
         ref_b: Structure,
         splined_matrix: &SplinedPotentials,
+        coulomb: &CoulombParams,
     ) -> anyhow::Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
@@ -270,6 +281,17 @@ impl GpuBackend {
                     },
                     count: None,
                 },
+                // Coulomb prefactors (per pair type)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -338,6 +360,14 @@ impl GpuBackend {
             usage: wgpu::BufferUsages::STORAGE,
         });
 
+        // Create Coulomb prefactors buffer
+        let coulomb_prefactors_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Coulomb Prefactors"),
+                contents: bytemuck::cast_slice(&coulomb.prefactors),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+
         let n_atoms_a = ref_a.pos.len() as u32;
         let n_atoms_b = ref_b.pos.len() as u32;
 
@@ -347,6 +377,8 @@ impl GpuBackend {
             n_atoms_b,
             n_atom_types,
             n_poses: 0,
+            kappa: coulomb.kappa,
+            _pad: [0; 3],
         };
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Uniforms"),
@@ -372,12 +404,14 @@ impl GpuBackend {
             ref_pos_a_buffer,
             ref_pos_b_buffer,
             atom_ids_buffer,
+            coulomb_prefactors_buffer,
             uniform_buffer,
             ref_a,
             ref_b,
             n_atoms_a,
             n_atoms_b,
             n_atom_types,
+            kappa: coulomb.kappa,
             max_batch_size: 100_000,
             submit_lock: Mutex::new(()),
         })
@@ -418,12 +452,14 @@ impl GpuBackend {
             mapped_at_creation: false,
         });
 
-        // Update uniforms
+        // Update uniforms (kappa is constant but n_poses changes per batch)
         let uniforms = GpuUniforms {
             n_atoms_a: self.n_atoms_a,
             n_atoms_b: self.n_atoms_b,
             n_atom_types: self.n_atom_types,
             n_poses: n_poses as u32,
+            kappa: self.kappa,
+            _pad: [0; 3],
         };
         self.queue
             .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
@@ -464,6 +500,10 @@ impl GpuBackend {
                 wgpu::BindGroupEntry {
                     binding: 7,
                     resource: self.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: self.coulomb_prefactors_buffer.as_entire_binding(),
                 },
             ],
         });
