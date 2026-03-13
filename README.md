@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/duello-logo.png" alt="crates.io", height="300">
+  <img src="https://raw.githubusercontent.com/mlund/duello/main/assets/duello-logo.png" alt="Duello logo" height="300">
 </p>
 <p align="center">
     <a href="https://doi.org/10/p5d4">
@@ -22,7 +22,7 @@
 -----
 
 <p align = "center">
-<b>Duello</b></br>
+<b>Duello</b><br>
 <i>Virial Coefficient and Dissociation Constant Estimation for Rigid Macromolecules</i>
 </p>
 
@@ -89,12 +89,12 @@ cargo install --git https://github.com/mlund/duello
 # Usage
 
 The command-line tool `duello` does the 6D scanning and calculates
-the angularly averaged potential of mean force, _A(R)_ which
-is used to derive the 2nd virial coefficient and twobody dissociation constant, $K_d$.
+the angularly averaged potential of mean force, _w(R)_, which
+is used to derive the 2nd virial coefficient and two-body dissociation constant, $K_d$.
 The two input structures should be in `.xyz` format and all particle names must
 be defined in the topology file under `atoms`.
 The topology also defines the particular pair-potential to use, see below.
-Note that currently, a Coulomb/Yukawa potential is automatically added and should
+Note that a Coulomb/Yukawa potential is automatically added and should
 hence _not_ be specified in the topology.
 Coulomb is evaluated analytically (no cutoff) in all backends, while
 short-range potentials (e.g. AshbaughHatch, WCA) are splined for GPU/SIMD backends.
@@ -181,12 +181,12 @@ duello scan \
   --molarity 0.05
 ```
 
-If `pdb2xyz` give errors, you may be able to correct your PDB file with
+If `pdb2xyz` gives errors, you may be able to correct your PDB file with
 [pdbfixer](https://github.com/openmm/pdbfixer?tab=readme-ov-file).
 
 ## Examples
 
-Ready run scripts examples are provided in the `scripts/` directory:
+Ready-to-run script examples are provided in the `scripts/` directory:
 
 Command                | Description
 ---------------------- | ------------------------------------------------------------
@@ -218,14 +218,14 @@ always automatically added and should therefore _not_ be specified in the topolo
 # Development
 
 This is for development purposes only and details how to create and publish a
-binary package on pipy.org.
+binary package on pypi.org.
 
 ## Create `pip` package using Maturin via a Docker image:
 
 Run this on MacOS, linux (x86 and arm) to get all architectures:
 
 ```sh
-docker run --rm -v $(pwd):/io ghcr.io/pyo3/maturin::v1.11.5 publish -u __token__ -p PYPI_TOKEN
+docker run --rm -v $(pwd):/io ghcr.io/pyo3/maturin:v1.11.5 publish -u __token__ -p PYPI_TOKEN
 ```
 
 
