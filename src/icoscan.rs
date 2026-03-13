@@ -181,7 +181,7 @@ pub fn do_icoscan<B: EnergyBackend>(config: &ScanConfig, backend: &B) -> anyhow:
     // Save binary 6D table for Faunus lookup
     if let Some(path) = &config.save_table {
         log::info!("Saving binary 6D table to {}", path.display());
-        let flat = icotable::Table6DFlat::<f32>::try_from(&table)?;
+        let flat = icotable::Table6DFlat::<icotable::f16>::try_from(&table)?;
         flat.save(path)?;
     }
 
