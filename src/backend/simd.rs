@@ -72,7 +72,7 @@ impl PairGroups {
 ///
 /// Returns the final position of molecule B's atom after rotation and translation.
 /// The sequence is: rotate by q1*q2, translate along z by r, then rotate by q3.
-pub(crate) fn orient_position_f32(pos: glam::Vec3, pose: &PoseParams) -> glam::Vec3 {
+pub fn orient_position_f32(pos: glam::Vec3, pose: &PoseParams) -> glam::Vec3 {
     let zaxis = glam::Vec3::Z;
     let neg_zaxis = glam::Vec3::NEG_Z;
 

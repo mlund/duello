@@ -105,7 +105,7 @@ pub struct SplinedPotentials(NonbondedMatrixSplined);
 
 impl SplinedPotentials {
     /// Access the inner splined matrix (for backend initialization).
-    pub(crate) fn inner(&self) -> &NonbondedMatrixSplined {
+    pub(crate) const fn inner(&self) -> &NonbondedMatrixSplined {
         &self.0
     }
 }

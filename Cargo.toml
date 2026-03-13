@@ -32,7 +32,6 @@ flate2 = {version = "1.0", default-features = false}
 textplots = "0.8"
 rgb = "0.8"
 nu-ansi-term = "0.50"
-hexasphere = {version = "16.0", features = ["adjacency"]}
 icotable = { path = "../icotable" }
 num-traits = "0.2"
 rand = {version = "0.8", default-features = false}

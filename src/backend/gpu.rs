@@ -28,7 +28,7 @@ use wgpu::util::DeviceExt;
 /// so we add padding after omega.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub(crate) struct GpuPoseParams {
+pub struct GpuPoseParams {
     pub(crate) r: f32,
     pub(crate) omega: f32,
     pub(crate) _pad: [f32; 2],     // Padding to align vertex_i to 16 bytes

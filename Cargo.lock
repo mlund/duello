@@ -675,7 +675,6 @@ dependencies = [
  "flate2",
  "get-size",
  "glam 0.30.10",
- "hexasphere",
  "icotable",
  "indicatif",
  "iter_num_tools",

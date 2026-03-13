@@ -24,7 +24,7 @@ use faunus::{
     energy::NonbondedMatrix,
     topology::{FindByName, Topology},
 };
-use icotable::table::PaddedTable;
+use duello::PaddedTable;
 use faunus::interatomic::coulomb::{pairwise::Plain, permittivity, DebyeLength, Medium, Salt};
 use faunus::interatomic::twobody::{GridTrim, GridType, SplineConfig};
 use std::process::ExitCode;
@@ -313,14 +313,16 @@ fn do_scan(cmd: &Commands) -> Result<()> {
     faunus::topology::set_missing_epsilon(topology.atomkinds_mut(), 2.479);
 
     // Either use fixed dielectric constant or calculate it from the medium
-    let medium = match fixed_dielectric {
-        Some(dielectric_const) => Medium::new(
-            *temperature,
-            permittivity::Permittivity::Fixed(*dielectric_const),
-            Some((Salt::SodiumChloride, *molarity)),
-        ),
-        _ => Medium::salt_water(*temperature, Salt::SodiumChloride, *molarity),
-    };
+    let medium = fixed_dielectric.map_or_else(
+        || Medium::salt_water(*temperature, Salt::SodiumChloride, *molarity),
+        |dielectric_const| {
+            Medium::new(
+                *temperature,
+                permittivity::Permittivity::Fixed(dielectric_const),
+                Some((Salt::SodiumChloride, *molarity)),
+            )
+        },
+    );
 
     let multipole = Plain::new(f64::INFINITY, medium.debye_length());
     let nonbonded = NonbondedMatrix::from_file(top_file, &topology, Some(medium.clone()))?;
@@ -385,10 +387,11 @@ fn do_scan(cmd: &Commands) -> Result<()> {
     // energy_cap only applies to SR-only splines (GPU/SIMD split path).
     // The combined spline (CPU) includes Coulomb which diverges as 1/r,
     // so capping it would corrupt the potential.
-    let sr_grid_trim = match grid.energy_cap {
-        Some(cap) => GridTrim::RepulsiveDecay { energy_cap: cap },
-        None => GridTrim::NoTrim,
-    };
+    let sr_grid_trim = grid
+        .energy_cap
+        .map_or(GridTrim::NoTrim, |cap| GridTrim::RepulsiveDecay {
+            energy_cap: cap,
+        });
     let base_spline_config = SplineConfig {
         n_points: grid.size,
         shift_energy: grid.shift,
