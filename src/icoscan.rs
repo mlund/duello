@@ -18,6 +18,7 @@ use crate::{
     structure::Structure,
     Sample, Table6D, Vector3,
 };
+use icotable::{TableMetadata, TailCorrectionTerm};
 use faunus::auxiliary::open_compressed;
 use get_size::GetSize;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
@@ -42,6 +43,138 @@ pub struct ScanConfig {
     pub xtcfile: Option<PathBuf>,
     /// Save binary 6D table for Faunus lookup (.gz suffix enables gzip compression)
     pub save_table: Option<PathBuf>,
+    /// Net charges of the two molecules in elementary charges.
+    pub charges: [f64; 2],
+    /// Dipole moment magnitudes in e·Å.
+    pub dipole_moments: [f64; 2],
+    /// Debye screening parameter (1/Å), if known.
+    pub kappa: Option<f64>,
+    /// Relative permittivity of the medium.
+    pub permittivity: f64,
+}
+
+/// Build tail correction from the angularly averaged free energy at outer radial bins.
+///
+/// The ion-ion (Yukawa) coefficient is the charge product `z₁·z₂`; the Coulomb
+/// prefactor `e²/(4πε₀εᵣ)` is stored separately in [`TableMetadata::electric_prefactor`].
+/// Higher-order terms are fitted from the residual using log-space linear regression.
+fn fit_tail_correction(
+    distances: &[f64],
+    free_energies: &[f64],
+    charges: [f64; 2],
+    dipole_moments: [f64; 2],
+    kappa_hint: Option<f64>,
+    electric_prefactor: f64,
+) -> Vec<TailCorrectionTerm> {
+    let mut terms = Vec::new();
+    let n = distances.len();
+    if n < 5 {
+        return terms;
+    }
+    let start = n.saturating_sub(5);
+    let epsilon = 1e-10;
+
+    let mut residuals: Vec<f64> = free_energies.to_vec();
+
+    // Ion-ion (Yukawa): coefficient = z₁·z₂ (charge product only)
+    let has_charges = charges[0].abs() > epsilon && charges[1].abs() > epsilon;
+    if has_charges {
+        if let Some(kappa) = kappa_hint {
+            let coefficient = charges[0] * charges[1];
+            for (res, r) in residuals.iter_mut().zip(distances) {
+                *res -= electric_prefactor * coefficient * (-kappa * r).exp() / r;
+            }
+            info!(
+                "Tail charge product = {:.4} e², κ = {:.4} 1/Å",
+                coefficient, kappa
+            );
+            terms.push(TailCorrectionTerm { coefficient, kappa, power: 1 });
+        }
+    }
+
+    // Ion-dipole: fit residual with R⁴ denominator
+    let has_dipole_coupling =
+        (charges[0].abs() > epsilon && dipole_moments[1] > epsilon)
+        || (charges[1].abs() > epsilon && dipole_moments[0] > epsilon);
+
+    if has_dipole_coupling {
+        if let Some(mut term) = fit_screened_term(distances, &residuals, start, 4, kappa_hint) {
+            // Fitted coefficient is in absolute units; divide by prefactor
+            // so that tail_energy() (which multiplies all terms by prefactor) is correct
+            term.coefficient /= electric_prefactor;
+            info!(
+                "Tail fit ion-dipole: C={:.4e}, κ={:.4} 1/Å",
+                term.coefficient, term.kappa
+            );
+            terms.push(term);
+        }
+    }
+    terms
+}
+
+/// Fit a single `C·exp(-κR)/R^power` term via log-space linear regression.
+///
+/// Linearizes `ln|u(R)·R^power| = ln|C| - κ·R` and fits slope/intercept.
+/// Only uses bins with the majority sign to avoid fitting across zero crossings.
+fn fit_screened_term(
+    distances: &[f64],
+    energies: &[f64],
+    start: usize,
+    power: u32,
+    kappa_hint: Option<f64>,
+) -> Option<TailCorrectionTerm> {
+    let epsilon = 1e-10;
+
+    // Exclude minority-sign bins to avoid log-space fitting across zero crossings
+    let sign_sum: i64 = energies[start..]
+        .iter()
+        .filter(|u| u.abs() > epsilon)
+        .map(|u| if *u > 0.0 { 1i64 } else { -1 })
+        .sum();
+    let majority_positive = sign_sum >= 0;
+
+    let (xs, ys): (Vec<f64>, Vec<f64>) = distances[start..]
+        .iter()
+        .zip(&energies[start..])
+        .filter(|(_, u)| u.abs() >= epsilon && (u.is_sign_positive() == majority_positive))
+        .map(|(r, u)| (*r, (u.abs() * r.powi(power as i32)).ln()))
+        .unzip();
+    if xs.len() < 2 {
+        return None;
+    }
+
+    // Linear regression: y = a + b*x → b = -κ, a = ln|C|
+    let n = xs.len() as f64;
+    let sx: f64 = xs.iter().sum();
+    let sy: f64 = ys.iter().sum();
+    let sxx: f64 = xs.iter().map(|x| x * x).sum();
+    let sxy: f64 = xs.iter().zip(&ys).map(|(x, y)| x * y).sum();
+    let denom = n * sxx - sx * sx;
+    if denom.abs() < epsilon {
+        return None;
+    }
+    let slope = (n * sxy - sx * sy) / denom;
+    let intercept = (sy - slope * sx) / n;
+
+    // Accept fitted κ if close to hint; otherwise force hint κ and refit intercept,
+    // because too few bins can give a wildly wrong slope
+    let (kappa, ln_c) = if let Some(hint) = kappa_hint {
+        let fitted = -slope;
+        if fitted > 0.0 && (fitted - hint).abs() / hint < 1.0 {
+            (fitted, intercept)
+        } else {
+            let ln_c = xs.iter().zip(&ys).map(|(r, y)| y + hint * r).sum::<f64>() / n;
+            (hint, ln_c)
+        }
+    } else {
+        let fitted = -slope;
+        if fitted > 0.0 { (fitted, intercept) } else { return None; }
+    };
+
+    let sign = if majority_positive { 1.0 } else { -1.0 };
+    let coefficient = sign * ln_c.exp();
+
+    Some(TailCorrectionTerm { coefficient, kappa, power })
 }
 
 /// Orient two reference structures to a given 6D point.
@@ -178,13 +311,6 @@ pub fn do_icoscan<B: EnergyBackend>(config: &ScanConfig, backend: &B) -> anyhow:
         )
     };
 
-    // Save binary 6D table for Faunus lookup
-    if let Some(path) = &config.save_table {
-        log::info!("Saving binary 6D table to {}", path.display());
-        let flat = icotable::Table6DFlat::<icotable::f16>::try_from(&table)?;
-        flat.save(path)?;
-    }
-
     // Calculate partition function as function of r only
     let samples: Vec<(Vector3, Sample)> = distances
         .iter()
@@ -203,6 +329,32 @@ pub fn do_icoscan<B: EnergyBackend>(config: &ScanConfig, backend: &B) -> anyhow:
             (Vector3::new(0.0, 0.0, *r), partition_func)
         })
         .collect();
+
+    // Save binary 6D table for Faunus lookup, with tail correction metadata
+    if let Some(path) = &config.save_table {
+        log::info!("Saving binary 6D table to {}", path.display());
+        let mut flat = icotable::Table6DFlat::<icotable::f16>::try_from(&table)?;
+
+        let free_energies: Vec<f64> = samples.iter().map(|(_, s)| s.free_energy()).collect();
+        let electric_prefactor =
+            faunus::interatomic::ELECTRIC_PREFACTOR / config.permittivity;
+        let tail_terms = fit_tail_correction(
+            &distances,
+            &free_energies,
+            config.charges,
+            config.dipole_moments,
+            config.kappa,
+            electric_prefactor,
+        );
+        flat.metadata = Some(TableMetadata {
+            tail_terms,
+            charges: Some(config.charges),
+            dipole_moments: Some(config.dipole_moments),
+            temperature: Some(config.temperature),
+            electric_prefactor: Some(electric_prefactor),
+        });
+        flat.save(path)?;
+    }
 
     let masses = (ref_a.total_mass(), ref_b.total_mass());
 

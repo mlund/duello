@@ -382,6 +382,10 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         pmf_file: pmf_file.clone(),
         xtcfile: xtcfile.clone(),
         save_table: savetable.clone(),
+        charges: [ref_a.net_charge(), ref_b.net_charge()],
+        dipole_moments: [ref_a.dipole_moment().norm(), ref_b.dipole_moment().norm()],
+        kappa: multipole.kappa(),
+        permittivity: medium.permittivity().into(),
     };
 
     // energy_cap only applies to SR-only splines (GPU/SIMD split path).
