@@ -699,7 +699,7 @@ dependencies = [
  "serde_yaml",
  "textplots",
  "wgpu",
- "wide 0.7.33",
+ "wide 1.1.1",
 ]
 
 [[package]]
