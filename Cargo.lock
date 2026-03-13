@@ -805,6 +805,7 @@ dependencies = [
 [[package]]
 name = "faunus"
 version = "0.2.0"
+source = "git+https://github.com/mlund/faunus-rs.git#35ef9c30d595f96c72ceb5d0bb1a7228a89f640e"
 dependencies = [
  "anyhow",
  "average 0.13.1",
@@ -1228,6 +1229,7 @@ dependencies = [
 [[package]]
 name = "icotable"
 version = "0.1.0"
+source = "git+https://github.com/mlund/icotable.git#571607c0fa0086cc040496c6b64564e3ec52a17f"
 dependencies = [
  "anyhow",
  "bincode",
@@ -1388,6 +1390,7 @@ dependencies = [
 [[package]]
 name = "interatomic"
 version = "0.6.0"
+source = "git+https://github.com/mlund/interatomic.git#65785d517023fbff7c9a6c0392045eb0cadf3bd9"
 dependencies = [
  "anyhow",
  "bytemuck",
