@@ -94,8 +94,10 @@ is used to derive the 2nd virial coefficient and twobody dissociation constant, 
 The two input structures should be in `.xyz` format and all particle names must
 be defined in the topology file under `atoms`.
 The topology also defines the particular pair-potential to use, see below.
-Note that currently, a coulomb potential is automatically added and should
+Note that currently, a Coulomb/Yukawa potential is automatically added and should
 hence _not_ be specified in the topology.
+Coulomb is evaluated analytically (no cutoff) in all backends, while
+short-range potentials (e.g. AshbaughHatch, WCA) are splined for GPU/SIMD backends.
 
 ```sh
 duello scan \
@@ -104,24 +106,27 @@ duello scan \
     --rmin 37 --rmax 50 --dr 0.5 \
     --top topology.yaml \
     --resolution 0.8 \
-    --cutoff 1000 \
+    --cutoff 50 \
     --molarity 0.05 \
     --temperature 298.15 \
     --backend auto \
-    --grid "type=powerlaw2,size=2000,shift=true"
+    --grid "type=powerlaw2,size=500,shift=true"
 ```
 
 ## Spline Grid Options
 
-The `--grid` option controls interpolation of pair potentials:
+The `--grid` option controls interpolation of short-range pair potentials (GPU/SIMD backends).
+The `--cutoff` sets the spline range in angstroms; it should cover the SR potential
+(e.g. AshbaughHatch cutoff) but does not affect the analytical Coulomb/Yukawa evaluation.
 
-| Key     | Values               | Default     | Description                              |
-|---------|----------------------|-------------|------------------------------------------|
-| `type`  | `powerlaw2`, `invr2` | `powerlaw2` | Grid spacing (invr2 avoids sqrt in eval) |
-| `size`  | integer              | `2000`      | Number of grid points                    |
-| `shift` | `true`, `false`      | `true`      | Shift energy to zero at cutoff           |
+| Key          | Values               | Default     | Description                              |
+|--------------|----------------------|-------------|------------------------------------------|
+| `type`       | `powerlaw2`, `invr2` | `powerlaw2` | Grid spacing (invr2 avoids sqrt in eval) |
+| `size`       | integer              | `500`       | Number of grid points                    |
+| `shift`      | `true`, `false`      | `true`      | Shift energy to zero at cutoff           |
+| `energy_cap` | float or `none`      | `none`      | Cap repulsive wall (kJ/mol) for f32 precision |
 
-Example: `--grid "type=invr2,size=1500,shift=false"`
+Example: `--grid "type=invr2,size=1000,shift=false,energy_cap=50"`
 
 ## Backend Performance
 
@@ -132,12 +137,12 @@ The following backends are available, with performance measured on the Calvados3
 | Backend     | Description                    | Poses/ms | Speedup |
 |-------------|--------------------------------|----------|---------|
 | `reference` | Exact potentials (validation)  |       48 |    1.0x |
-| `cpu`       | Splined potentials             |      102 |    2.1x |
 | `simd`      | NEON (aarch64) / AVX2 (x86)    |      131 |    2.7x |
 | `gpu`       | wgpu compute shaders           |     1065 |     22x |
 
 The `auto` backend (default) selects GPU if available, otherwise SIMD.
-All but `reference` use Cubic Hermite splines for pair potentials.
+GPU and SIMD backends use cubic Hermite splines for short-range potentials
+and evaluate Coulomb/Yukawa analytically without cutoff.
 
 ## Atom Scan
 
@@ -207,7 +212,7 @@ Many more pair-potentials are available through the
 [`interatomic`](https://docs.rs/interatomic/latest/interatomic/twobody/index.html) library,
 _e.g._ `LennardJones`, `HardSphere` etc.
 
-__Warning:__ The electrostatic term, `Coulomb` is
+__Warning:__ The electrostatic term (Coulomb/Yukawa) is
 always automatically added and should therefore _not_ be specified in the topology.
 
 # Development

@@ -19,9 +19,9 @@ use faunus::{
     energy::{NonbondedMatrix, NonbondedMatrixSplined},
     topology::AtomKind,
 };
-use interatomic::coulomb::pairwise::{MultipoleEnergy, MultipolePotential, Plain};
-use interatomic::coulomb::permittivity::ConstantPermittivity;
-use interatomic::twobody::{IonIon, IonIonPolar, IsotropicTwobodyEnergy, SplineConfig};
+use faunus::interatomic::coulomb::pairwise::{MultipoleEnergy, MultipolePotential, Plain};
+use faunus::interatomic::coulomb::permittivity::ConstantPermittivity;
+use faunus::interatomic::twobody::{IonIon, IonIonPolar, IsotropicTwobodyEnergy, SplineConfig};
 use std::{cmp::PartialEq, fmt::Debug};
 
 /// Get excess polarizability (Å³) from the custom "alpha" property of an atom kind.
@@ -72,7 +72,7 @@ pub fn extract_coulomb_params(
 ) -> Option<CoulombParams> {
     let n_types = atomkinds.len();
     let eps_r = f64::from(permittivity);
-    let to_kjmol = interatomic::ELECTRIC_PREFACTOR / eps_r;
+    let to_kjmol = faunus::interatomic::ELECTRIC_PREFACTOR / eps_r;
 
     // Pre-compute per-type alpha and charge to avoid repeated property lookups
     let alphas: Vec<f64> = atomkinds.iter().map(get_alpha).collect();
@@ -163,7 +163,7 @@ impl PairMatrix {
                             + Box::new(pairpot.clone())
                     }
                 };
-                *pairpot = interatomic::twobody::ArcPotential(std::sync::Arc::new(combined));
+                *pairpot = faunus::interatomic::twobody::ArcPotential(std::sync::Arc::new(combined));
             });
         nonbonded
     }

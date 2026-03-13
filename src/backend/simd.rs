@@ -22,12 +22,12 @@
 //! Pairs are grouped by atom type combination at initialization time,
 //! allowing efficient SIMD evaluation per pair type.
 //!
-//! Spline evaluation uses `interatomic::twobody::SplineTableSimdF32`.
+//! Spline evaluation uses `SplineTableSimdF32`.
 
 use super::{EnergyBackend, PoseParams};
 use crate::energy::{CoulombParams, SplinedPotentials};
 use crate::structure::Structure;
-use interatomic::twobody::{GridType, SplineTableSimdF32};
+use faunus::interatomic::twobody::{GridType, SplineTableSimdF32};
 use std::collections::HashMap;
 
 /// A group of atom pairs that share the same pair type (same spline parameters).

@@ -18,8 +18,8 @@ use super::{EnergyBackend, PoseParams};
 use crate::energy::{CoulombParams, SplinedPotentials};
 use crate::structure::Structure;
 use bytemuck::{Pod, Zeroable};
-use interatomic::gpu::{GpuGridType, GpuSplineData, InverseRsq, PowerLaw2};
-use interatomic::twobody::GridType;
+use faunus::interatomic::gpu::{GpuGridType, GpuSplineData, InverseRsq, PowerLaw2};
+use faunus::interatomic::twobody::GridType;
 use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
 

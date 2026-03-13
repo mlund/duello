@@ -10,6 +10,6 @@ RUST_LOG="Info" cargo run --release \
     --rmin 24 --rmax 80 --dr 0.5 \
     --top topology.yaml \
     --resolution 0.7 \
-    --cutoff 1000 \
+    --cutoff 20 \
     --molarity 0.05 \
     --temperature 298.15

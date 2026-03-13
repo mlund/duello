@@ -15,7 +15,7 @@
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use duello::{
-    backend::{CpuBackend, GpuBackend, SimdBackend},
+    backend::{self, GpuBackend, SimdBackend},
     energy, icoscan,
     structure::{pqr_write_atom, Structure},
     IcoTable2D, SphericalCoord, UnitQuaternion, Vector3,
@@ -25,8 +25,8 @@ use faunus::{
     topology::{FindByName, Topology},
 };
 use icotable::table::PaddedTable;
-use interatomic::coulomb::{permittivity, DebyeLength, Medium, Salt};
-use interatomic::twobody::{GridTrim, GridType, SplineConfig};
+use faunus::interatomic::coulomb::{pairwise::Plain, permittivity, DebyeLength, Medium, Salt};
+use faunus::interatomic::twobody::{GridTrim, GridType, SplineConfig};
 use std::process::ExitCode;
 use std::{f64::consts::PI, fs::File, io::Write, ops::Add, ops::Neg, path::PathBuf};
 extern crate pretty_env_logger;
@@ -70,7 +70,7 @@ impl Default for GridOptions {
             grid_type: SplineGrid::Powerlaw2,
             size: 500,
             shift: true,
-            energy_cap: Some(25.0),
+            energy_cap: None,
         }
     }
 }
@@ -106,12 +106,11 @@ impl std::str::FromStr for GridOptions {
                     };
                 }
                 "energy_cap" => {
-                    opts.energy_cap = Some(
-                        value
-                            .trim()
-                            .parse()
-                            .map_err(|_| format!("invalid energy_cap '{value}'"))?,
-                    );
+                    let v = value.trim();
+                    opts.energy_cap = match v.to_lowercase().as_str() {
+                        "none" | "off" | "false" => None,
+                        _ => Some(v.parse().map_err(|_| format!("invalid energy_cap '{v}'"))?),
+                    };
                 }
                 _ => return Err(format!("unknown option '{key}'")),
             }
@@ -128,8 +127,6 @@ pub enum Backend {
     Auto,
     /// Reference backend using exact (non-splined) pair potentials
     Reference,
-    /// CPU backend using splined pair potentials
-    Cpu,
     /// GPU backend using wgpu compute shaders
     Gpu,
     /// SIMD backend (AVX2 on x86_64, NEON on aarch64)
@@ -275,7 +272,7 @@ enum Commands {
         #[arg(long, value_enum, default_value = "auto")]
         backend: Backend,
         /// Grid interpolation: type=powerlaw2|invr2,size=N,shift=bool
-        #[arg(long, default_value = "type=powerlaw2,size=500,shift=true,energy_cap=25")]
+        #[arg(long, default_value = "type=powerlaw2,size=500,shift=true,energy_cap=none")]
         grid: GridOptions,
         /// Short-range spline cutoff for GPU/SIMD split path (angstroms).
         /// Defaults to --cutoff if not set. Set to SR potential range for best accuracy.
@@ -325,7 +322,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         _ => Medium::salt_water(*temperature, Salt::SodiumChloride, *molarity),
     };
 
-    let multipole = interatomic::coulomb::pairwise::Plain::new(*cutoff, medium.debye_length());
+    let multipole = Plain::new(f64::INFINITY, medium.debye_length());
     let nonbonded = NonbondedMatrix::from_file(top_file, &topology, Some(medium.clone()))?;
 
     let ref_a = Structure::from_xyz(mol1, topology.atomkinds())?;
@@ -385,15 +382,17 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         save_table: savetable.clone(),
     };
 
-    let grid_trim = match grid.energy_cap {
+    // energy_cap only applies to SR-only splines (GPU/SIMD split path).
+    // The combined spline (CPU) includes Coulomb which diverges as 1/r,
+    // so capping it would corrupt the potential.
+    let sr_grid_trim = match grid.energy_cap {
         Some(cap) => GridTrim::RepulsiveDecay { energy_cap: cap },
         None => GridTrim::NoTrim,
     };
-    let spline_config = SplineConfig {
+    let base_spline_config = SplineConfig {
         n_points: grid.size,
         shift_energy: grid.shift,
         grid_type: grid.grid_type.into(),
-        grid_trim,
         ..Default::default()
     };
 
@@ -407,21 +406,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
                 medium.permittivity().into(),
                 &multipole,
             );
-            let backend = CpuBackend::new(ref_a, ref_b, pair_matrix);
-            icoscan::do_icoscan(&scan_config, &backend)
-        }
-        Backend::Cpu => {
-            // CPU backend: combined spline (SR + Coulomb together)
-            let splined_matrix = energy::PairMatrix::create_splined_potentials(
-                nonbonded,
-                topology.atomkinds(),
-                medium.permittivity().into(),
-                &multipole,
-                *cutoff,
-                spline_config,
-            );
-            let pair_matrix = energy::PairMatrix::from_splined(splined_matrix);
-            let backend = CpuBackend::new(ref_a, ref_b, pair_matrix);
+            let backend = backend::cpu::CpuBackend::new(ref_a, ref_b, pair_matrix);
             icoscan::do_icoscan(&scan_config, &backend)
         }
         Backend::Gpu | Backend::Simd => {
@@ -439,16 +424,21 @@ fn do_scan(cmd: &Commands) -> Result<()> {
                 Some(cp) => {
                     let sr_cut = sr_cutoff.unwrap_or(*cutoff);
                     info!("Split path: SR spline (cutoff={sr_cut:.1} Å) + analytical Coulomb");
+                    let sr_spline_config = SplineConfig {
+                        grid_trim: sr_grid_trim,
+                        ..base_spline_config
+                    };
                     (
                         energy::PairMatrix::create_sr_splined_potentials(
                             nonbonded,
                             sr_cut,
-                            spline_config,
+                            sr_spline_config,
                         ),
                         cp,
                     )
                 }
                 None => {
+                    // Fallback (polarization): combined spline, no energy cap
                     info!("Fallback: combined spline (cutoff={cutoff:.1} Å)");
                     let sp = energy::PairMatrix::create_splined_potentials(
                         nonbonded,
@@ -456,7 +446,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
                         medium.permittivity().into(),
                         &multipole,
                         *cutoff,
-                        spline_config,
+                        base_spline_config,
                     );
                     (sp, energy::CoulombParams::zero(n_types))
                 }
@@ -490,7 +480,7 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
         dr,
         topology: top_file,
         molarity,
-        cutoff,
+        cutoff: _,
         temperature,
         output,
     } = cmd
@@ -505,7 +495,7 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
     faunus::topology::set_missing_epsilon(topology.atomkinds_mut(), 2.479);
 
     let medium = Medium::salt_water(*temperature, Salt::SodiumChloride, *molarity);
-    let multipole = interatomic::coulomb::pairwise::Plain::new(*cutoff, medium.debye_length());
+    let multipole = Plain::new(f64::INFINITY, medium.debye_length());
     let nonbonded = NonbondedMatrix::from_file(top_file, &topology, Some(medium.clone()))?;
 
     let pair_matrix = energy::PairMatrix::new_with_coulomb(
@@ -654,7 +644,7 @@ fn do_potential(cmd: &Commands) -> Result<()> {
         radius,
         topology,
         molarity,
-        cutoff,
+        cutoff: _,
         temperature,
     } = cmd
     else {
@@ -677,7 +667,7 @@ fn do_potential(cmd: &Commands) -> Result<()> {
 
     // Electrolyte background
     let medium = Medium::salt_water(*temperature, Salt::SodiumChloride, *molarity);
-    let multipole = interatomic::coulomb::pairwise::Plain::new(*cutoff, medium.debye_length());
+    let multipole = Plain::new(f64::INFINITY, medium.debye_length());
 
     let icotable = IcoTable2D::<f64>::from_min_points(n_points)?;
     icotable.set_vertex_data(|_, v| {

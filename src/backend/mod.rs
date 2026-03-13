@@ -17,11 +17,11 @@
 //! Provides a trait for computing pairwise energies between molecular poses,
 //! with implementations for CPU, GPU (using wgpu), and SIMD (using AVX2).
 
-mod cpu;
+/// Used internally by the Reference backend for exact (non-splined) evaluation.
+pub mod cpu;
 mod gpu;
 mod simd;
 
-pub use cpu::CpuBackend;
 pub use gpu::GpuBackend;
 pub use simd::SimdBackend;
 
@@ -43,7 +43,6 @@ pub struct PoseParams {
 /// Backend trait for computing pairwise energies between molecular poses.
 ///
 /// Implementations can use different computational strategies:
-/// - `CpuBackend`: Uses pair potentials with rayon parallelization
 /// - `GpuBackend`: Uses wgpu compute shaders
 /// - `SimdBackend`: Uses SIMD vectorization (AVX2 on x86_64, NEON on aarch64)
 pub trait EnergyBackend: Send + Sync {
