@@ -14,14 +14,14 @@
 
 use crate::structure::Structure;
 use crate::Vector3;
+use faunus::interatomic::coulomb::pairwise::{MultipoleEnergy, MultipolePotential, Plain};
+use faunus::interatomic::coulomb::permittivity::ConstantPermittivity;
+use faunus::interatomic::twobody::{IonIon, IonIonPolar, IsotropicTwobodyEnergy, SplineConfig};
 use faunus::topology::CustomProperty;
 use faunus::{
     energy::{NonbondedMatrix, NonbondedMatrixSplined},
     topology::AtomKind,
 };
-use faunus::interatomic::coulomb::pairwise::{MultipoleEnergy, MultipolePotential, Plain};
-use faunus::interatomic::coulomb::permittivity::ConstantPermittivity;
-use faunus::interatomic::twobody::{IonIon, IonIonPolar, IsotropicTwobodyEnergy, SplineConfig};
 use std::{cmp::PartialEq, fmt::Debug};
 
 /// Get excess polarizability (Å³) from the custom "alpha" property of an atom kind.

@@ -28,7 +28,7 @@ use faunus::{
     topology::{FindByName, Topology},
 };
 use std::process::ExitCode;
-use std::{f64::consts::PI, fs::File, io::Write, ops::Add, ops::Neg, path::PathBuf};
+use std::{f64::consts::PI, fs::File, io::Write, ops::Neg, path::PathBuf};
 extern crate pretty_env_logger;
 #[macro_use]
 extern crate log;
@@ -379,7 +379,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         charges: [ref_a.net_charge(), ref_b.net_charge()],
         dipole_moments: [ref_a.dipole_moment().norm(), ref_b.dipole_moment().norm()],
         kappa: multipole.kappa(),
-        permittivity: medium.permittivity().into(),
+        permittivity: medium.permittivity(),
         max_n_div: *max_ndiv,
         gradient_threshold: *gradient_threshold,
     };

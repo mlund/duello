@@ -254,7 +254,8 @@ impl SimdBackend {
 
             // Analytical Coulomb/Yukawa (not splined to avoid ringing from SR cutoff)
             let prefactor = self.coulomb_prefactors[group.pair_idx as usize];
-            if prefactor.abs() > 1e-12 { // skip uncharged pair types
+            if prefactor.abs() > 1e-12 {
+                // skip uncharged pair types
                 let kappa = self.kappa;
                 for &rsq in &rsq_vec {
                     let r = rsq.sqrt();
