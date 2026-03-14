@@ -14,19 +14,19 @@
 
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
+use duello::PaddedTable;
 use duello::{
     backend::{self, GpuBackend, SimdBackend},
     energy, icoscan,
     structure::{pqr_write_atom, Structure},
     IcoTable2D, SphericalCoord, UnitQuaternion, Vector3,
 };
+use faunus::interatomic::coulomb::{pairwise::Plain, permittivity, DebyeLength, Medium, Salt};
+use faunus::interatomic::twobody::{GridTrim, GridType, SplineConfig};
 use faunus::{
     energy::NonbondedMatrix,
     topology::{FindByName, Topology},
 };
-use duello::PaddedTable;
-use faunus::interatomic::coulomb::{pairwise::Plain, permittivity, DebyeLength, Medium, Salt};
-use faunus::interatomic::twobody::{GridTrim, GridType, SplineConfig};
 use std::process::ExitCode;
 use std::{f64::consts::PI, fs::File, io::Write, ops::Add, ops::Neg, path::PathBuf};
 extern crate pretty_env_logger;
@@ -232,9 +232,6 @@ enum Commands {
         /// Path to second XYZ file
         #[arg(short = '2', long)]
         mol2: PathBuf,
-        /// Angular resolution in radians
-        #[arg(short = 'r', long, default_value = "0.1")]
-        resolution: f64,
         /// Minimum mass center distance
         #[arg(long)]
         rmin: f64,
@@ -265,14 +262,20 @@ enum Commands {
         /// Save binary 6D table for Faunus lookup (.gz suffix enables gzip compression)
         #[arg(long)]
         savetable: Option<PathBuf>,
-        /// Export XTC file with all poses
-        #[arg(long)]
-        xtcfile: Option<PathBuf>,
+        /// Max icosphere subdivision level (0=12, 1=42, 2=92, 3=162 vertices)
+        #[arg(long, default_value = "3")]
+        max_ndiv: usize,
+        /// Angular gradient threshold for adaptive resolution reduction (kJ/mol/rad)
+        #[arg(long, default_value = "10.0")]
+        gradient_threshold: f64,
         /// Compute backend
         #[arg(long, value_enum, default_value = "auto")]
         backend: Backend,
         /// Grid interpolation: type=powerlaw2|invr2,size=N,shift=bool
-        #[arg(long, default_value = "type=powerlaw2,size=500,shift=true,energy_cap=none")]
+        #[arg(
+            long,
+            default_value = "type=powerlaw2,size=500,shift=true,energy_cap=none"
+        )]
         grid: GridOptions,
         /// Short-range spline cutoff for GPU/SIMD split path (angstroms).
         /// Defaults to --cutoff if not set. Set to SR potential range for best accuracy.
@@ -286,7 +289,6 @@ fn do_scan(cmd: &Commands) -> Result<()> {
     let Commands::Scan {
         mol1,
         mol2,
-        resolution,
         rmin,
         rmax,
         dr,
@@ -297,7 +299,8 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         fixed_dielectric,
         pmf_file,
         savetable,
-        xtcfile,
+        max_ndiv,
+        gradient_threshold,
         backend: backend_type,
         grid,
         sr_cutoff,
@@ -329,13 +332,6 @@ fn do_scan(cmd: &Commands) -> Result<()> {
 
     let ref_a = Structure::from_xyz(mol1, topology.atomkinds())?;
     let ref_b = Structure::from_xyz(mol2, topology.atomkinds())?;
-    if xtcfile.is_some() {
-        log::info!("Exporting merged XYZ file with both initial structures: confout.xyz");
-        ref_a
-            .clone()
-            .add(ref_b.clone())
-            .to_xyz(&mut File::create("confout.xyz")?, topology.atomkinds())?;
-    }
 
     info!("{medium}");
     info!(
@@ -377,15 +373,15 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         rmin: *rmin,
         rmax: *rmax,
         dr: *dr,
-        angle_resolution: *resolution,
         temperature: *temperature,
         pmf_file: pmf_file.clone(),
-        xtcfile: xtcfile.clone(),
         save_table: savetable.clone(),
         charges: [ref_a.net_charge(), ref_b.net_charge()],
         dipole_moments: [ref_a.dipole_moment().norm(), ref_b.dipole_moment().norm()],
         kappa: multipole.kappa(),
         permittivity: medium.permittivity().into(),
+        max_n_div: *max_ndiv,
+        gradient_threshold: *gradient_threshold,
     };
 
     // energy_cap only applies to SR-only splines (GPU/SIMD split path).
@@ -461,13 +457,11 @@ fn do_scan(cmd: &Commands) -> Result<()> {
 
             match backend_type {
                 Backend::Gpu => {
-                    let gpu_backend =
-                        GpuBackend::new(ref_a, ref_b, &splined_matrix, &coulomb)?;
+                    let gpu_backend = GpuBackend::new(ref_a, ref_b, &splined_matrix, &coulomb)?;
                     icoscan::do_icoscan(&scan_config, &gpu_backend)
                 }
                 Backend::Simd => {
-                    let simd_backend =
-                        SimdBackend::new(ref_a, ref_b, &splined_matrix, &coulomb);
+                    let simd_backend = SimdBackend::new(ref_a, ref_b, &splined_matrix, &coulomb);
                     icoscan::do_icoscan(&scan_config, &simd_backend)
                 }
                 _ => unreachable!(),

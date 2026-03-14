@@ -29,6 +29,6 @@ extern crate log;
 // Icosphere table types, coordinate transforms, and nalgebra aliases live in
 // the shared `icotable` crate to avoid duplication with Faunus.
 pub use icotable::{
-    make_icosphere_vertices, IcoTable2D, PaddedTable, SphericalCoord, Table6D, UnitQuaternion,
-    Vector3,
+    make_icosphere_vertices, AdaptiveBuilder, IcoTable2D, PaddedTable, SphericalCoord, Table6D,
+    Table6DAdaptive, UnitQuaternion, Vector3,
 };

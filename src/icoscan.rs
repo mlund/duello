@@ -16,31 +16,20 @@ use crate::{
     backend::{EnergyBackend, PoseParams},
     report::report_pmf,
     structure::Structure,
-    Sample, Table6D, Vector3,
+    Sample, Vector3,
 };
-use icotable::{TableMetadata, TailCorrectionTerm};
-use faunus::auxiliary::open_compressed;
-use get_size::GetSize;
-use indicatif::{ParallelProgressIterator, ProgressIterator};
-use iter_num_tools::arange;
-use itertools::Itertools;
-use molly::{Frame, XTCWriter};
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use std::{
-    f64::consts::PI,
-    io::{BufWriter, Write},
-    path::{Path, PathBuf},
-};
+use icotable::{AdaptiveBuilder, TableMetadata, TailCorrectionTerm};
+use indicatif::ProgressIterator;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use std::{f64::consts::PI, path::PathBuf};
 
 /// Configuration for a 6D icoscan
 pub struct ScanConfig {
     pub rmin: f64,
     pub rmax: f64,
     pub dr: f64,
-    pub angle_resolution: f64,
     pub temperature: f64,
     pub pmf_file: PathBuf,
-    pub xtcfile: Option<PathBuf>,
     /// Save binary 6D table for Faunus lookup (.gz suffix enables gzip compression)
     pub save_table: Option<PathBuf>,
     /// Net charges of the two molecules in elementary charges.
@@ -51,6 +40,10 @@ pub struct ScanConfig {
     pub kappa: Option<f64>,
     /// Relative permittivity of the medium.
     pub permittivity: f64,
+    /// Maximum icosphere subdivision level (0=12 vertices, 3=162 vertices).
+    pub max_n_div: usize,
+    /// Angular gradient threshold for adaptive resolution reduction.
+    pub gradient_threshold: f64,
 }
 
 /// Build tail correction from the angularly averaged free energy at outer radial bins.
@@ -88,13 +81,16 @@ fn fit_tail_correction(
                 "Tail charge product = {:.4} e², κ = {:.4} 1/Å",
                 coefficient, kappa
             );
-            terms.push(TailCorrectionTerm { coefficient, kappa, power: 1 });
+            terms.push(TailCorrectionTerm {
+                coefficient,
+                kappa,
+                power: 1,
+            });
         }
     }
 
     // Ion-dipole: fit residual with R⁴ denominator
-    let has_dipole_coupling =
-        (charges[0].abs() > epsilon && dipole_moments[1] > epsilon)
+    let has_dipole_coupling = (charges[0].abs() > epsilon && dipole_moments[1] > epsilon)
         || (charges[1].abs() > epsilon && dipole_moments[0] > epsilon);
 
     if has_dipole_coupling {
@@ -168,13 +164,21 @@ fn fit_screened_term(
         }
     } else {
         let fitted = -slope;
-        if fitted > 0.0 { (fitted, intercept) } else { return None; }
+        if fitted > 0.0 {
+            (fitted, intercept)
+        } else {
+            return None;
+        }
     };
 
     let sign = if majority_positive { 1.0 } else { -1.0 };
     let coefficient = sign * ln_c.exp();
 
-    Some(TailCorrectionTerm { coefficient, kappa, power })
+    Some(TailCorrectionTerm {
+        coefficient,
+        kappa,
+        power,
+    })
 }
 
 /// Orient two reference structures to a given 6D point.
@@ -194,150 +198,151 @@ pub(crate) fn orient_structures(
     (ref_a.clone(), mol_b)
 }
 
-pub fn do_icoscan<B: EnergyBackend>(config: &ScanConfig, backend: &B) -> anyhow::Result<()> {
+pub fn do_icoscan<B: EnergyBackend + Sync>(config: &ScanConfig, backend: &B) -> anyhow::Result<()> {
     let ref_a = backend.ref_a();
     let ref_b = backend.ref_b();
-    let table =
-        Table6D::from_resolution(config.rmin, config.rmax, config.dr, config.angle_resolution)?;
-    let n_vertices = table.get(config.rmin)?.get(0.0)?.len();
-    // Average angular spacing between icosphere vertices
-    let angle_resolution = (4.0 * PI / n_vertices as f64).sqrt();
-    let dihedral_angles = arange(0.0..2.0 * PI, angle_resolution).collect_vec();
-    let distances = arange(config.rmin..config.rmax, config.dr).collect_vec();
-    let n_total = distances.len() * dihedral_angles.len() * n_vertices * n_vertices;
 
-    info!(
-        "6D table: 𝑅({}) x 𝜔({}) x 𝜃𝜑({}) x 𝜃𝜑({}) = {} poses 💃🕺 ({:.1} MB)",
-        distances.len(),
-        dihedral_angles.len(),
-        n_vertices,
-        n_vertices,
-        n_total,
-        table.get_size() as f64 / 1e6
+    // Derive dihedral angle bin width from the finest icosphere mesh so that
+    // the ω resolution matches the angular vertex spacing. Using integer bin
+    // count (via AdaptiveBuilder) avoids the old arange() off-by-one that
+    // could place a sample at ω ≈ 2π, duplicating the ω = 0 bin.
+    let max_n_vertices = 10 * (config.max_n_div + 1).pow(2) + 2;
+    let omega_step = (4.0 * PI / max_n_vertices as f64).sqrt();
+
+    let thermal_energy = physical_constants::MOLAR_GAS_CONSTANT * config.temperature * 1e-3; // kJ/mol
+    let beta = 1.0 / thermal_energy;
+
+    let mut builder = AdaptiveBuilder::new(
+        config.rmin,
+        config.rmax,
+        config.dr,
+        omega_step,
+        config.max_n_div,
+        config.gradient_threshold,
+        beta,
     );
 
-    // Pair all mass center separations (r) and dihedral angles (omega)
-    let r_and_omega = distances
-        .iter()
-        .copied()
-        .cartesian_product(dihedral_angles.iter().copied())
-        .collect_vec();
+    let n_r = builder.n_r();
+    let n_omega = builder.n_omega();
+    info!(
+        "Adaptive 6D table: {} R-bins x {} omega-bins, max {} vertices (n_div={})",
+        n_r, n_omega, max_n_vertices, config.max_n_div,
+    );
 
-    // Populate 6D table with inter-particle energies
     let start_time = std::time::Instant::now();
-    if backend.prefers_batch() {
-        // Batched processing (for GPU): batch by distance for progress while keeping large batches
-        for r in distances.iter().progress_count(distances.len() as u64) {
-            // Collect all poses for this distance (all omega and vertex combinations)
-            let mut poses: Vec<PoseParams> = Vec::new();
-            let mut data_refs: Vec<_> = Vec::new();
+    let mut partition_samples: Vec<Sample> = Vec::with_capacity(n_r);
 
-            for omega in &dihedral_angles {
-                table
-                    .get_icospheres(*r, *omega)
-                    .expect("invalid (r, omega) value")
-                    .flat_iter()
-                    .for_each(|(pos_a, pos_b, data_b)| {
+    for ri in (0..n_r).progress_count(n_r as u64) {
+        let r = builder.r_value(ri);
+        let level = builder.current_level();
+        let n_v = builder.current_n_vertices();
+        let verts = builder.vertex_directions(level).to_vec();
+
+        // Compute all omega slabs for this R
+        let slab_data: Vec<Vec<f64>> = if backend.prefers_batch() {
+            // GPU: batch all (omega, vi, vj) for this R into one dispatch
+            let mut poses = Vec::with_capacity(n_omega * n_v * n_v);
+            for oi in 0..n_omega {
+                let omega = builder.omega_value(oi);
+                for vi in 0..n_v {
+                    for vj in 0..n_v {
                         poses.push(PoseParams {
-                            r: *r,
-                            omega: *omega,
-                            vertex_i: *pos_a,
-                            vertex_j: *pos_b,
+                            r,
+                            omega,
+                            vertex_i: Vector3::from(verts[vi]),
+                            vertex_j: Vector3::from(verts[vj]),
                         });
-                        data_refs.push(data_b);
-                    });
+                    }
+                }
             }
-
-            // Compute all energies for this distance in one GPU batch
             let energies = backend.compute_energies(&poses);
-
-            // Store results
-            for (data_b, energy) in data_refs.into_iter().zip(energies) {
-                data_b.set(energy).expect("Energy already calculated");
-            }
-        }
-    } else {
-        // Per-pose processing with rayon parallelization (for CPU)
-        info!(
-            "Computing {} (r,omega) pairs using CPU backend...",
-            r_and_omega.len()
-        );
-        let calc_energy = |r: f64, omega: f64| {
-            table
-                .get_icospheres(r, omega)
-                .expect("invalid (r, omega) value")
-                .flat_iter()
-                .for_each(|(pos_a, pos_b, data_b)| {
-                    let pose = PoseParams {
-                        r,
-                        omega,
-                        vertex_i: *pos_a,
-                        vertex_j: *pos_b,
-                    };
-                    let energy = backend.compute_energy(&pose);
-                    data_b.set(energy).expect("Energy already calculated");
-                });
+            energies
+                .chunks_exact(n_v * n_v)
+                .map(|c| c.to_vec())
+                .collect()
+        } else {
+            // CPU: parallelize over omega slabs
+            (0..n_omega)
+                .into_par_iter()
+                .map(|oi| {
+                    let omega = builder.omega_value(oi);
+                    let mut data = vec![0.0; n_v * n_v];
+                    for vi in 0..n_v {
+                        for vj in 0..n_v {
+                            data[vi * n_v + vj] = backend.compute_energy(&PoseParams {
+                                r,
+                                omega,
+                                vertex_i: Vector3::from(verts[vi]),
+                                vertex_j: Vector3::from(verts[vj]),
+                            });
+                        }
+                    }
+                    data
+                })
+                .collect()
         };
 
-        r_and_omega
-            .par_iter()
-            .progress_count(r_and_omega.len() as u64)
-            .for_each(|(r, omega)| {
-                calc_energy(*r, *omega);
-            });
+        // Accumulate partition function with Voronoi quadrature weights
+        // that correct for unequal solid angles at pentagonal vs hexagonal
+        // icosphere vertices (matters for B₂).
+        let weights = builder.vertex_weights(level);
+        let mut r_sample = Sample::default();
+        for data in &slab_data {
+            for vi in 0..n_v {
+                for vj in 0..n_v {
+                    let degeneracy = weights[vi] * weights[vj];
+                    r_sample += Sample::new(data[vi * n_v + vj], config.temperature, degeneracy);
+                }
+            }
+        }
+        // Feed slabs to builder (borrows mutably, so separate from weights borrow)
+        for (oi, data) in slab_data.iter().enumerate() {
+            builder.set_slab(ri, oi, data);
+        }
+        let n_div_before = builder.current_n_div();
+        let max_grad = builder.finish_r_slice(ri);
+        let n_div_after = builder.current_n_div();
+
+        if n_div_after < n_div_before {
+            let new_n_v = builder.current_n_vertices();
+            log::debug!(
+                "R={:.1} Å: resolution reduced n_div {} → {} ({} vertices)",
+                r,
+                n_div_before,
+                n_div_after,
+                new_n_v
+            );
+        }
+        log::debug!(
+            "r={:.1} (n_div={}, max_grad={:.2e}): free_energy={:.4e}",
+            r,
+            n_div_after,
+            max_grad,
+            r_sample.free_energy()
+        );
+        partition_samples.push(r_sample);
     }
+
     let elapsed = start_time.elapsed();
-    let poses_per_ms = n_total as f64 / elapsed.as_millis() as f64;
     info!(
-        "Finished computing energies in {:.2}s ({:.1} poses/ms)",
+        "Finished computing energies in {:.2}s",
         elapsed.as_secs_f64(),
-        poses_per_ms
     );
 
-    if let Some(xtcfile) = &config.xtcfile {
-        write_trajectory(xtcfile, &table, &r_and_omega, ref_a, ref_b)?;
-    }
-
-    // Partition function contribution for single (r, omega) point
-    // i.e. averaged over 4D angular space
-    let calc_partition_func = |r: f64, omega: f64| {
-        table.get_icospheres(r, omega).unwrap().flat_iter().fold(
-            Sample::default(),
-            |sum, (vertex_i, vertex_j, data_b)| {
-                let degeneracy = vertex_i.norm() * vertex_j.norm();
-                let energy = data_b.get().unwrap(); // kJ/mol
-                sum + Sample::new(*energy, config.temperature, degeneracy)
-            },
-        )
-    };
-
-    // Calculate partition function as function of r only
+    let distances: Vec<f64> = (0..n_r).map(|ri| builder.r_value(ri)).collect();
     let samples: Vec<(Vector3, Sample)> = distances
         .iter()
-        .map(|r| {
-            let partition_func: Sample = dihedral_angles
-                .iter()
-                .map(|omega| calc_partition_func(*r, *omega))
-                .sum();
-            log::debug!(
-                "r={:.1}: exp_energy={:.4e}, mean_energy={:.4e}, free_energy={:.4e}",
-                r,
-                partition_func.exp_energy(),
-                partition_func.mean_energy(),
-                partition_func.free_energy()
-            );
-            (Vector3::new(0.0, 0.0, *r), partition_func)
-        })
+        .zip(partition_samples)
+        .map(|(r, s)| (Vector3::new(0.0, 0.0, *r), s))
         .collect();
 
-    // Save binary 6D table for Faunus lookup, with tail correction metadata
+    // Build and log per-R resolution summary
+    let mut table = builder.build();
+    log_resolution_summary(&table);
     if let Some(path) = &config.save_table {
-        log::info!("Saving binary 6D table to {}", path.display());
-        let mut flat = icotable::Table6DFlat::<icotable::f16>::try_from(&table)?;
-
+        log::info!("Saving adaptive 6D table to {}", path.display());
         let free_energies: Vec<f64> = samples.iter().map(|(_, s)| s.free_energy()).collect();
-        let electric_prefactor =
-            faunus::interatomic::ELECTRIC_PREFACTOR / config.permittivity;
+        let electric_prefactor = faunus::interatomic::ELECTRIC_PREFACTOR / config.permittivity;
         let tail_terms = fit_tail_correction(
             &distances,
             &free_energies,
@@ -346,70 +351,79 @@ pub fn do_icoscan<B: EnergyBackend>(config: &ScanConfig, backend: &B) -> anyhow:
             config.kappa,
             electric_prefactor,
         );
-        flat.metadata = Some(TableMetadata {
+        table.metadata = Some(TableMetadata {
             tail_terms,
             charges: Some(config.charges),
             dipole_moments: Some(config.dipole_moments),
             temperature: Some(config.temperature),
             electric_prefactor: Some(electric_prefactor),
         });
-        flat.save(path)?;
+        table.save(path)?;
     }
 
     let masses = (ref_a.total_mass(), ref_b.total_mass());
-
     report_pmf(&samples, &config.pmf_file, Some(masses))?;
     Ok(())
 }
 
-/// Write oriented structures and energies to XTC trajectory and companion energy file.
-fn write_trajectory(
-    xtcfile: &Path,
-    table: &Table6D,
-    r_and_omega: &[(f64, f64)],
-    ref_a: &Structure,
-    ref_b: &Structure,
-) -> anyhow::Result<()> {
-    info!("Writing trajectory file {}", xtcfile.display());
-    let mut traj = XTCWriter::create(xtcfile)?;
-    let mut energy_file =
-        BufWriter::new(open_compressed(&xtcfile.with_extension("energy.dat.gz"))?);
-    writeln!(energy_file, "# Energy (kJ/mol)").expect("Failed to write header");
-    let mut frame_cnt: u32 = 0;
-    let mut frame = Frame {
-        precision: 1000.0,
-        ..Default::default()
-    };
-
-    let mut write_frame = |oriented_a: &Structure, oriented_b: &Structure, energy| {
-        frame.step = frame_cnt;
-        frame.time = frame_cnt as f32;
-        frame_cnt += 1;
-        frame.positions = oriented_a
-            .pos
-            .iter()
-            .chain(oriented_b.pos.iter())
-            .flat_map(|&p| [p.x as f32 * 0.1, p.y as f32 * 0.1, p.z as f32 * 0.1])
-            .collect();
-        traj.write_frame(&frame).expect("Failed to write XTC frame");
-        writeln!(energy_file, "{energy:.6}").expect("Failed to write energy to file");
-    };
-
-    let n = r_and_omega.len();
-    r_and_omega
-        .iter()
-        .progress_count(n as u64)
-        .for_each(|(r, omega)| {
-            table
-                .get_icospheres(*r, *omega)
-                .expect("invalid (r, omega) value")
-                .flat_iter()
-                .for_each(|(pos_a, pos_b, data_b)| {
-                    let (oriented_a, oriented_b) =
-                        orient_structures(*r, *omega, pos_a, pos_b, ref_a, ref_b);
-                    write_frame(&oriented_a, &oriented_b, data_b.get().unwrap());
-                });
+/// Log a per-R summary of slab resolution tiers.
+fn log_resolution_summary(table: &icotable::Table6DAdaptive<f32>) {
+    use icotable::SlabResolution;
+    log::debug!("Slab resolution summary (per R-slice across all ω bins):");
+    log::debug!(
+        "{:>8} {:>10} {:>8} {:>8} {:>8} {:>6}",
+        "R (Å)",
+        "repulsive",
+        "scalar",
+        "nearest",
+        "interp",
+        "n_div"
+    );
+    let mut tot = [0u32; 4]; // [repulsive, scalar, nearest, interp]
+    for ri in 0..table.n_r {
+        let r = table.rmin + ri as f64 * table.dr;
+        let slabs = &table.slab_res[ri * table.n_omega..(ri + 1) * table.n_omega];
+        let mut row = [0u32; 4];
+        let mut level = None;
+        for s in slabs {
+            match s {
+                SlabResolution::Repulsive => row[0] += 1,
+                SlabResolution::Scalar(_) => row[1] += 1,
+                SlabResolution::Mesh {
+                    level: l,
+                    interpolate: false,
+                } => {
+                    row[2] += 1;
+                    level = Some(*l);
+                }
+                SlabResolution::Mesh {
+                    level: l,
+                    interpolate: true,
+                } => {
+                    row[3] += 1;
+                    level = Some(*l);
+                }
+            }
+        }
+        for i in 0..4 {
+            tot[i] += row[i];
+        }
+        let n_div_str = level.map_or("-".to_string(), |l| {
+            table.levels[l as usize].n_div.to_string()
         });
-    info!("Wrote {frame_cnt} frames to trajectory file");
-    Ok(())
+        log::debug!(
+            "{:>8.1} {:>10} {:>8} {:>8} {:>8} {:>6}",
+            r,
+            row[0],
+            row[1],
+            row[2],
+            row[3],
+            n_div_str
+        );
+    }
+    let total: u32 = tot.iter().sum();
+    info!(
+        "Total slabs: {} (repulsive: {}, scalar: {}, nearest: {}, interp: {})",
+        total, tot[0], tot[1], tot[2], tot[3]
+    );
 }

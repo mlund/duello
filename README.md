@@ -105,13 +105,43 @@ duello scan \
     --mol2 cppm-p18.xyz \
     --rmin 37 --rmax 50 --dr 0.5 \
     --top topology.yaml \
-    --resolution 0.8 \
+    --max-ndiv 3 \
     --cutoff 50 \
     --molarity 0.05 \
     --temperature 298.15 \
     --backend auto \
     --grid "type=powerlaw2,size=500,shift=true"
 ```
+
+### Angular resolution
+
+The `--max-ndiv` option controls the icosphere subdivision level, which determines
+the angular mesh density:
+
+| `--max-ndiv` | Vertices | Approx. angular spacing |
+|--------------|----------|-------------------------|
+| 0            | 12       | 1.0 rad                 |
+| 1            | 42       | 0.55 rad                |
+| 2            | 92       | 0.37 rad                |
+| 3 (default)  | 162      | 0.28 rad                |
+
+The dihedral angle (&omega;) bin width is derived from the vertex spacing.
+Higher subdivision levels give more accurate angular integration at the cost of
+more energy evaluations per R-slice.
+
+### Adaptive resolution
+
+The table generator uses adaptive resolution: at each radial distance, the angular
+gradient is evaluated and slabs are classified into tiers:
+
+- **Repulsive** &mdash; all Boltzmann weights negligible (exp(&minus;&beta;U) &approx; 0).
+  Detected automatically from the temperature; zero storage, lookup returns infinity.
+- **Scalar** &mdash; nearly isotropic energy surface collapsed to a single value.
+- **Nearest-vertex** &mdash; smooth surface; lookup uses nearest vertex without interpolation.
+- **Interpolated** &mdash; full barycentric interpolation on the icosphere face.
+
+The `--gradient-threshold` (default: 10.0 kJ/mol/rad) controls when resolution
+is reduced. A summary of slab classifications is printed after generation.
 
 ## Spline Grid Options
 
@@ -176,7 +206,7 @@ pdb2xyz -i 4lzt.pdb -o 4lzt.xyz --pH 7.0 --sidechains
 duello scan \
   -1 4lzt.xyz -2 4lzt.xyz \
   --rmin 24 --rmax 80 --dr 0.5 \
-  --resolution 0.6 \
+  --max-ndiv 2 \
   --top topology.yaml \
   --molarity 0.05
 ```
