@@ -18,7 +18,7 @@ use crate::{
     structure::Structure,
     Sample, Vector3,
 };
-use icotable::{AdaptiveBuilder, PointGroup, TableMetadata, TailCorrectionTerm};
+use icotable::{AdaptiveBuilder, TableMetadata, TailCorrectionTerm};
 use indicatif::ProgressIterator;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::{f64::consts::PI, path::PathBuf};
@@ -44,8 +44,6 @@ pub struct ScanConfig {
     pub max_n_div: usize,
     /// Angular gradient threshold for adaptive resolution reduction.
     pub gradient_threshold: f64,
-    /// Homo-dimer: pre-symmetrize table so Faunus needs only one lookup.
-    pub symmetric: bool,
 }
 
 /// Build tail correction from the angularly averaged free energy at outer radial bins.
@@ -301,12 +299,6 @@ pub fn do_icoscan<B: EnergyBackend + Sync>(config: &ScanConfig, backend: &B) -> 
         for (oi, data) in slab_data.iter().enumerate() {
             builder.set_slab(ri, oi, data);
         }
-        // Pre-symmetrize homo-dimer tables so Faunus needs only one lookup.
-        // Must happen after set_slab (data in builder) and before finish_r_slice
-        // (which classifies and compresses slabs).
-        if config.symmetric {
-            builder.symmetrize_r_slice(ri, r);
-        }
         let n_div_before = builder.current_n_div();
         let max_grad = builder.finish_r_slice(ri);
         let n_div_after = builder.current_n_div();
@@ -359,18 +351,13 @@ pub fn do_icoscan<B: EnergyBackend + Sync>(config: &ScanConfig, backend: &B) -> 
             config.kappa,
             electric_prefactor,
         );
-        let point_group = if config.symmetric {
-            PointGroup::Exchange
-        } else {
-            PointGroup::Asymmetric
-        };
         table.metadata = Some(TableMetadata {
             tail_terms,
             charges: Some(config.charges),
             dipole_moments: Some(config.dipole_moments),
             temperature: Some(config.temperature),
             electric_prefactor: Some(electric_prefactor),
-            point_group,
+            ..Default::default()
         });
         table.save(path)?;
     }

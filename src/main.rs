@@ -197,8 +197,8 @@ enum Commands {
         /// Max icosphere subdivision level (0=12, 1=42, 2=92, 3=162 vertices)
         #[arg(long, default_value = "3")]
         max_ndiv: usize,
-        /// Angular gradient threshold for adaptive resolution reduction (kJ/mol/rad)
-        #[arg(long, default_value = "10.0")]
+        /// Boltzmann-weight gradient threshold for adaptive resolution (1/rad)
+        #[arg(long, default_value = "0.5")]
         gradient_threshold: f64,
         /// Minimum mass center distance
         #[arg(long)]
@@ -270,8 +270,8 @@ enum Commands {
         /// Max icosphere subdivision level (0=12, 1=42, 2=92, 3=162 vertices)
         #[arg(long, default_value = "3")]
         max_ndiv: usize,
-        /// Angular gradient threshold for adaptive resolution reduction (kJ/mol/rad)
-        #[arg(long, default_value = "10.0")]
+        /// Boltzmann-weight gradient threshold for adaptive resolution (1/rad)
+        #[arg(long, default_value = "0.5")]
         gradient_threshold: f64,
         /// Compute backend
         #[arg(long, value_enum, default_value = "auto")]
@@ -374,15 +374,6 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         other => *other,
     };
 
-    // Canonical paths resolve symlinks and relative paths, so e.g.
-    // `--mol1 ./mol.xyz --mol2 ../dir/mol.xyz` is correctly detected.
-    let symmetric = std::fs::canonicalize(mol1)
-        .and_then(|a| std::fs::canonicalize(mol2).map(|b| a == b))
-        .unwrap_or(false);
-    if symmetric {
-        info!("Homo-dimer detected: table will be pre-symmetrized");
-    }
-
     let scan_config = icoscan::ScanConfig {
         rmin: *rmin,
         rmax: *rmax,
@@ -396,7 +387,6 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         permittivity: medium.permittivity(),
         max_n_div: *max_ndiv,
         gradient_threshold: *gradient_threshold,
-        symmetric,
     };
 
     // energy_cap only applies to SR-only splines (GPU/SIMD split path).
