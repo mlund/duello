@@ -14,12 +14,11 @@
 
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
-use duello::PaddedTable;
 use duello::{
     backend::{self, GpuBackend, SimdBackend},
-    energy, icoscan,
+    energy, icoscan, report,
     structure::{pqr_write_atom, Structure},
-    IcoTable2D, SphericalCoord, UnitQuaternion, Vector3,
+    Adaptive3DBuilder, IcoTable2D, Sample, SphericalCoord, UnitQuaternion, Vector3,
 };
 use faunus::interatomic::coulomb::{pairwise::Plain, permittivity, DebyeLength, Medium, Salt};
 use faunus::interatomic::twobody::{GridTrim, GridType, SplineConfig};
@@ -195,9 +194,12 @@ enum Commands {
         /// Name of atom type to scan (looked up in topology)
         #[arg(long)]
         atom: String,
-        /// Angular resolution in radians
-        #[arg(short = 'r', long, default_value = "0.1")]
-        resolution: f64,
+        /// Max icosphere subdivision level (0=12, 1=42, 2=92, 3=162 vertices)
+        #[arg(long, default_value = "3")]
+        max_ndiv: usize,
+        /// Angular gradient threshold for adaptive resolution reduction (kJ/mol/rad)
+        #[arg(long, default_value = "10.0")]
+        gradient_threshold: f64,
         /// Minimum mass center distance
         #[arg(long)]
         rmin: f64,
@@ -222,6 +224,9 @@ enum Commands {
         /// Output binary table path (.gz suffix enables gzip compression)
         #[arg(short = 'o', long, default_value = "atom_table.bin.gz")]
         output: PathBuf,
+        /// Output file for PMF
+        #[arg(long = "pmf", default_value = "pmf.dat")]
+        pmf_file: PathBuf,
     },
 
     /// Scan angles and tabulate energy between two rigid bodies
@@ -369,6 +374,15 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         other => *other,
     };
 
+    // Canonical paths resolve symlinks and relative paths, so e.g.
+    // `--mol1 ./mol.xyz --mol2 ../dir/mol.xyz` is correctly detected.
+    let symmetric = std::fs::canonicalize(mol1)
+        .and_then(|a| std::fs::canonicalize(mol2).map(|b| a == b))
+        .unwrap_or(false);
+    if symmetric {
+        info!("Homo-dimer detected: table will be pre-symmetrized");
+    }
+
     let scan_config = icoscan::ScanConfig {
         rmin: *rmin,
         rmax: *rmax,
@@ -382,6 +396,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         permittivity: medium.permittivity(),
         max_n_div: *max_ndiv,
         gradient_threshold: *gradient_threshold,
+        symmetric,
     };
 
     // energy_cap only applies to SR-only splines (GPU/SIMD split path).
@@ -475,7 +490,8 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
     let Commands::AtomScan {
         mol1,
         atom,
-        resolution,
+        max_ndiv,
+        gradient_threshold,
         rmin,
         rmax,
         dr,
@@ -484,6 +500,7 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
         cutoff: _,
         temperature,
         output,
+        pmf_file,
     } = cmd
     else {
         bail!("Unknown command");
@@ -507,45 +524,71 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
     );
 
     let ref_a = Structure::from_xyz(mol1, topology.atomkinds())?;
-    let atomkinds = topology.atomkinds();
-    let test_atom_kind = atomkinds
+    let test_atom_id = topology
+        .atomkinds()
         .find_name(atom)
-        .ok_or_else(|| anyhow::anyhow!("Unknown atom type: {atom}"))?;
-    let test_atom_id = test_atom_kind.id();
+        .ok_or_else(|| anyhow::anyhow!("Unknown atom type: {atom}"))?
+        .id();
 
     info!("{medium}");
     info!("Rigid body net-charge: {:.2}e", ref_a.net_charge());
     info!("Test atom: {atom} (id={test_atom_id})");
 
-    let n_points = (4.0 * PI / resolution.powi(2)).round() as usize;
-    let template = IcoTable2D::<f64>::from_min_points(n_points)?;
+    // β = 1/kT in mol/kJ — needed by the adaptive builder to detect
+    // repulsive slabs where all Boltzmann weights are negligible
+    let thermal_energy = physical_constants::MOLAR_GAS_CONSTANT * temperature * 1e-3;
+    let beta = 1.0 / thermal_energy;
+
+    let mut builder =
+        Adaptive3DBuilder::new(*rmin, *rmax, *dr, *max_ndiv, *gradient_threshold, beta);
+
+    let n_r = builder.n_r();
+    let max_vertices = 10 * (*max_ndiv + 1).pow(2) + 2;
     info!(
-        "Icosphere: {} vertices, resolution = {:.3} rad",
-        template.len(),
-        template.angle_resolution()
+        "Adaptive 3D: {} R-bins, max {} vertices (n_div={})",
+        n_r, max_vertices, max_ndiv
     );
     info!("COM range: [{rmin:.1}, {rmax:.1}) in {dr:.1} Å steps");
 
-    let mut table = PaddedTable::new(*rmin, *rmax, *dr, template);
+    // Scan from short range outward; finish_r_slice may lower the mesh
+    // level when gradients are small, so later (larger-R) slabs use fewer vertices
+    let mut energies = Vec::with_capacity(max_vertices);
+    let mut samples = Vec::with_capacity(n_r);
+    for ri in 0..n_r {
+        let r = builder.r_value(ri);
+        let level = builder.current_level();
+        let verts = builder.vertex_directions(level);
+        let weights = builder.vertex_weights(level);
 
-    for (r, ico_table) in table.iter_mut() {
-        if r < *rmin || r > *rmax {
-            continue;
-        }
-        ico_table.set_vertex_data(|_, vertex_pos| {
-            let test_pos = vertex_pos.normalize().scale(r);
+        energies.clear();
+        energies.extend(verts.iter().map(|v| {
+            let test_pos = Vector3::from(*v).scale(r);
             pair_matrix.energy_with_atom(&ref_a, test_atom_id, &test_pos)
-        })?;
+        }));
+
+        // Accumulate Boltzmann-weighted samples for PMF using quadrature weights
+        let r_sample: Sample = energies
+            .iter()
+            .zip(weights)
+            .map(|(&e, &w)| Sample::new(e, *temperature, w))
+            .sum();
+        samples.push((Vector3::new(r, 0.0, 0.0), r_sample));
+
+        builder.set_slab(ri, &energies);
+        builder.finish_r_slice(ri);
     }
 
-    let flat = icotable::Table3DFlat::<f32>::try_from(&table)?;
-    flat.save(output)?;
+    let table = builder.build();
+    let n_data = table.data.len();
+    table.save(output)?;
     info!(
-        "Saved 3D table ({} R bins × {} vertices) to {}",
-        flat.n_r,
-        flat.n_vertices,
+        "Saved adaptive 3D table ({} R-bins, {} data values) to {}",
+        n_r,
+        n_data,
         output.display()
     );
+
+    report::report_pmf(&samples, pmf_file, None)?;
     Ok(())
 }
 
