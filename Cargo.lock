@@ -681,7 +681,7 @@ dependencies = [
  "flate2",
  "get-size",
  "glam 0.30.10",
- "icotable 0.1.0",
+ "icotable",
  "indicatif",
  "iter_num_tools",
  "itertools 0.14.0",
@@ -811,7 +811,6 @@ dependencies = [
 [[package]]
 name = "faunus"
 version = "0.2.0"
-source = "git+https://github.com/mlund/faunus-rs.git#96af072f657b14bc15afce8c50534cc817a46f8c"
 dependencies = [
  "anyhow",
  "average 0.13.1",
@@ -821,7 +820,7 @@ dependencies = [
  "dyn-clone",
  "exmex",
  "flate2",
- "icotable 0.1.0 (git+https://github.com/mlund/faunus-rs.git)",
+ "icotable",
  "interatomic",
  "itertools 0.10.5",
  "log",
@@ -1248,25 +1247,6 @@ dependencies = [
 [[package]]
 name = "icotable"
 version = "0.1.0"
-dependencies = [
- "anyhow",
- "bincode",
- "flate2",
- "get-size",
- "glam 0.30.10",
- "half",
- "hexasphere",
- "itertools 0.14.0",
- "log",
- "nalgebra",
- "num-traits",
- "serde",
-]
-
-[[package]]
-name = "icotable"
-version = "0.1.0"
-source = "git+https://github.com/mlund/faunus-rs.git#96af072f657b14bc15afce8c50534cc817a46f8c"
 dependencies = [
  "anyhow",
  "bincode",
