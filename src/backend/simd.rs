@@ -149,14 +149,12 @@ impl SimdBackend {
         let atom_ids_b: Vec<u32> = ref_b.atom_ids.iter().map(|&id| id as u32).collect();
 
         // Convert splined potentials to f32 SIMD tables
-        let potentials = splined_matrix.inner().get_potentials();
-        let shape = potentials.shape();
-        let n_types = shape[0];
+        let n_types = splined_matrix.n_types();
 
         let mut spline_tables = Vec::with_capacity(n_types * n_types);
         for i in 0..n_types {
             for j in 0..n_types {
-                let spline = &potentials[(i, j)];
+                let spline = splined_matrix.get(i, j);
 
                 // Verify supported grid type (PowerLaw2 or InverseRsq for efficient SIMD)
                 let stats = spline.stats();

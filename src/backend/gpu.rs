@@ -123,8 +123,6 @@ impl GpuBackend {
         coulomb: &CoulombParams,
     ) -> anyhow::Result<Self> {
         let grid_type = splined_matrix
-            .inner()
-            .get_potentials()
             .iter()
             .next()
             .ok_or_else(|| anyhow::anyhow!("Empty spline matrix"))?
@@ -175,9 +173,8 @@ impl GpuBackend {
         let device = Arc::new(device);
         let queue = Arc::new(queue);
 
-        let potentials = splined_matrix.inner().get_potentials();
-        let n_atom_types = potentials.shape()[0] as u32;
-        let spline_data = GpuSplineData::<G>::from_potentials(potentials.iter());
+        let n_atom_types = splined_matrix.n_types() as u32;
+        let spline_data = GpuSplineData::<G>::from_potentials(splined_matrix.iter());
 
         // Prepend grid-type-specific WGSL (SplineParams, SplineCoeffs, spline_index_eps)
         let shader_source = format!(

@@ -14,15 +14,12 @@
 
 use crate::structure::Structure;
 use crate::Vector3;
-use faunus::interatomic::coulomb::pairwise::{MultipoleEnergy, MultipolePotential, Plain};
+use faunus::interatomic::coulomb::pairwise::{MultipolePotential as _, Plain};
 use faunus::interatomic::coulomb::permittivity::ConstantPermittivity;
-use faunus::interatomic::twobody::{IonIon, IonIonPolar, IsotropicTwobodyEnergy, SplineConfig};
+use faunus::interatomic::coulomb::{DebyeLength as _, Medium};
+use faunus::interatomic::twobody::{IsotropicTwobodyEnergy, SplineConfig, SplinedPotential};
 use faunus::topology::CustomProperty;
-use faunus::{
-    energy::{NonbondedMatrix, NonbondedMatrixSplined},
-    topology::AtomKind,
-};
-use std::{cmp::PartialEq, fmt::Debug};
+use faunus::{energy::NonbondedMatrix, topology::AtomKind};
 
 /// Get excess polarizability (Å³) from the custom "alpha" property of an atom kind.
 fn get_alpha(atom: &AtomKind) -> f64 {
@@ -45,9 +42,12 @@ pub struct CoulombParams {
     /// Per-pair prefactors in kJ/mol·Å, indexed as `[id_a * n_types + id_b]`.
     /// Each entry = `ELECTRIC_PREFACTOR * z_i * z_j / ε_r`.
     /// Zero prefactor means no electrostatic interaction for that pair.
+    /// Stored as f32 because GPU/SIMD backends consume them directly.
     pub prefactors: Vec<f32>,
     /// Inverse Debye screening length κ (1/Å). 0.0 for unscreened Coulomb.
     pub kappa: f32,
+    /// Cached to avoid `isqrt(prefactors.len())` on every pair lookup.
+    n_types: usize,
 }
 
 impl CoulombParams {
@@ -56,6 +56,7 @@ impl CoulombParams {
         Self {
             prefactors: vec![0.0; n_types * n_types],
             kappa: 0.0,
+            n_types,
         }
     }
 }
@@ -64,7 +65,7 @@ impl CoulombParams {
 ///
 /// Returns `None` if any pair requires ion-induced dipole interaction (IonIonPolar),
 /// whose energy formula is too complex for the simple `prefactor * exp(-κr) / r`
-/// analytical path. In that case the caller falls back to the combined spline.
+/// analytical path.
 pub fn extract_coulomb_params(
     atomkinds: &[AtomKind],
     permittivity: ConstantPermittivity,
@@ -74,7 +75,6 @@ pub fn extract_coulomb_params(
     let eps_r = f64::from(permittivity);
     let to_kjmol = faunus::interatomic::ELECTRIC_PREFACTOR / eps_r;
 
-    // Pre-compute per-type alpha and charge to avoid repeated property lookups
     let alphas: Vec<f64> = atomkinds.iter().map(get_alpha).collect();
     let charges: Vec<f64> = atomkinds.iter().map(AtomKind::charge).collect();
 
@@ -84,7 +84,7 @@ pub fn extract_coulomb_params(
             if needs_polarization(alphas[i], charges[i], alphas[j], charges[j]) {
                 log::warn!(
                     "Ion-induced dipole detected for pair ({i}, {j}); \
-                     analytical Coulomb not supported, using combined spline"
+                     analytical Coulomb not supported"
                 );
                 return None;
             }
@@ -92,210 +92,158 @@ pub fn extract_coulomb_params(
         }
     }
 
-    Some(CoulombParams {
+    let params = CoulombParams {
         prefactors,
         kappa: kappa.unwrap_or(0.0) as f32,
-    })
+        n_types,
+    };
+    debug_assert_eq!(params.prefactors.len(), n_types * n_types);
+    Some(params)
 }
 
-/// Wrapper around splined pair potentials, hiding the upstream faunus type.
+/// Splined pair potentials for GPU/SIMD backends.
 ///
-/// Created via `PairMatrix::create_splined_potentials` and consumed by backend constructors.
-pub struct SplinedPotentials(NonbondedMatrixSplined);
+/// Created via [`PairMatrix::create_sr_splines`] and consumed by backend constructors.
+/// Owns the data directly rather than wrapping faunus's `NonbondedMatrixSplined`,
+/// so Duello is decoupled from faunus's internal matrix layout.
+pub struct SplinedPotentials {
+    potentials: Vec<SplinedPotential>,
+    n_types: usize,
+}
 
 impl SplinedPotentials {
-    /// Access the inner splined matrix (for backend initialization).
-    pub(crate) const fn inner(&self) -> &NonbondedMatrixSplined {
-        &self.0
+    /// Spline potentials from `NonbondedMatrix`, treating entries opaquely
+    /// via [`IsotropicTwobodyEnergy`].
+    fn from_nonbonded(nonbonded: &NonbondedMatrix, cutoff: f64, config: SplineConfig) -> Self {
+        let source = nonbonded.get_potentials();
+        let n_types = source.shape()[0];
+        let mut potentials = Vec::with_capacity(n_types * n_types);
+        for i in 0..n_types {
+            for j in 0..n_types {
+                potentials.push(SplinedPotential::with_cutoff(
+                    &source[(i, j)],
+                    cutoff,
+                    config.clone(),
+                ));
+            }
+        }
+        debug_assert_eq!(potentials.len(), n_types * n_types);
+        Self {
+            potentials,
+            n_types,
+        }
+    }
+
+    /// Number of atom types (matrix side length).
+    pub fn n_types(&self) -> usize {
+        self.n_types
+    }
+
+    /// Get the splined potential for atom type pair `(i, j)`.
+    pub fn get(&self, i: usize, j: usize) -> &SplinedPotential {
+        &self.potentials[i * self.n_types + j]
+    }
+
+    /// Iterate over all splined potentials in row-major order.
+    pub fn iter(&self) -> impl Iterator<Item = &SplinedPotential> {
+        self.potentials.iter()
     }
 }
 
-/// Storage for either standard or splined pair potentials
-enum PotentialStorage {
-    Standard(NonbondedMatrix),
-    Splined(NonbondedMatrixSplined),
-}
-
-/// Pair-matrix of twobody energies for pairs of atom ids
+/// Pair-matrix of twobody energies combining SR potentials and analytical Coulomb.
+///
+/// Single entry point for all energy evaluation in Duello. Internally stores
+/// SR potentials from the faunus `NonbondedMatrix` and precomputed Coulomb
+/// prefactors. Callers don't need to know whether energy comes from a spline,
+/// exact potential, or analytical formula.
 pub struct PairMatrix {
-    storage: PotentialStorage,
+    nonbonded: NonbondedMatrix,
+    coulomb_params: CoulombParams,
 }
 
 impl PairMatrix {
-    /// Add Coulomb potential to a nonbonded matrix
-    fn add_coulomb_to_matrix<
-        T: MultipoleEnergy + Clone + Send + Sync + Debug + PartialEq + 'static,
-    >(
-        mut nonbonded: NonbondedMatrix,
-        atomkinds: &[AtomKind],
-        permittivity: ConstantPermittivity,
-        coulomb_method: &T,
-    ) -> NonbondedMatrix {
-        log::info!("Adding Coulomb potential to nonbonded matrix");
-        nonbonded
-            .get_potentials_mut()
-            .indexed_iter_mut()
-            .for_each(|((i, j), pairpot)| {
-                let alpha1 = get_alpha(&atomkinds[i]);
-                let alpha2 = get_alpha(&atomkinds[j]);
-                let charge1 = atomkinds[i].charge();
-                let charge2 = atomkinds[j].charge();
-                let charge_product = charge1 * charge2;
-                let use_polarization =
-                    needs_polarization(alpha1, charge1, alpha2, charge2);
-
-                if use_polarization {
-                    log::debug!(
-                        "Adding ion-induced dipole term for atom pair ({i}, {j}). Alphas: {alpha1}, {alpha2}"
-                    );
-                }
-                let coulomb =
-                    IonIon::<T>::new(charge_product, permittivity, coulomb_method.clone());
-                let coulomb_polar = Box::new(IonIonPolar::<T>::new(
-                    coulomb.clone(),
-                    (charge1, charge2),
-                    (alpha1, alpha2),
-                )) as Box<dyn IsotropicTwobodyEnergy>;
-                let combined = match use_polarization {
-                    true => coulomb_polar + Box::new(pairpot.clone()),
-                    false => {
-                        Box::new(coulomb) as Box<dyn IsotropicTwobodyEnergy>
-                            + Box::new(pairpot.clone())
-                    }
-                };
-                *pairpot = faunus::interatomic::twobody::ArcPotential(std::sync::Arc::new(combined));
+    /// Build from SR potentials + medium (determines Coulomb parameters).
+    ///
+    /// If ion-induced dipole interactions are detected, Coulomb is set to zero
+    /// with a warning (polarization not supported in the split-path design).
+    pub fn new(nonbonded: NonbondedMatrix, atomkinds: &[AtomKind], medium: &Medium) -> Self {
+        // κ = 1/λ_D where λ_D is the Debye screening length from the electrolyte
+        let kappa = medium.debye_length().map(|dl| 1.0 / dl);
+        let coulomb_params = extract_coulomb_params(atomkinds, medium.permittivity().into(), kappa)
+            .unwrap_or_else(|| {
+                log::warn!("Ion-induced dipole detected; Coulomb contribution will be zero");
+                CoulombParams::zero(atomkinds.len())
             });
-        nonbonded
-    }
-
-    /// Create a new pair matrix with added Coulomb potential
-    pub fn new_with_coulomb<
-        T: MultipoleEnergy + Clone + Send + Sync + Debug + PartialEq + 'static,
-    >(
-        nonbonded: NonbondedMatrix,
-        atomkinds: &[AtomKind],
-        permittivity: ConstantPermittivity,
-        coulomb_method: &T,
-    ) -> Self {
-        let nonbonded =
-            Self::add_coulomb_to_matrix(nonbonded, atomkinds, permittivity, coulomb_method);
         Self {
-            storage: PotentialStorage::Standard(nonbonded),
-        }
-    }
-
-    /// Create a new pair matrix with Coulomb potential and splined interpolation
-    pub fn new_with_coulomb_splined<
-        T: MultipoleEnergy + Clone + Send + Sync + Debug + PartialEq + 'static,
-    >(
-        nonbonded: NonbondedMatrix,
-        atomkinds: &[AtomKind],
-        permittivity: ConstantPermittivity,
-        coulomb_method: &T,
-        cutoff: f64,
-        spline_config: SplineConfig,
-    ) -> Self {
-        let splined = Self::create_splined_potentials(
             nonbonded,
-            atomkinds,
-            permittivity,
-            coulomb_method,
-            cutoff,
-            spline_config,
-        );
-        Self::from_splined(splined)
-    }
-
-    /// Create splined potentials with Coulomb potential added.
-    ///
-    /// Returns a `SplinedPotentials` wrapper that can be shared between backends
-    /// or converted into a `PairMatrix` via `from_splined`.
-    pub fn create_splined_potentials<
-        T: MultipoleEnergy + Clone + Send + Sync + Debug + PartialEq + 'static,
-    >(
-        nonbonded: NonbondedMatrix,
-        atomkinds: &[AtomKind],
-        permittivity: ConstantPermittivity,
-        coulomb_method: &T,
-        cutoff: f64,
-        spline_config: SplineConfig,
-    ) -> SplinedPotentials {
-        let nonbonded =
-            Self::add_coulomb_to_matrix(nonbonded, atomkinds, permittivity, coulomb_method);
-        SplinedPotentials(NonbondedMatrixSplined::from_nonbonded(
-            &nonbonded,
-            cutoff,
-            Some(spline_config),
-        ))
-    }
-
-    /// Create SR-only splined potentials (without Coulomb).
-    ///
-    /// The SR potential (e.g. Ashbaugh-Hatch) has a finite cutoff that creates a
-    /// discontinuity when combined with Coulomb inside a single spline. Splining
-    /// SR alone avoids this; Coulomb is added analytically by GPU/SIMD backends.
-    pub fn create_sr_splined_potentials(
-        nonbonded: NonbondedMatrix,
-        cutoff: f64,
-        spline_config: SplineConfig,
-    ) -> SplinedPotentials {
-        log::info!("Creating SR-only spline (no Coulomb) with cutoff {cutoff:.1} Å");
-        SplinedPotentials(NonbondedMatrixSplined::from_nonbonded(
-            &nonbonded,
-            cutoff,
-            Some(spline_config),
-        ))
-    }
-
-    /// Create a pair matrix from splined potentials.
-    pub fn from_splined(splined: SplinedPotentials) -> Self {
-        Self {
-            storage: PotentialStorage::Splined(splined.0),
+            coulomb_params,
         }
     }
 
-    /// Sum energy between two set of atomic structures (kJ/mol)
+    /// Sum energy between two structures (kJ/mol): SR + analytical Coulomb.
     pub fn sum_energy(&self, a: &Structure, b: &Structure) -> f64 {
-        let energy = match &self.storage {
-            PotentialStorage::Standard(nb) => compute_pairwise_energy(a, b, nb.get_potentials()),
-            PotentialStorage::Splined(sp) => compute_pairwise_energy(a, b, sp.get_potentials()),
-        };
+        let sr = compute_pairwise_energy(a, b, self.nonbonded.get_potentials());
+        let coulomb = pairwise_analytical_coulomb(a, b, &self.coulomb_params);
+        let energy = sr + coulomb;
         trace!("molecule-molecule energy: {energy:.2} kJ/mol");
         energy
     }
 
-    /// Sum energy between all atoms in a structure and a single test atom (kJ/mol)
+    /// Sum energy between all atoms in a structure and a single test atom (kJ/mol).
     pub fn energy_with_atom(&self, structure: &Structure, atom_id: usize, pos: &Vector3) -> f64 {
-        match &self.storage {
-            PotentialStorage::Standard(nb) => {
-                single_atom_energy(structure, atom_id, pos, nb.get_potentials())
-            }
-            PotentialStorage::Splined(sp) => {
-                single_atom_energy(structure, atom_id, pos, sp.get_potentials())
-            }
-        }
+        let sr = single_atom_energy(structure, atom_id, pos, self.nonbonded.get_potentials());
+        let coulomb = single_atom_analytical_coulomb(structure, atom_id, pos, &self.coulomb_params);
+        sr + coulomb
+    }
+
+    /// Create splined SR potentials for GPU/SIMD backends.
+    pub fn create_sr_splines(&self, cutoff: f64, config: SplineConfig) -> SplinedPotentials {
+        log::info!("Creating SR-only spline with cutoff {cutoff:.1} Å");
+        SplinedPotentials::from_nonbonded(&self.nonbonded, cutoff, config)
+    }
+
+    /// Coulomb parameters for analytical evaluation in backends.
+    pub const fn coulomb_params(&self) -> &CoulombParams {
+        &self.coulomb_params
     }
 }
 
-/// Compute pairwise energy between two structures using a potential matrix
+/// Compute pairwise energy between two structures using a potential matrix.
 fn compute_pairwise_energy<P, T>(a: &Structure, b: &Structure, potentials: &P) -> f64
 where
     P: std::ops::Index<(usize, usize), Output = T>,
     T: IsotropicTwobodyEnergy,
 {
-    let mut energy = 0.0;
-    for i in 0..a.pos.len() {
-        for j in 0..b.pos.len() {
-            let distance_sq = (a.pos[i] - b.pos[j]).norm_squared();
-            let atom_a = a.atom_ids[i];
-            let atom_b = b.atom_ids[j];
-            energy += potentials[(atom_a, atom_b)].isotropic_twobody_energy(distance_sq);
-        }
-    }
-    energy
+    itertools::iproduct!(a.pos.iter().zip(&a.atom_ids), b.pos.iter().zip(&b.atom_ids))
+        .map(|((pa, &ida), (pb, &idb))| {
+            potentials[(ida, idb)].isotropic_twobody_energy((pa - pb).norm_squared())
+        })
+        .sum()
 }
 
-/// Compute energy between all atoms in a structure and a single test atom
+/// Screened Coulomb (Yukawa) energy for a single pair.
+/// Skips uncharged pairs to avoid the exp() call and division by zero at r=0.
+#[inline]
+fn yukawa_energy(prefactor: f32, kappa: f64, r: f64) -> f64 {
+    if prefactor.abs() > 1e-12 {
+        f64::from(prefactor) * (-kappa * r).exp() / r
+    } else {
+        0.0
+    }
+}
+
+/// Analytical Coulomb/Yukawa energy between two structures.
+fn pairwise_analytical_coulomb(a: &Structure, b: &Structure, params: &CoulombParams) -> f64 {
+    let n = params.n_types;
+    let kappa = f64::from(params.kappa);
+    itertools::iproduct!(a.pos.iter().zip(&a.atom_ids), b.pos.iter().zip(&b.atom_ids))
+        .map(|((pa, &ida), (pb, &idb))| {
+            yukawa_energy(params.prefactors[ida * n + idb], kappa, (pa - pb).norm())
+        })
+        .sum()
+}
+
+/// Compute energy between all atoms in a structure and a single test atom.
 fn single_atom_energy<P, T>(
     structure: &Structure,
     atom_id: usize,
@@ -317,9 +265,86 @@ where
         .sum()
 }
 
+/// Analytical Coulomb energy between all atoms in a structure and a single test atom.
+fn single_atom_analytical_coulomb(
+    structure: &Structure,
+    atom_id: usize,
+    pos: &Vector3,
+    params: &CoulombParams,
+) -> f64 {
+    let n = params.n_types;
+    let kappa = f64::from(params.kappa);
+    structure
+        .pos
+        .iter()
+        .zip(structure.atom_ids.iter())
+        .map(|(atom_pos, &aid)| {
+            let idx = aid * n + atom_id;
+            let r = (atom_pos - pos).norm();
+            yukawa_energy(params.prefactors[idx], kappa, r)
+        })
+        .sum()
+}
+
 /// Calculate accumulated electric potential at point `r` due to charges in `structure`
 pub fn electric_potential(structure: &Structure, r: &Vector3, multipole: &Plain) -> f64 {
     std::iter::zip(structure.pos.iter(), structure.charges.iter())
         .map(|(pos, charge)| multipole.ion_potential(*charge, (pos - r).norm()))
         .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_abs_diff_eq;
+
+    #[test]
+    fn test_coulomb_params_zero() {
+        let params = CoulombParams::zero(3);
+        assert_eq!(params.prefactors.len(), 9);
+        assert!(params.prefactors.iter().all(|&p| p == 0.0));
+        assert_eq!(params.kappa, 0.0);
+        assert_eq!(params.n_types, 3);
+    }
+
+    /// Helper: single-atom structure at `pos` with given atom type id.
+    fn atom(pos: Vector3, atom_id: usize) -> Structure {
+        Structure {
+            pos: vec![pos],
+            masses: vec![1.0],
+            charges: vec![0.0],
+            radii: vec![1.0],
+            atom_ids: vec![atom_id],
+        }
+    }
+
+    #[test]
+    fn test_analytical_coulomb_symmetry() {
+        let a = atom(Vector3::new(0.0, 0.0, 0.0), 0);
+        let b = atom(Vector3::new(5.0, 0.0, 0.0), 0);
+        let params = CoulombParams {
+            prefactors: vec![10.0],
+            kappa: 0.0,
+            n_types: 1,
+        };
+        let e_ab = pairwise_analytical_coulomb(&a, &b, &params);
+        let e_ba = pairwise_analytical_coulomb(&b, &a, &params);
+        assert_abs_diff_eq!(e_ab, e_ba, epsilon = 1e-12);
+        // At r=5, unscreened: prefactor/r = 10/5 = 2
+        assert_abs_diff_eq!(e_ab, 2.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn test_analytical_coulomb_screening() {
+        let a = atom(Vector3::zeros(), 0);
+        let b = atom(Vector3::new(10.0, 0.0, 0.0), 0);
+        let params = CoulombParams {
+            prefactors: vec![7.0],
+            kappa: 0.1,
+            n_types: 1,
+        };
+        let e = pairwise_analytical_coulomb(&a, &b, &params);
+        let expected = 7.0 * (-1.0_f64).exp() / 10.0;
+        assert_abs_diff_eq!(e, expected, epsilon = 1e-6);
+    }
 }

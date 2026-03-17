@@ -332,7 +332,6 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         },
     );
 
-    let multipole = Plain::new(f64::INFINITY, medium.debye_length());
     let nonbonded = NonbondedMatrix::from_file(top_file, &topology, Some(medium.clone()))?;
 
     let ref_a = Structure::from_xyz(mol1, topology.atomkinds())?;
@@ -383,7 +382,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         save_table: savetable.clone(),
         charges: [ref_a.net_charge(), ref_b.net_charge()],
         dipole_moments: [ref_a.dipole_moment().norm(), ref_b.dipole_moment().norm()],
-        kappa: multipole.kappa(),
+        kappa: medium.debye_length().map(|dl| 1.0 / dl),
         permittivity: medium.permittivity(),
         max_n_div: *max_ndiv,
         gradient_threshold: *gradient_threshold,
@@ -404,69 +403,31 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         ..Default::default()
     };
 
+    let pair_matrix = energy::PairMatrix::new(nonbonded, topology.atomkinds(), &medium);
+
     match backend_type {
         Backend::Auto => unreachable!(), // Already resolved above
         Backend::Reference => {
-            // Use exact (non-splined) pair potentials
-            let pair_matrix = energy::PairMatrix::new_with_coulomb(
-                nonbonded,
-                topology.atomkinds(),
-                medium.permittivity().into(),
-                &multipole,
-            );
             let backend = backend::cpu::CpuBackend::new(ref_a, ref_b, pair_matrix);
             icoscan::do_icoscan(&scan_config, &backend)
         }
         Backend::Gpu | Backend::Simd => {
-            // Split path: spline only SR potential, evaluate Coulomb analytically.
-            // This avoids polynomial ringing caused by the SR hard cutoff
-            // discontinuity when both SR+Coulomb are combined in a single spline.
-            let n_types = topology.atomkinds().len();
-            let coulomb_params = energy::extract_coulomb_params(
-                topology.atomkinds(),
-                medium.permittivity().into(),
-                multipole.kappa(),
-            );
-
-            let (splined_matrix, coulomb) = match coulomb_params {
-                Some(cp) => {
-                    let sr_cut = sr_cutoff.unwrap_or(*cutoff);
-                    info!("Split path: SR spline (cutoff={sr_cut:.1} Å) + analytical Coulomb");
-                    let sr_spline_config = SplineConfig {
-                        grid_trim: sr_grid_trim,
-                        ..base_spline_config
-                    };
-                    (
-                        energy::PairMatrix::create_sr_splined_potentials(
-                            nonbonded,
-                            sr_cut,
-                            sr_spline_config,
-                        ),
-                        cp,
-                    )
-                }
-                None => {
-                    // Fallback (polarization): combined spline, no energy cap
-                    info!("Fallback: combined spline (cutoff={cutoff:.1} Å)");
-                    let sp = energy::PairMatrix::create_splined_potentials(
-                        nonbonded,
-                        topology.atomkinds(),
-                        medium.permittivity().into(),
-                        &multipole,
-                        *cutoff,
-                        base_spline_config,
-                    );
-                    (sp, energy::CoulombParams::zero(n_types))
-                }
+            let sr_cut = sr_cutoff.unwrap_or(*cutoff);
+            info!("Split path: SR spline (cutoff={sr_cut:.1} Å) + analytical Coulomb");
+            let sr_spline_config = SplineConfig {
+                grid_trim: sr_grid_trim,
+                ..base_spline_config
             };
+            let splined = pair_matrix.create_sr_splines(sr_cut, sr_spline_config);
+            let coulomb = pair_matrix.coulomb_params();
 
             match backend_type {
                 Backend::Gpu => {
-                    let gpu_backend = GpuBackend::new(ref_a, ref_b, &splined_matrix, &coulomb)?;
+                    let gpu_backend = GpuBackend::new(ref_a, ref_b, &splined, coulomb)?;
                     icoscan::do_icoscan(&scan_config, &gpu_backend)
                 }
                 Backend::Simd => {
-                    let simd_backend = SimdBackend::new(ref_a, ref_b, &splined_matrix, &coulomb);
+                    let simd_backend = SimdBackend::new(ref_a, ref_b, &splined, coulomb);
                     icoscan::do_icoscan(&scan_config, &simd_backend)
                 }
                 _ => unreachable!(),
@@ -503,15 +464,9 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
     faunus::topology::set_missing_epsilon(topology.atomkinds_mut(), 2.479);
 
     let medium = Medium::salt_water(*temperature, Salt::SodiumChloride, *molarity);
-    let multipole = Plain::new(f64::INFINITY, medium.debye_length());
     let nonbonded = NonbondedMatrix::from_file(top_file, &topology, Some(medium.clone()))?;
 
-    let pair_matrix = energy::PairMatrix::new_with_coulomb(
-        nonbonded,
-        topology.atomkinds(),
-        medium.permittivity().into(),
-        &multipole,
-    );
+    let pair_matrix = energy::PairMatrix::new(nonbonded, topology.atomkinds(), &medium);
 
     let ref_a = Structure::from_xyz(mol1, topology.atomkinds())?;
     let test_atom_id = topology
