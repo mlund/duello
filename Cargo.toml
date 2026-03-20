@@ -48,13 +48,4 @@ bytemuck = { version = "1.21", features = ["derive"] }
 [dev-dependencies]
 lazy_static = "1.5"
 
-[patch."https://github.com/mlund/icotable.git"]
-icotable = { path = "../icotable" }
-
-#[patch."https://github.com/mlund/faunus-rs.git"]
-#faunus = { path = "../faunus-rs/faunus" }
-
-[profile.release]
-strip = true     # Automatically strip symbols from the binary.
-lto = true       # Link-time optimization
 
