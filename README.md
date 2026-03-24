@@ -222,6 +222,7 @@ units (kJ/mol). If `--temperature` is omitted, the table's generation temperatur
 | `D_A/D_A⁰` | Per-molecule-A Zwanzig (marginalized over B and dihedral) |
 | `D_B/D_B⁰` | Per-molecule-B Zwanzig (marginalized over A and dihedral) |
 | `D_ω/D_ω⁰` | Per-dihedral Zwanzig (marginalized over both molecules) |
+| `separability` | D/D⁰ ÷ (D_A × D_B × D_ω). 1 = coordinates are independent, 0 = strongly coupled |
 | `λk` | Eigenvalue magnitude of mode k |
 | `f_Ak, f_Bk, f_ωk` | Coordinate fractions: how much of mode k is mol A / mol B / dihedral rotation |
 | `λk_free, ...` | Corresponding free-diffusion eigenmodes for normalization |

@@ -50,18 +50,22 @@ def plot_isotropic(df: pd.DataFrame, ax: plt.Axes):
 
 
 def plot_anisotropy_zwanzig(df: pd.DataFrame, ax: plt.Axes):
-    """Per-coordinate Zwanzig decomposition."""
+    """Per-coordinate Zwanzig decomposition with coupling index."""
     r = df["R"]
     ax.plot(r, df["D_A/D_A⁰"], "o-", color="C0", label="$D_A/D_A^0$ (mol A)", markersize=3)
     ax.plot(r, df["D_B/D_B⁰"], "s-", color="C1", label="$D_B/D_B^0$ (mol B)", markersize=3)
     ax.plot(r, df["D_ω/D_ω⁰"], "^-", color="C2", label="$D_\\omega/D_\\omega^0$ (dihedral)", markersize=3)
     ax.plot(r, df["D/D⁰"], "k--", alpha=0.4, label="$D/D^0$ (full 5D)", linewidth=1)
 
+    if "separability" in df.columns:
+        ax.plot(r, df["separability"], "x-", color="gray", alpha=0.5, markersize=3,
+                linewidth=0.8, label="separability")
+
     ax.set_xlabel("R (Å)")
     ax.set_ylabel("$D/D^0$")
     ax.set_ylim(-0.05, 1.1)
     ax.axhline(1.0, color="gray", linestyle=":", linewidth=0.5)
-    ax.legend()
+    ax.legend(fontsize=7)
     ax.set_title("Anisotropic diffusion (Zwanzig per coordinate)")
 
 

@@ -761,7 +761,7 @@ fn do_diffusion(cmd: &Commands) -> Result<()> {
         .map(|r| r.eigenmodes_free.len())
         .max()
         .unwrap_or(0);
-    let mut header = "R,D/D⁰,D_A/D_A⁰,D_B/D_B⁰,D_ω/D_ω⁰".to_string();
+    let mut header = "R,D/D⁰,D_A/D_A⁰,D_B/D_B⁰,D_ω/D_ω⁰,separability".to_string();
     for i in 1..=max_modes {
         header.push_str(&format!(",λ{i},f_A{i},f_B{i},f_ω{i}"));
     }
@@ -772,10 +772,17 @@ fn do_diffusion(cmd: &Commands) -> Result<()> {
     writeln!(file, "{header}")?;
 
     for r in &results {
+        // Coupling index: 1 = fully separable, <1 = coordinates are coupled
+        let product = r.dr_mol_a * r.dr_mol_b * r.dr_omega;
+        let separability = if product > 0.0 {
+            r.dr_normalized / product
+        } else {
+            0.0
+        };
         write!(
             file,
-            "{:.2},{:.6e},{:.6e},{:.6e},{:.6e}",
-            r.r, r.dr_normalized, r.dr_mol_a, r.dr_mol_b, r.dr_omega
+            "{:.2},{:.6e},{:.6e},{:.6e},{:.6e},{:.6e}",
+            r.r, r.dr_normalized, r.dr_mol_a, r.dr_mol_b, r.dr_omega, separability
         )?;
         for i in 0..max_modes {
             if let Some(m) = r.eigenmodes.get(i) {
