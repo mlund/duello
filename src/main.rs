@@ -298,6 +298,18 @@ enum Commands {
         /// Output CSV file for diffusion results
         #[arg(short = 'o', long, default_value = "diffusion.csv")]
         output: PathBuf,
+        /// Minimum molarity for cell-model concentration scan (mol/L)
+        #[arg(long)]
+        cmin: Option<f64>,
+        /// Maximum molarity for cell-model concentration scan (mol/L)
+        #[arg(long)]
+        cmax: Option<f64>,
+        /// Number of concentration points
+        #[arg(long, default_value = "20")]
+        cn: usize,
+        /// Output CSV for cell-model D(c) results
+        #[arg(long, default_value = "cell_diffusion.csv")]
+        cell_output: PathBuf,
     },
 }
 
@@ -723,6 +735,10 @@ fn do_diffusion(cmd: &Commands) -> Result<()> {
         table: table_path,
         temperature,
         output,
+        cmin,
+        cmax,
+        cn,
+        cell_output,
     } = cmd
     else {
         bail!("expected Diffusion command");
@@ -810,6 +826,33 @@ fn do_diffusion(cmd: &Commands) -> Result<()> {
     }
 
     info!("Wrote {} R-slices to {}", results.len(), output.display());
+
+    // Cell-model concentration scan
+    if let (Some(cmin), Some(cmax)) = (cmin, cmax) {
+        let dc = (cmax - cmin) / (*cn - 1).max(1) as f64;
+        let molarities: Vec<f64> = (0..*cn).map(|i| cmin + i as f64 * dc).collect();
+        let cell_results = duello::diffusion::cell_model_scan(&results, &molarities);
+
+        let mut cfile = File::create(cell_output)?;
+        writeln!(
+            cfile,
+            "c/M,R_cell/\u{c5},\u{27e8}D/D\u{2070}\u{27e9},\u{27e8}D_A/D_A\u{2070}\u{27e9},\u{27e8}D_B/D_B\u{2070}\u{27e9},\u{27e8}D_\u{03c9}/D_\u{03c9}\u{2070}\u{27e9},separability,\u{27e8}\u{03bb}\u{2081}/\u{03bb}\u{2081}_free\u{27e9}"
+        )?;
+        for cr in &cell_results {
+            writeln!(
+                cfile,
+                "{:.6e},{:.2},{:.6e},{:.6e},{:.6e},{:.6e},{:.6e},{:.6e}",
+                cr.molarity, cr.r_cell, cr.dr_normalized, cr.dr_mol_a,
+                cr.dr_mol_b, cr.dr_omega, cr.separability, cr.spectral_ratio
+            )?;
+        }
+        info!(
+            "Wrote {} concentration points to {}",
+            cell_results.len(),
+            cell_output.display()
+        );
+    }
+
     Ok(())
 }
 

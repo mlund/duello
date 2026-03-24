@@ -61,6 +61,8 @@ pub struct DiffusionResult {
     pub dr_mol_b: f64,
     /// Per-dihedral Zwanzig D_ω/D_ω⁰ (marginalized over vi, vj).
     pub dr_omega: f64,
+    /// Angular Boltzmann average ⟨exp(-βU)⟩ ∝ exp(-βw(R)). Used as PMF weight.
+    pub boltzmann_weight: f64,
     /// First non-trivial eigenmodes with coordinate decomposition.
     pub eigenmodes: Vec<EigenMode>,
     /// Free-diffusion eigenmodes for normalization.
@@ -614,7 +616,7 @@ fn diffusion_at_r(
         symmetrize_exchange(&mut energies, n_v, n_omega);
     }
 
-    let (dr_normalized, _, _, n_active) =
+    let (dr_normalized, boltzmann_weight, _, n_active) =
         zwanzig(&energies, beta).ok_or_else(|| anyhow::anyhow!("No finite energies at R={r:.1}"))?;
 
     let (dr_mol_a, dr_mol_b, dr_omega) = marginal_zwanzig(&energies, n_v, n_omega, beta);
@@ -654,6 +656,7 @@ fn diffusion_at_r(
         dr_mol_a,
         dr_mol_b,
         dr_omega,
+        boltzmann_weight,
         eigenmodes,
         eigenmodes_free,
         n_active,
@@ -699,6 +702,123 @@ pub fn diffusion_scan(
 
     results.sort_by(|a, b| a.r.partial_cmp(&b.r).unwrap());
     results
+}
+
+/// Cell-model result at one concentration.
+#[derive(Debug, Clone)]
+pub struct CellModelResult {
+    /// Molar concentration (mol/L).
+    pub molarity: f64,
+    /// Cell radius (Å).
+    pub r_cell: f64,
+    /// PMF-weighted ⟨D_r/D_r⁰⟩.
+    pub dr_normalized: f64,
+    /// PMF-weighted ⟨D_A/D_A⁰⟩.
+    pub dr_mol_a: f64,
+    /// PMF-weighted ⟨D_B/D_B⁰⟩.
+    pub dr_mol_b: f64,
+    /// PMF-weighted ⟨D_ω/D_ω⁰⟩.
+    pub dr_omega: f64,
+    /// PMF-weighted ⟨separability⟩.
+    pub separability: f64,
+    /// PMF-weighted ⟨λ₁/λ₁_free⟩.
+    pub spectral_ratio: f64,
+}
+
+/// Compute cell radius from molar concentration.
+/// R_cell = (3 / (4π · c · N_A))^{1/3} in Å.
+fn r_cell_from_molarity(molarity: f64) -> f64 {
+    const AVOGADRO: f64 = physical_constants::AVOGADRO_CONSTANT;
+    // c in mol/m³ = 1000 * molarity; result in m, convert to Å
+    let c_m3 = molarity * 1000.0;
+    let volume = 3.0 / (4.0 * std::f64::consts::PI * c_m3 * AVOGADRO);
+    volume.cbrt() * 1e10
+}
+
+/// PMF-weighted average of `f(R)` within [R_min, R_cell].
+///
+/// weight(R) = boltzmann_weight(R) · R²  ∝  exp(-βw(R)) · R²
+/// Beyond the table (R > R_max), assumes f(R) = 1 and w(R) = 0,
+/// contributing an analytical (R³_cell - R³_max)/3 term.
+fn cell_model_average(
+    results: &[DiffusionResult],
+    r_cell: f64,
+    f: impl Fn(&DiffusionResult) -> f64,
+) -> f64 {
+    if results.is_empty() {
+        return 1.0;
+    }
+    let dr = if results.len() > 1 {
+        results[1].r - results[0].r
+    } else {
+        1.0
+    };
+
+    let mut num_tab = 0.0;
+    let mut den_tab = 0.0;
+    for res in results {
+        if res.r > r_cell {
+            break;
+        }
+        let w = res.boltzmann_weight * res.r * res.r;
+        num_tab += f(res) * w;
+        den_tab += w;
+    }
+    // Trapezoidal: sum × dr
+    num_tab *= dr;
+    den_tab *= dr;
+
+    // Beyond table: f=1, w=0 → ∫R²dR = (R³_cell - R³_max)/3
+    let r_max = results.last().map_or(0.0, |r| r.r);
+    let free_vol = (r_cell.max(r_max).powi(3) - r_max.powi(3)) / 3.0;
+
+    let den = den_tab + free_vol;
+    if den > 0.0 {
+        (num_tab + free_vol) / den
+    } else {
+        1.0
+    }
+}
+
+/// Scan cell-model averaged diffusion over a range of concentrations.
+pub fn cell_model_scan(
+    results: &[DiffusionResult],
+    molarities: &[f64],
+) -> Vec<CellModelResult> {
+    molarities
+        .iter()
+        .map(|&c| {
+            let r_cell = r_cell_from_molarity(c);
+            let dr_normalized =
+                cell_model_average(results, r_cell, |r| r.dr_normalized);
+            let dr_mol_a = cell_model_average(results, r_cell, |r| r.dr_mol_a);
+            let dr_mol_b = cell_model_average(results, r_cell, |r| r.dr_mol_b);
+            let dr_omega = cell_model_average(results, r_cell, |r| r.dr_omega);
+            let separability = if dr_mol_a * dr_mol_b * dr_omega > 0.0 {
+                dr_normalized / (dr_mol_a * dr_mol_b * dr_omega)
+            } else {
+                0.0
+            };
+            let spectral_ratio = cell_model_average(results, r_cell, |r| {
+                match (r.eigenmodes.first(), r.eigenmodes_free.first()) {
+                    (Some(m), Some(mf)) if mf.eigenvalue > 0.0 => {
+                        m.eigenvalue / mf.eigenvalue
+                    }
+                    _ => 1.0,
+                }
+            });
+            CellModelResult {
+                molarity: c,
+                r_cell,
+                dr_normalized,
+                dr_mol_a,
+                dr_mol_b,
+                dr_omega,
+                separability,
+                spectral_ratio,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
