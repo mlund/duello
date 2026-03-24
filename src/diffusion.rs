@@ -338,6 +338,34 @@ fn zwanzig(energies: &[f64], beta: f64) -> Option<(f64, f64, f64, usize)> {
     Some((d_ratio, log_avg_minus.exp(), log_avg_plus.exp(), n))
 }
 
+/// Symmetrize energies for homo-dimer exchange: U_sym(vi,vj,oi) = ½[U(vi,vj,oi) + U(vj,vi,n_omega-1-oi)].
+///
+/// The inverse_orient decomposition is asymmetric, so the raw table data doesn't
+/// satisfy exchange symmetry even for identical molecules. This restores it by
+/// averaging each pair of exchanged states, matching faunus's double-lookup approach.
+fn symmetrize_exchange(energies: &mut [f64], n_v: usize, n_omega: usize) {
+    for vi in 0..n_v {
+        for vj in vi..n_v {
+            for oi in 0..n_omega {
+                let oi_swap = (n_omega - 1 - oi) % n_omega;
+                let idx_fwd = state_index(vi, vj, oi, n_v, n_omega);
+                let idx_rev = state_index(vj, vi, oi_swap, n_v, n_omega);
+                if idx_fwd == idx_rev {
+                    continue;
+                }
+                let u_fwd = energies[idx_fwd];
+                let u_rev = energies[idx_rev];
+                // Average in Boltzmann space when both are finite
+                if u_fwd.is_finite() && u_rev.is_finite() {
+                    let avg = 0.5 * (u_fwd + u_rev);
+                    energies[idx_fwd] = avg;
+                    energies[idx_rev] = avg;
+                }
+            }
+        }
+    }
+}
+
 /// Compute 1D Zwanzig D/D⁰ from a marginal PMF array (in energy units).
 ///
 /// Returns 1.0 if the PMF is uniform or has fewer than 2 finite values.
@@ -436,21 +464,27 @@ fn marginal_zwanzig(
 /// Compute diffusion analysis at a single R-slice.
 ///
 /// `free_evals` maps n_vertices → pre-computed free-diffusion eigenvalues.
+/// `homo_dimer`: apply exchange symmetrization for identical molecules.
 fn diffusion_at_r(
     table: &icotable::Table6DAdaptive<f32>,
     ri: usize,
     beta: f64,
     free_evals: &std::collections::HashMap<usize, Vec<f64>>,
+    homo_dimer: bool,
 ) -> Result<DiffusionResult> {
     let r = table.rmin + ri as f64 * table.dr;
     let n_omega = table.n_omega;
 
-    let (energies, level) = table
+    let (mut energies, level) = table
         .energies_at_r(ri)
         .ok_or_else(|| anyhow::anyhow!("R-slice {ri} is fully repulsive or out of range"))?;
 
     let n_v = level.n_vertices;
     let n_total = n_v * n_v * n_omega;
+
+    if homo_dimer {
+        symmetrize_exchange(&mut energies, n_v, n_omega);
+    }
 
     let (dr_normalized, _, _, n_active) =
         zwanzig(&energies, beta).ok_or_else(|| anyhow::anyhow!("No finite energies at R={r:.1}"))?;
@@ -498,10 +532,16 @@ fn diffusion_at_r(
 }
 
 /// Scan all R-slices in parallel at a given temperature.
+///
+/// `homo_dimer`: apply exchange symmetrization U(vi,vj,ω) ↔ U(vj,vi,−ω).
 pub fn diffusion_scan(
     table: &icotable::Table6DAdaptive<f32>,
     beta: f64,
+    homo_dimer: bool,
 ) -> Vec<DiffusionResult> {
+    if homo_dimer {
+        info!("Applying exchange symmetrization (homo-dimer)");
+    }
     // Free-diffusion eigenvalues depend only on graph topology — one set per mesh level
     let free_evals: std::collections::HashMap<usize, Vec<f64>> = table
         .levels
@@ -525,7 +565,7 @@ pub fn diffusion_scan(
     let mut results: Vec<DiffusionResult> = (0..n_r)
         .into_par_iter()
         .progress_count(n_r as u64)
-        .filter_map(|ri| diffusion_at_r(table, ri, beta, &free_evals).ok())
+        .filter_map(|ri| diffusion_at_r(table, ri, beta, &free_evals, homo_dimer).ok())
         .collect();
 
     results.sort_by(|a, b| a.r.partial_cmp(&b.r).unwrap());

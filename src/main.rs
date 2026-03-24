@@ -298,6 +298,9 @@ enum Commands {
         /// Output CSV file for diffusion results
         #[arg(short = 'o', long, default_value = "diffusion.csv")]
         output: PathBuf,
+        /// Homo-dimer: apply exchange symmetrization U(A,B) ↔ U(B,A)
+        #[arg(long)]
+        symmetric: bool,
     },
 }
 
@@ -717,6 +720,7 @@ fn do_diffusion(cmd: &Commands) -> Result<()> {
         table: table_path,
         temperature,
         output,
+        symmetric,
     } = cmd
     else {
         bail!("expected Diffusion command");
@@ -733,7 +737,7 @@ fn do_diffusion(cmd: &Commands) -> Result<()> {
         table.rmin, table.rmax, table.dr
     );
 
-    let results = duello::diffusion::diffusion_scan(&table, beta);
+    let results = duello::diffusion::diffusion_scan(&table, beta, *symmetric);
 
     if results.is_empty() {
         bail!("No R-slices yielded diffusion results");
