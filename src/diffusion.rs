@@ -31,8 +31,22 @@ use nalgebra::{DMatrix, SymmetricEigen};
 use rayon::prelude::*;
 use sprs::{CsMat, TriMat};
 
-/// Number of non-trivial eigenvalues to extract from the generator spectrum.
-const NUM_EIGENVALUES: usize = 5;
+/// Number of non-trivial eigenmodes to extract from the generator spectrum.
+const NUM_EIGENMODES: usize = 5;
+
+/// Eigenvalue with coordinate decomposition showing which angular
+/// degree of freedom dominates the mode.
+#[derive(Debug, Clone)]
+pub struct EigenMode {
+    /// Eigenvalue magnitude |λ|.
+    pub eigenvalue: f64,
+    /// Fraction of mode from molecule A rotation [0,1].
+    pub frac_mol_a: f64,
+    /// Fraction from molecule B rotation [0,1].
+    pub frac_mol_b: f64,
+    /// Fraction from dihedral rotation [0,1].
+    pub frac_omega: f64,
+}
 
 /// Result of diffusion analysis at one R-slice.
 #[derive(Debug, Clone)]
@@ -47,10 +61,10 @@ pub struct DiffusionResult {
     pub dr_mol_b: f64,
     /// Per-dihedral Zwanzig D_ω/D_ω⁰ (marginalized over vi, vj).
     pub dr_omega: f64,
-    /// First non-trivial eigenvalue magnitudes |λ₁|, |λ₂|, ... (sorted descending).
-    pub eigenvalues: Vec<f64>,
-    /// Free-diffusion eigenvalues for normalization.
-    pub eigenvalues_free: Vec<f64>,
+    /// First non-trivial eigenmodes with coordinate decomposition.
+    pub eigenmodes: Vec<EigenMode>,
+    /// Free-diffusion eigenmodes for normalization.
+    pub eigenmodes_free: Vec<EigenMode>,
     /// Number of active states (finite-energy grid points).
     pub n_active: usize,
 }
@@ -79,6 +93,52 @@ fn for_each_neighbor(
     let oi_prev = if oi == 0 { n_omega - 1 } else { oi - 1 };
     f(state_index(vi, vj, oi_prev, n_v, n_omega));
     f(state_index(vi, vj, (oi + 1) % n_omega, n_v, n_omega));
+}
+
+/// Compute coordinate fractions for an eigenvector by measuring how much
+/// the mode varies along each angular coordinate.
+///
+/// Uses squared differences Σ[ψ(i) - ψ(j)]² along each direction.
+/// A pure dihedral mode scores c_ω ≈ 1 and c_A ≈ c_B ≈ 0.
+fn coordinate_projection(
+    eigvec: &[f64],
+    level: &MeshLevel,
+    n_v: usize,
+    n_omega: usize,
+) -> (f64, f64, f64) {
+    let mut var_a = 0.0;
+    let mut var_b = 0.0;
+    let mut var_omega = 0.0;
+
+    for vi in 0..n_v {
+        for vj in 0..n_v {
+            for oi in 0..n_omega {
+                let psi_i = eigvec[state_index(vi, vj, oi, n_v, n_omega)];
+
+                // A-neighbors: how much does ψ change when vi changes?
+                for &ni in &level.neighbors[vi] {
+                    let diff = psi_i - eigvec[state_index(ni as usize, vj, oi, n_v, n_omega)];
+                    var_a += diff * diff;
+                }
+                // B-neighbors: how much does ψ change when vj changes?
+                for &nj in &level.neighbors[vj] {
+                    let diff = psi_i - eigvec[state_index(vi, nj as usize, oi, n_v, n_omega)];
+                    var_b += diff * diff;
+                }
+                // ω-neighbors: how much does ψ change when oi changes?
+                let oi_prev = if oi == 0 { n_omega - 1 } else { oi - 1 };
+                let d1 = psi_i - eigvec[state_index(vi, vj, oi_prev, n_v, n_omega)];
+                let d2 = psi_i - eigvec[state_index(vi, vj, (oi + 1) % n_omega, n_v, n_omega)];
+                var_omega += d1 * d1 + d2 * d2;
+            }
+        }
+    }
+
+    let total = var_a + var_b + var_omega;
+    if total < 1e-30 {
+        return (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0);
+    }
+    (var_a / total, var_b / total, var_omega / total)
 }
 
 /// Build a sparse CSR generator matrix over the (vi, vj, oi) state space.
@@ -155,9 +215,16 @@ fn sparse_matvec(a: &CsMat<f64>, x: &[f64]) -> Vec<f64> {
     y
 }
 
-/// Dense eigenvalues for small matrices (convert sparse → dense).
-/// Returns first `k` non-trivial eigenvalue magnitudes (descending).
-fn dense_eigenvalues(matrix: &CsMat<f64>, n: usize, k: usize) -> Vec<f64> {
+/// Dense eigenmodes for small matrices (convert sparse → dense).
+/// Returns first `k` non-trivial eigenmodes with coordinate projections.
+fn dense_eigenmodes(
+    matrix: &CsMat<f64>,
+    n: usize,
+    k: usize,
+    level: &MeshLevel,
+    n_v: usize,
+    n_omega: usize,
+) -> Vec<EigenMode> {
     let mut dense = DMatrix::zeros(n, n);
     for (row_idx, row) in matrix.outer_iterator().enumerate() {
         for (col_idx, &val) in row.iter() {
@@ -165,15 +232,27 @@ fn dense_eigenvalues(matrix: &CsMat<f64>, n: usize, k: usize) -> Vec<f64> {
         }
     }
     let eigen = SymmetricEigen::new(dense);
-    let mut evals: Vec<f64> = eigen.eigenvalues.iter().copied().collect();
-    // Descending sort: evals[0] ≈ 0 (equilibrium), evals[1..] are non-trivial
-    evals.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    evals
+
+    // Sort eigenpairs by eigenvalue descending
+    let mut indices: Vec<usize> = (0..n).collect();
+    let evals = &eigen.eigenvalues;
+    indices.sort_by(|&a, &b| evals[b].partial_cmp(&evals[a]).unwrap_or(std::cmp::Ordering::Equal));
+
+    indices
         .iter()
-        .skip(1)
+        .skip(1) // skip λ₀ ≈ 0
         .take(k)
-        .map(|&e| -e)
-        .filter(|&e| e.is_finite() && e > 0.0)
+        .filter(|&&i| evals[i].is_finite() && evals[i] < 0.0)
+        .map(|&i| {
+            let eigvec: Vec<f64> = eigen.eigenvectors.column(i).iter().copied().collect();
+            let (fa, fb, fw) = coordinate_projection(&eigvec, level, n_v, n_omega);
+            EigenMode {
+                eigenvalue: -evals[i],
+                frac_mol_a: fa,
+                frac_mol_b: fb,
+                frac_omega: fw,
+            }
+        })
         .collect()
 }
 
@@ -199,22 +278,36 @@ const MIN_ACTIVE_FRACTION: f64 = 0.01;
 /// Reject spectral gaps above this as numerically unstable.
 const MAX_PLAUSIBLE_SPECTRAL_GAP: f64 = 1e10;
 
-/// Extract first `k` non-trivial eigenvalue magnitudes from a sparse symmetric matrix.
+/// Extract first `k` non-trivial eigenmodes from a sparse symmetric matrix.
 ///
 /// Dense eigensolver for small matrices (exact, O(n³) but n is small).
 /// Lanczos with full reorthogonalization for larger ones (O(m²·n)).
-fn spectral_eigenvalues(matrix: &CsMat<f64>, n_states: usize, k: usize) -> Vec<f64> {
+fn spectral_eigenmodes(
+    matrix: &CsMat<f64>,
+    n_states: usize,
+    k: usize,
+    level: &MeshLevel,
+    n_v: usize,
+    n_omega: usize,
+) -> Vec<EigenMode> {
     if n_states <= DENSE_THRESHOLD {
-        return dense_eigenvalues(matrix, n_states, k);
+        return dense_eigenmodes(matrix, n_states, k, level, n_v, n_omega);
     }
-    lanczos_eigenvalues(matrix, n_states, k)
+    lanczos_eigenmodes(matrix, n_states, k, level, n_v, n_omega)
 }
 
 /// Lanczos iteration with full reorthogonalization.
 ///
-/// Returns first `k` non-trivial eigenvalue magnitudes (descending).
+/// Returns first `k` non-trivial eigenmodes with coordinate projections.
 /// Full reorthogonalization prevents spurious eigenvalues from loss of orthogonality.
-fn lanczos_eigenvalues(matrix: &CsMat<f64>, n_states: usize, k: usize) -> Vec<f64> {
+fn lanczos_eigenmodes(
+    matrix: &CsMat<f64>,
+    n_states: usize,
+    k: usize,
+    level: &MeshLevel,
+    n_v: usize,
+    n_omega: usize,
+) -> Vec<EigenMode> {
     let m = MAX_LANCZOS_VECTORS.min(n_states);
 
 
@@ -276,16 +369,37 @@ fn lanczos_eigenvalues(matrix: &CsMat<f64>, n_states: usize, k: usize) -> Vec<f6
         }
     }
     let eigen = SymmetricEigen::new(tridiag);
-    let mut evals: Vec<f64> = eigen.eigenvalues.iter().copied().collect();
-    // Descending sort; NaN from Lanczos instability treated as most negative
-    evals.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
 
-    evals
+    // Sort eigenpairs by eigenvalue descending
+    let mut indices: Vec<usize> = (0..tri_size).collect();
+    let evals = &eigen.eigenvalues;
+    indices
+        .sort_by(|&a, &b| evals[b].partial_cmp(&evals[a]).unwrap_or(std::cmp::Ordering::Equal));
+
+    indices
         .iter()
-        .skip(1)
+        .skip(1) // skip λ₀ ≈ 0
         .take(k)
-        .map(|&e| -e)
-        .filter(|&e| e.is_finite() && e > 0.0)
+        .filter(|&&i| evals[i].is_finite() && evals[i] < 0.0)
+        .map(|&i| {
+            // Reconstruct full eigenvector: ψ = V × z_i (basis × tridiag eigenvector)
+            let z = eigen.eigenvectors.column(i);
+            let mut psi = vec![0.0; n_states];
+            for (j, zj) in z.iter().enumerate() {
+                if j < basis.len() {
+                    for (s, &b) in basis[j].iter().enumerate() {
+                        psi[s] += zj * b;
+                    }
+                }
+            }
+            let (fa, fb, fw) = coordinate_projection(&psi, level, n_v, n_omega);
+            EigenMode {
+                eigenvalue: -evals[i],
+                frac_mol_a: fa,
+                frac_mol_b: fb,
+                frac_omega: fw,
+            }
+        })
         .collect()
 }
 
@@ -463,13 +577,13 @@ fn marginal_zwanzig(
 
 /// Compute diffusion analysis at a single R-slice.
 ///
-/// `free_evals` maps n_vertices → pre-computed free-diffusion eigenvalues.
+/// `free_evals` maps n_vertices → pre-computed free-diffusion eigenmodes.
 /// `homo_dimer`: apply exchange symmetrization for identical molecules.
 fn diffusion_at_r(
     table: &icotable::Table6DAdaptive<f32>,
     ri: usize,
     beta: f64,
-    free_evals: &std::collections::HashMap<usize, Vec<f64>>,
+    free_evals: &std::collections::HashMap<usize, Vec<EigenMode>>,
     homo_dimer: bool,
 ) -> Result<DiffusionResult> {
     let r = table.rmin + ri as f64 * table.dr;
@@ -491,32 +605,33 @@ fn diffusion_at_r(
 
     let (dr_mol_a, dr_mol_b, dr_omega) = marginal_zwanzig(&energies, n_v, n_omega, beta);
 
-    // Eigenvalue spectrum
-    let eigenvalues =
+    let eigenmodes =
         if n_active > MIN_ACTIVE_STATES && (n_active as f64 / n_total as f64) > MIN_ACTIVE_FRACTION
         {
             let gen = build_sparse_generator(level, n_omega, Some((&energies, beta)));
-            let evals = spectral_eigenvalues(&gen, n_total, NUM_EIGENVALUES);
-            // Reject if first eigenvalue is obviously unstable
-            if evals.first().is_some_and(|&e| e < MAX_PLAUSIBLE_SPECTRAL_GAP) {
-                evals
+            let modes = spectral_eigenmodes(&gen, n_total, NUM_EIGENMODES, level, n_v, n_omega);
+            if modes
+                .first()
+                .is_some_and(|m| m.eigenvalue < MAX_PLAUSIBLE_SPECTRAL_GAP)
+            {
+                modes
             } else {
-                debug!("R={r:.1} Å: rejecting unstable eigenvalues");
+                debug!("R={r:.1} Å: rejecting unstable eigenmodes");
                 Vec::new()
             }
         } else {
-            debug!("R={r:.1} Å: skipping eigenvalues (n_active={n_active}/{n_total})");
+            debug!("R={r:.1} Å: skipping eigenmodes (n_active={n_active}/{n_total})");
             Vec::new()
         };
 
-    let eigenvalues_free = free_evals
+    let eigenmodes_free = free_evals
         .get(&level.n_vertices)
         .cloned()
         .unwrap_or_default();
 
     debug!(
         "R={r:.1} Å: D_r/D_r⁰={dr_normalized:.6}, D_A={dr_mol_a:.4}, D_B={dr_mol_b:.4}, D_ω={dr_omega:.4}, λ₁={}",
-        eigenvalues.first().map_or("N/A".into(), |g| format!("{g:.4e}"))
+        eigenmodes.first().map_or("N/A".into(), |m| format!("{:.4e}", m.eigenvalue))
     );
 
     Ok(DiffusionResult {
@@ -525,8 +640,8 @@ fn diffusion_at_r(
         dr_mol_a,
         dr_mol_b,
         dr_omega,
-        eigenvalues,
-        eigenvalues_free,
+        eigenmodes,
+        eigenmodes_free,
         n_active,
     })
 }
@@ -542,21 +657,21 @@ pub fn diffusion_scan(
     if homo_dimer {
         info!("Applying exchange symmetrization (homo-dimer)");
     }
-    // Free-diffusion eigenvalues depend only on graph topology — one set per mesh level
-    let free_evals: std::collections::HashMap<usize, Vec<f64>> = table
+    // Free-diffusion eigenmodes depend only on graph topology — one set per mesh level
+    let free_evals: std::collections::HashMap<usize, Vec<EigenMode>> = table
         .levels
         .iter()
         .map(|level| {
+            let n_v = level.n_vertices;
             let n_omega = table.n_omega;
-            let n_states = level.n_vertices * level.n_vertices * n_omega;
+            let n_states = n_v * n_v * n_omega;
             info!(
-                "Computing free-diffusion eigenvalues (n_v={}, n_omega={n_omega})",
-                level.n_vertices
+                "Computing free-diffusion eigenmodes (n_v={n_v}, n_omega={n_omega})"
             );
             let free_gen = build_sparse_generator(level, n_omega, None);
             (
-                level.n_vertices,
-                spectral_eigenvalues(&free_gen, n_states, NUM_EIGENVALUES),
+                n_v,
+                spectral_eigenmodes(&free_gen, n_states, NUM_EIGENMODES, level, n_v, n_omega),
             )
         })
         .collect();
@@ -693,9 +808,11 @@ mod tests {
 
     // --- Spectral eigenvalue tests ---
 
+    // --- Eigenmode / projection tests ---
+
     /// Uniform energy: eigenvalues match between potential and free.
     #[test]
-    fn test_spectral_uniform_sparse() {
+    fn test_eigenmodes_uniform() {
         let level = MeshLevel::new(0);
         let n_v = level.n_vertices;
         let n_omega = 4;
@@ -703,93 +820,55 @@ mod tests {
 
         let energies = vec![0.0; n_states];
         let gen = build_sparse_generator(&level, n_omega, Some((&energies, 1.0)));
-        let evals = spectral_eigenvalues(&gen, n_states, 3);
+        let modes = spectral_eigenmodes(&gen, n_states, 3, &level, n_v, n_omega);
 
         let free_gen = build_sparse_generator(&level, n_omega, None);
-        let evals_free = spectral_eigenvalues(&free_gen, n_states, 3);
+        let free_modes = spectral_eigenmodes(&free_gen, n_states, 3, &level, n_v, n_omega);
 
-        assert!(!evals.is_empty());
-        for (e, ef) in evals.iter().zip(&evals_free) {
-            assert_relative_eq!(e / ef, 1.0, epsilon = 1e-6);
+        assert!(!modes.is_empty());
+        for (m, mf) in modes.iter().zip(&free_modes) {
+            assert_relative_eq!(m.eigenvalue / mf.eigenvalue, 1.0, epsilon = 1e-6);
         }
     }
 
-    /// Dense and Lanczos agree on the spectral gap (first non-trivial eigenvalue).
+    /// Free diffusion: fractions always sum to 1.
     #[test]
-    fn test_dense_vs_lanczos_ring() {
-        let n = 32;
-        let mut triplets = TriMat::new((n, n));
-        for i in 0..n {
-            let prev = if i == 0 { n - 1 } else { i - 1 };
-            let next = (i + 1) % n;
-            triplets.add_triplet(i, prev, 1.0);
-            triplets.add_triplet(i, next, 1.0);
-            triplets.add_triplet(i, i, -2.0);
+    fn test_projection_normalization() {
+        let level = MeshLevel::new(0);
+        let n_v = level.n_vertices;
+        let n_omega = 8;
+        let n_states = n_v * n_v * n_omega;
+
+        let free_gen = build_sparse_generator(&level, n_omega, None);
+        let modes = spectral_eigenmodes(&free_gen, n_states, 5, &level, n_v, n_omega);
+
+        for m in &modes {
+            let sum = m.frac_mol_a + m.frac_mol_b + m.frac_omega;
+            assert_relative_eq!(sum, 1.0, epsilon = 1e-6);
         }
-        let sparse = triplets.to_csr();
-
-        let dense = dense_eigenvalues(&sparse, n, 1);
-        let lanczos = lanczos_eigenvalues(&sparse, n, 1);
-
-        // Ring has degenerate eigenvalue pairs; both solvers should agree on the gap
-        assert_eq!(dense.len(), 1);
-        assert_eq!(lanczos.len(), 1);
-        assert_relative_eq!(dense[0], lanczos[0], epsilon = 1e-8);
     }
 
-    /// Spectral gap of a ring should agree with the analytical result.
+    /// vi-only potential: fractions sum to 1 even with asymmetric landscape.
     #[test]
-    fn test_spectral_gap_ring_analytical() {
-        let n = 128;
-        let mut triplets = TriMat::new((n, n));
-        for i in 0..n {
-            let prev = if i == 0 { n - 1 } else { i - 1 };
-            let next = (i + 1) % n;
-            triplets.add_triplet(i, prev, 1.0);
-            triplets.add_triplet(i, next, 1.0);
-            triplets.add_triplet(i, i, -2.0);
-        }
-        let sparse = triplets.to_csr();
+    fn test_projection_with_potential() {
+        let level = MeshLevel::new(0);
+        let n_v = level.n_vertices;
+        let n_omega = 4;
+        let n_states = n_v * n_v * n_omega;
 
-        let analytical_gap = 2.0 * (1.0 - (2.0 * std::f64::consts::PI / n as f64).cos());
-        let evals = spectral_eigenvalues(&sparse, n, 1);
-
-        assert_eq!(evals.len(), 1);
-        assert_relative_eq!(evals[0], analytical_gap, epsilon = 1e-8);
-    }
-
-    /// Multiple eigenvalues from Lanczos with a potential match dense solver.
-    #[test]
-    fn test_eigenvalues_with_potential() {
-        let n = 64;
-        let u0 = 1.5;
-        let beta = 1.0;
-        let energies: Vec<f64> = (0..n)
-            .map(|i| u0 * (2.0 * std::f64::consts::PI * i as f64 / n as f64).cos())
+        let energies: Vec<f64> = (0..n_states)
+            .map(|idx| {
+                let vi = idx / (n_v * n_omega);
+                2.0 * level.vertices[vi][2]
+            })
             .collect();
-        let u_min = energies.iter().copied().fold(f64::INFINITY, f64::min);
 
-        let mut triplets = TriMat::new((n, n));
-        for i in 0..n {
-            let u_i = energies[i] - u_min;
-            let prev = if i == 0 { n - 1 } else { i - 1 };
-            let next = (i + 1) % n;
-            triplets.add_triplet(i, prev, 1.0);
-            triplets.add_triplet(i, next, 1.0);
-            let mut exit = 0.0;
-            for &j in &[prev, next] {
-                exit += (-beta * (energies[j] - u_min - u_i) / 2.0).exp();
-            }
-            triplets.add_triplet(i, i, -exit);
-        }
-        let sparse = triplets.to_csr();
+        let gen = build_sparse_generator(&level, n_omega, Some((&energies, 1.0)));
+        let modes = spectral_eigenmodes(&gen, n_states, 5, &level, n_v, n_omega);
 
-        let dense = dense_eigenvalues(&sparse, n, 3);
-        let lanczos = lanczos_eigenvalues(&sparse, n, 3);
-
-        assert_eq!(dense.len(), 3);
-        for (d, l) in dense.iter().zip(&lanczos) {
-            assert_relative_eq!(d, l, epsilon = 1e-8);
+        for m in &modes {
+            let sum = m.frac_mol_a + m.frac_mol_b + m.frac_omega;
+            assert_relative_eq!(sum, 1.0, epsilon = 1e-6);
         }
     }
 

@@ -222,8 +222,9 @@ units (kJ/mol). If `--temperature` is omitted, the table's generation temperatur
 | `D_A/D_A⁰` | Per-molecule-A Zwanzig (marginalized over B and dihedral) |
 | `D_B/D_B⁰` | Per-molecule-B Zwanzig (marginalized over A and dihedral) |
 | `D_ω/D_ω⁰` | Per-dihedral Zwanzig (marginalized over both molecules) |
-| `λ1…λk` | First k non-trivial eigenvalue magnitudes of the symmetrized generator |
-| `λ1_free…` | Corresponding free-diffusion eigenvalues for normalization |
+| `λk` | Eigenvalue magnitude of mode k |
+| `f_Ak, f_Bk, f_ωk` | Coordinate fractions: how much of mode k is mol A / mol B / dihedral rotation |
+| `λk_free, ...` | Corresponding free-diffusion eigenmodes for normalization |
 | `n_active` | Number of finite-energy grid points at this R |
 
 ### Interpretation
@@ -242,10 +243,12 @@ Each is computed by marginalizing the energy landscape over the other two coordi
 to get a 1D potential of mean force, then applying Zwanzig to it.
 For symmetric molecules (mol1 = mol2), D_A ≈ D_B at all separations.
 
-**λ1…λk** are the first non-trivial eigenvalue magnitudes of the symmetrized
-generator on the angular grid. Their spread quantifies relaxation anisotropy:
-if λ₂ ≈ λ₁, relaxation is isotropic; if λ₂ >> λ₁, some angular modes
-relax much faster than others. At long range, λk converges to λk_free.
+**λk with (f_A, f_B, f_ω)** are eigenvalue magnitudes of the symmetrized generator
+with coordinate decomposition. The fractions f_A + f_B + f_ω = 1 show whether
+mode k is primarily molecule A tumbling (high f_A), molecule B tumbling (high f_B),
+or dihedral rotation (high f_ω). Mixed values indicate coupled modes.
+For homo-dimers (identical molecules), the table is exchange-symmetrized
+automatically so that D_A = D_B and f_A ≈ f_B.
 
 ## Preparing PDB files
 

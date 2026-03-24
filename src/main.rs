@@ -754,20 +754,19 @@ fn do_diffusion(cmd: &Commands) -> Result<()> {
 
     let mut file = File::create(output)?;
 
-    // Build header with dynamic eigenvalue columns
-    let max_evals = results.iter().map(|r| r.eigenvalues.len()).max().unwrap_or(0);
-    let max_evals_free = results
+    // Build header: each eigenmode gets λ, f_A, f_B, f_ω columns
+    let max_modes = results.iter().map(|r| r.eigenmodes.len()).max().unwrap_or(0);
+    let max_free = results
         .iter()
-        .map(|r| r.eigenvalues_free.len())
+        .map(|r| r.eigenmodes_free.len())
         .max()
         .unwrap_or(0);
-    let mut header =
-        "R,D/D⁰,D_A/D_A⁰,D_B/D_B⁰,D_ω/D_ω⁰".to_string();
-    for i in 1..=max_evals {
-        header.push_str(&format!(",λ{i}"));
+    let mut header = "R,D/D⁰,D_A/D_A⁰,D_B/D_B⁰,D_ω/D_ω⁰".to_string();
+    for i in 1..=max_modes {
+        header.push_str(&format!(",λ{i},f_A{i},f_B{i},f_ω{i}"));
     }
-    for i in 1..=max_evals_free {
-        header.push_str(&format!(",λ{i}_free"));
+    for i in 1..=max_free {
+        header.push_str(&format!(",λ{i}_free,f_A{i}_free,f_B{i}_free,f_ω{i}_free"));
     }
     header.push_str(",n_active");
     writeln!(file, "{header}")?;
@@ -778,18 +777,26 @@ fn do_diffusion(cmd: &Commands) -> Result<()> {
             "{:.2},{:.6e},{:.6e},{:.6e},{:.6e}",
             r.r, r.dr_normalized, r.dr_mol_a, r.dr_mol_b, r.dr_omega
         )?;
-        for i in 0..max_evals {
-            if let Some(&e) = r.eigenvalues.get(i) {
-                write!(file, ",{e:.6e}")?;
+        for i in 0..max_modes {
+            if let Some(m) = r.eigenmodes.get(i) {
+                write!(
+                    file,
+                    ",{:.6e},{:.4},{:.4},{:.4}",
+                    m.eigenvalue, m.frac_mol_a, m.frac_mol_b, m.frac_omega
+                )?;
             } else {
-                write!(file, ",")?;
+                write!(file, ",,,,")?;
             }
         }
-        for i in 0..max_evals_free {
-            if let Some(&e) = r.eigenvalues_free.get(i) {
-                write!(file, ",{e:.6e}")?;
+        for i in 0..max_free {
+            if let Some(m) = r.eigenmodes_free.get(i) {
+                write!(
+                    file,
+                    ",{:.6e},{:.4},{:.4},{:.4}",
+                    m.eigenvalue, m.frac_mol_a, m.frac_mol_b, m.frac_omega
+                )?;
             } else {
-                write!(file, ",")?;
+                write!(file, ",,,,")?;
             }
         }
         writeln!(file, ",{}", r.n_active)?;
