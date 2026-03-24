@@ -98,8 +98,9 @@ fn for_each_neighbor(
 /// Compute coordinate fractions for an eigenvector by measuring how much
 /// the mode varies along each angular coordinate.
 ///
-/// Uses squared differences Σ[ψ(i) - ψ(j)]² along each direction.
-/// A pure dihedral mode scores c_ω ≈ 1 and c_A ≈ c_B ≈ 0.
+/// Uses squared differences Σ[ψ(i) - ψ(j)]² per edge, normalized by the
+/// number of edges in each direction to remove topology bias (icosphere
+/// vertices have ~5 neighbors vs 2 for the periodic dihedral ring).
 fn coordinate_projection(
     eigvec: &[f64],
     level: &MeshLevel,
@@ -109,36 +110,44 @@ fn coordinate_projection(
     let mut var_a = 0.0;
     let mut var_b = 0.0;
     let mut var_omega = 0.0;
+    let mut edges_a = 0u64;
+    let mut edges_b = 0u64;
+    let mut edges_omega = 0u64;
 
     for vi in 0..n_v {
         for vj in 0..n_v {
             for oi in 0..n_omega {
                 let psi_i = eigvec[state_index(vi, vj, oi, n_v, n_omega)];
 
-                // A-neighbors: how much does ψ change when vi changes?
                 for &ni in &level.neighbors[vi] {
                     let diff = psi_i - eigvec[state_index(ni as usize, vj, oi, n_v, n_omega)];
                     var_a += diff * diff;
+                    edges_a += 1;
                 }
-                // B-neighbors: how much does ψ change when vj changes?
                 for &nj in &level.neighbors[vj] {
                     let diff = psi_i - eigvec[state_index(vi, nj as usize, oi, n_v, n_omega)];
                     var_b += diff * diff;
+                    edges_b += 1;
                 }
-                // ω-neighbors: how much does ψ change when oi changes?
                 let oi_prev = if oi == 0 { n_omega - 1 } else { oi - 1 };
                 let d1 = psi_i - eigvec[state_index(vi, vj, oi_prev, n_v, n_omega)];
                 let d2 = psi_i - eigvec[state_index(vi, vj, (oi + 1) % n_omega, n_v, n_omega)];
                 var_omega += d1 * d1 + d2 * d2;
+                edges_omega += 2;
             }
         }
     }
 
-    let total = var_a + var_b + var_omega;
+    // Normalize by edge count to remove topology bias
+    let norm_a = if edges_a > 0 { var_a / edges_a as f64 } else { 0.0 };
+    let norm_b = if edges_b > 0 { var_b / edges_b as f64 } else { 0.0 };
+    let norm_omega = if edges_omega > 0 { var_omega / edges_omega as f64 } else { 0.0 };
+
+    let total = norm_a + norm_b + norm_omega;
     if total < 1e-30 {
         return (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0);
     }
-    (var_a / total, var_b / total, var_omega / total)
+    (norm_a / total, norm_b / total, norm_omega / total)
 }
 
 /// Build a sparse CSR generator matrix over the (vi, vj, oi) state space.
@@ -190,13 +199,14 @@ fn build_sparse_generator(
                             return;
                         }
                         let half_delta = beta * (energies[idx_j] - u_min.unwrap() - u_i) / 2.0;
-                        if half_delta <= BOLTZMANN_OVERFLOW_GUARD {
-                            exit_rate += (-half_delta).exp();
+                        if half_delta > BOLTZMANN_OVERFLOW_GUARD {
+                            // Transition is negligible — skip both off-diagonal and exit rate
+                            return;
                         }
+                        exit_rate += (-half_delta).exp();
                     } else {
                         exit_rate += 1.0;
                     }
-                    // Off-diagonal of L_sym is always 1 after Smoluchowski symmetrization
                     triplets.add_triplet(idx_i, idx_j, 1.0);
                 });
                 // Row sum = 0 ensures probability conservation
@@ -493,6 +503,9 @@ fn zwanzig_1d(pmf: &[f64], beta: f64) -> f64 {
 /// For each coordinate (vi, vj, oi), integrates out the other two to get a
 /// 1D potential of mean force, then applies Zwanzig independently.
 /// Returns (D_A/D⁰, D_B/D⁰, D_ω/D⁰).
+///
+/// Note: marginalization smooths cross-correlations, so D_A × D_B × D_ω ≥ D/D⁰.
+/// The ratio D/D⁰ / (D_A × D_B × D_ω) measures coordinate separability.
 fn marginal_zwanzig(
     energies: &[f64],
     n_v: usize,
