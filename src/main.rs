@@ -771,7 +771,11 @@ fn do_diffusion(cmd: &Commands) -> Result<()> {
     let mut file = File::create(output)?;
 
     // Build header: each eigenmode gets λ, f_A, f_B, f_ω columns
-    let max_modes = results.iter().map(|r| r.eigenmodes.len()).max().unwrap_or(0);
+    let max_modes = results
+        .iter()
+        .map(|r| r.eigenmodes.len())
+        .max()
+        .unwrap_or(0);
     let max_free = results
         .iter()
         .map(|r| r.eigenmodes_free.len())
@@ -842,8 +846,14 @@ fn do_diffusion(cmd: &Commands) -> Result<()> {
             writeln!(
                 cfile,
                 "{:.6e},{:.2},{:.6e},{:.6e},{:.6e},{:.6e},{:.6e},{:.6e}",
-                cr.molarity, cr.r_cell, cr.dr_normalized, cr.dr_mol_a,
-                cr.dr_mol_b, cr.dr_omega, cr.separability, cr.spectral_ratio
+                cr.molarity,
+                cr.r_cell,
+                cr.dr_normalized,
+                cr.dr_mol_a,
+                cr.dr_mol_b,
+                cr.dr_omega,
+                cr.separability,
+                cr.spectral_ratio
             )?;
         }
         info!(

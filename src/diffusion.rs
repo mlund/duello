@@ -141,9 +141,21 @@ fn coordinate_projection(
     }
 
     // Normalize by edge count to remove topology bias
-    let norm_a = if edges_a > 0 { var_a / edges_a as f64 } else { 0.0 };
-    let norm_b = if edges_b > 0 { var_b / edges_b as f64 } else { 0.0 };
-    let norm_omega = if edges_omega > 0 { var_omega / edges_omega as f64 } else { 0.0 };
+    let norm_a = if edges_a > 0 {
+        var_a / edges_a as f64
+    } else {
+        0.0
+    };
+    let norm_b = if edges_b > 0 {
+        var_b / edges_b as f64
+    } else {
+        0.0
+    };
+    let norm_omega = if edges_omega > 0 {
+        var_omega / edges_omega as f64
+    } else {
+        0.0
+    };
 
     let total = norm_a + norm_b + norm_omega;
     if total < 1e-30 {
@@ -248,7 +260,11 @@ fn dense_eigenmodes(
     // Sort eigenpairs by eigenvalue descending
     let mut indices: Vec<usize> = (0..n).collect();
     let evals = &eigen.eigenvalues;
-    indices.sort_by(|&a, &b| evals[b].partial_cmp(&evals[a]).unwrap_or(std::cmp::Ordering::Equal));
+    indices.sort_by(|&a, &b| {
+        evals[b]
+            .partial_cmp(&evals[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     indices
         .iter()
@@ -322,7 +338,6 @@ fn lanczos_eigenmodes(
 ) -> Vec<EigenMode> {
     let m = MAX_LANCZOS_VECTORS.min(n_states);
 
-
     // Deterministic pseudo-random start to ensure reproducible eigenvalues
     let mut v: Vec<f64> = (0..n_states)
         .map(|i| ((i * 7 + 13) % 97) as f64 / 97.0 - 0.5)
@@ -338,7 +353,11 @@ fn lanczos_eigenmodes(
     for _j in 0..m {
         let mut w = sparse_matvec(matrix, basis.last().unwrap());
 
-        let a_j: f64 = w.iter().zip(basis.last().unwrap()).map(|(a, b)| a * b).sum();
+        let a_j: f64 = w
+            .iter()
+            .zip(basis.last().unwrap())
+            .map(|(a, b)| a * b)
+            .sum();
         alpha.push(a_j);
 
         let v_cur = basis.last().unwrap();
@@ -385,8 +404,11 @@ fn lanczos_eigenmodes(
     // Sort eigenpairs by eigenvalue descending
     let mut indices: Vec<usize> = (0..tri_size).collect();
     let evals = &eigen.eigenvalues;
-    indices
-        .sort_by(|&a, &b| evals[b].partial_cmp(&evals[a]).unwrap_or(std::cmp::Ordering::Equal));
+    indices.sort_by(|&a, &b| {
+        evals[b]
+            .partial_cmp(&evals[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     indices
         .iter()
@@ -508,12 +530,7 @@ fn zwanzig_1d(pmf: &[f64], beta: f64) -> f64 {
 ///
 /// Note: marginalization smooths cross-correlations, so D_A × D_B × D_ω ≥ D/D⁰.
 /// The ratio D/D⁰ / (D_A × D_B × D_ω) measures coordinate separability.
-fn marginal_zwanzig(
-    energies: &[f64],
-    n_v: usize,
-    n_omega: usize,
-    beta: f64,
-) -> (f64, f64, f64) {
+fn marginal_zwanzig(energies: &[f64], n_v: usize, n_omega: usize, beta: f64) -> (f64, f64, f64) {
     // w_A(vi) = -kT ln Σ_{vj,oi} exp(-βU) = -(1/β) · log_sum_exp over (vj, oi)
     let pmf_a: Vec<f64> = (0..n_v)
         .map(|vi| {
@@ -616,29 +633,29 @@ fn diffusion_at_r(
         symmetrize_exchange(&mut energies, n_v, n_omega);
     }
 
-    let (dr_normalized, boltzmann_weight, _, n_active) =
-        zwanzig(&energies, beta).ok_or_else(|| anyhow::anyhow!("No finite energies at R={r:.1}"))?;
+    let (dr_normalized, boltzmann_weight, _, n_active) = zwanzig(&energies, beta)
+        .ok_or_else(|| anyhow::anyhow!("No finite energies at R={r:.1}"))?;
 
     let (dr_mol_a, dr_mol_b, dr_omega) = marginal_zwanzig(&energies, n_v, n_omega, beta);
 
-    let eigenmodes =
-        if n_active > MIN_ACTIVE_STATES && (n_active as f64 / n_total as f64) > MIN_ACTIVE_FRACTION
+    let eigenmodes = if n_active > MIN_ACTIVE_STATES
+        && (n_active as f64 / n_total as f64) > MIN_ACTIVE_FRACTION
+    {
+        let gen = build_sparse_generator(level, n_omega, Some((&energies, beta)));
+        let modes = spectral_eigenmodes(&gen, n_total, NUM_EIGENMODES, level, n_v, n_omega);
+        if modes
+            .first()
+            .is_some_and(|m| m.eigenvalue < MAX_PLAUSIBLE_SPECTRAL_GAP)
         {
-            let gen = build_sparse_generator(level, n_omega, Some((&energies, beta)));
-            let modes = spectral_eigenmodes(&gen, n_total, NUM_EIGENMODES, level, n_v, n_omega);
-            if modes
-                .first()
-                .is_some_and(|m| m.eigenvalue < MAX_PLAUSIBLE_SPECTRAL_GAP)
-            {
-                modes
-            } else {
-                debug!("R={r:.1} Å: rejecting unstable eigenmodes");
-                Vec::new()
-            }
+            modes
         } else {
-            debug!("R={r:.1} Å: skipping eigenmodes (n_active={n_active}/{n_total})");
+            debug!("R={r:.1} Å: rejecting unstable eigenmodes");
             Vec::new()
-        };
+        }
+    } else {
+        debug!("R={r:.1} Å: skipping eigenmodes (n_active={n_active}/{n_total})");
+        Vec::new()
+    };
 
     let eigenmodes_free = free_evals
         .get(&level.n_vertices)
@@ -682,9 +699,7 @@ pub fn diffusion_scan(
             let n_v = level.n_vertices;
             let n_omega = table.n_omega;
             let n_states = n_v * n_v * n_omega;
-            info!(
-                "Computing free-diffusion eigenmodes (n_v={n_v}, n_omega={n_omega})"
-            );
+            info!("Computing free-diffusion eigenmodes (n_v={n_v}, n_omega={n_omega})");
             let free_gen = build_sparse_generator(level, n_omega, None);
             (
                 n_v,
@@ -781,16 +796,12 @@ fn cell_model_average(
 }
 
 /// Scan cell-model averaged diffusion over a range of concentrations.
-pub fn cell_model_scan(
-    results: &[DiffusionResult],
-    molarities: &[f64],
-) -> Vec<CellModelResult> {
+pub fn cell_model_scan(results: &[DiffusionResult], molarities: &[f64]) -> Vec<CellModelResult> {
     molarities
         .iter()
         .map(|&c| {
             let r_cell = r_cell_from_molarity(c);
-            let dr_normalized =
-                cell_model_average(results, r_cell, |r| r.dr_normalized);
+            let dr_normalized = cell_model_average(results, r_cell, |r| r.dr_normalized);
             let dr_mol_a = cell_model_average(results, r_cell, |r| r.dr_mol_a);
             let dr_mol_b = cell_model_average(results, r_cell, |r| r.dr_mol_b);
             let dr_omega = cell_model_average(results, r_cell, |r| r.dr_omega);
@@ -801,9 +812,7 @@ pub fn cell_model_scan(
             };
             let spectral_ratio = cell_model_average(results, r_cell, |r| {
                 match (r.eigenmodes.first(), r.eigenmodes_free.first()) {
-                    (Some(m), Some(mf)) if mf.eigenvalue > 0.0 => {
-                        m.eigenvalue / mf.eigenvalue
-                    }
+                    (Some(m), Some(mf)) if mf.eigenvalue > 0.0 => m.eigenvalue / mf.eigenvalue,
                     _ => 1.0,
                 }
             });
