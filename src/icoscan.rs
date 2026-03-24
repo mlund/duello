@@ -44,6 +44,8 @@ pub struct ScanConfig {
     pub max_n_div: usize,
     /// Angular gradient threshold for adaptive resolution reduction.
     pub gradient_threshold: f64,
+    /// True when mol1 and mol2 are identical (homo-dimer).
+    pub homo_dimer: bool,
 }
 
 /// Build tail correction from the angularly averaged free energy at outer radial bins.
@@ -351,13 +353,18 @@ pub fn do_icoscan<B: EnergyBackend + Sync>(config: &ScanConfig, backend: &B) -> 
             config.kappa,
             electric_prefactor,
         );
+        let point_group = if config.homo_dimer {
+            icotable::PointGroup::Exchange
+        } else {
+            icotable::PointGroup::Asymmetric
+        };
         table.metadata = Some(TableMetadata {
             tail_terms,
             charges: Some(config.charges),
             dipole_moments: Some(config.dipole_moments),
             temperature: Some(config.temperature),
             electric_prefactor: Some(electric_prefactor),
-            ..Default::default()
+            point_group,
         });
         table.save(path)?;
     }

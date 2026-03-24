@@ -298,9 +298,6 @@ enum Commands {
         /// Output CSV file for diffusion results
         #[arg(short = 'o', long, default_value = "diffusion.csv")]
         output: PathBuf,
-        /// Homo-dimer: apply exchange symmetrization U(A,B) ↔ U(B,A)
-        #[arg(long)]
-        symmetric: bool,
     },
 }
 
@@ -388,6 +385,11 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         other => *other,
     };
 
+    let homo_dimer = mol1 == mol2;
+    if homo_dimer {
+        info!("Homo-dimer detected (same input files)");
+    }
+
     let scan_config = icoscan::ScanConfig {
         rmin: *rmin,
         rmax: *rmax,
@@ -401,6 +403,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         permittivity: medium.permittivity(),
         max_n_div: *max_ndiv,
         gradient_threshold: *gradient_threshold,
+        homo_dimer,
     };
 
     // energy_cap only applies to SR-only splines (GPU/SIMD split path).
@@ -720,7 +723,6 @@ fn do_diffusion(cmd: &Commands) -> Result<()> {
         table: table_path,
         temperature,
         output,
-        symmetric,
     } = cmd
     else {
         bail!("expected Diffusion command");
@@ -737,7 +739,14 @@ fn do_diffusion(cmd: &Commands) -> Result<()> {
         table.rmin, table.rmax, table.dr
     );
 
-    let results = duello::diffusion::diffusion_scan(&table, beta, *symmetric);
+    let homo_dimer = table
+        .metadata
+        .as_ref()
+        .is_some_and(|m| m.point_group == icotable::PointGroup::Exchange);
+    if homo_dimer {
+        info!("Homo-dimer table detected");
+    }
+    let results = duello::diffusion::diffusion_scan(&table, beta, homo_dimer);
 
     if results.is_empty() {
         bail!("No R-slices yielded diffusion results");
