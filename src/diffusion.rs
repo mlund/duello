@@ -452,7 +452,7 @@ fn zwanzig(energies: &[f64], beta: f64) -> Option<(f64, f64, f64, usize)> {
     Some((d_ratio, log_avg_minus.exp(), log_avg_plus.exp(), n))
 }
 
-/// Symmetrize energies for homo-dimer exchange: U_sym(vi,vj,oi) = ½[U(vi,vj,oi) + U(vj,vi,n_omega-1-oi)].
+/// Symmetrize energies for homo-dimer exchange: U_sym(vi,vj,oi) = ½[U(vi,vj,oi) + U(vj,vi,-oi)].
 ///
 /// The inverse_orient decomposition is asymmetric, so the raw table data doesn't
 /// satisfy exchange symmetry even for identical molecules. This restores it by
@@ -461,7 +461,8 @@ fn symmetrize_exchange(energies: &mut [f64], n_v: usize, n_omega: usize) {
     for vi in 0..n_v {
         for vj in vi..n_v {
             for oi in 0..n_omega {
-                let oi_swap = (n_omega - 1 - oi) % n_omega;
+                // Periodic negation: -oi mod n_omega (oi=0 maps to 0, oi=1 maps to n-1, etc.)
+                let oi_swap = (n_omega - oi) % n_omega;
                 let idx_fwd = state_index(vi, vj, oi, n_v, n_omega);
                 let idx_rev = state_index(vj, vi, oi_swap, n_v, n_omega);
                 if idx_fwd == idx_rev {
