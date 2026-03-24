@@ -444,7 +444,7 @@ fn vec_norm(v: &[f64]) -> f64 {
 /// Zwanzig formula: D/D₀ = 1 / [⟨exp(-βU)⟩ x ⟨exp(βU)⟩]
 ///
 /// Computed in log-space with streaming sums to avoid intermediate allocations.
-fn zwanzig(energies: &[f64], beta: f64) -> Option<(f64, f64, f64, usize)> {
+fn zwanzig(energies: &[f64], beta: f64) -> Option<(f64, f64, usize)> {
     // First pass: find u_min and count finite values
     let mut u_min = f64::INFINITY;
     let mut n = 0usize;
@@ -483,7 +483,11 @@ fn zwanzig(energies: &[f64], beta: f64) -> Option<(f64, f64, f64, usize)> {
     let log_avg_plus = max_plus + sum_plus.ln() - ln_n;
 
     let d_ratio = (-log_avg_minus - log_avg_plus).exp();
-    Some((d_ratio, log_avg_minus.exp(), log_avg_plus.exp(), n))
+
+    // Undo the U_min shift to get the true ⟨exp(-βU)⟩ (needed for PMF weights).
+    // log_avg_minus = ln⟨exp(-β(U-U_min))⟩ = βU_min + ln⟨exp(-βU)⟩
+    let true_log_avg_minus = log_avg_minus - beta * u_min;
+    Some((d_ratio, true_log_avg_minus.exp(), n))
 }
 
 /// Symmetrize energies for homo-dimer exchange: U_sym(vi,vj,oi) = ½[U(vi,vj,oi) + U(vj,vi,-oi)].
@@ -519,7 +523,7 @@ fn symmetrize_exchange(energies: &mut [f64], n_v: usize, n_omega: usize) {
 ///
 /// Returns 1.0 if the PMF is uniform or has fewer than 2 finite values.
 fn zwanzig_1d(pmf: &[f64], beta: f64) -> f64 {
-    zwanzig(pmf, beta).map_or(1.0, |(ratio, _, _, _)| ratio)
+    zwanzig(pmf, beta).map_or(1.0, |(ratio, _, _)| ratio)
 }
 
 /// Compute per-coordinate Zwanzig by marginalizing over the other coordinates.
@@ -633,7 +637,7 @@ fn diffusion_at_r(
         symmetrize_exchange(&mut energies, n_v, n_omega);
     }
 
-    let (dr_normalized, boltzmann_weight, _, n_active) = zwanzig(&energies, beta)
+    let (dr_normalized, boltzmann_weight, n_active) = zwanzig(&energies, beta)
         .ok_or_else(|| anyhow::anyhow!("No finite energies at R={r:.1}"))?;
 
     let (dr_mol_a, dr_mol_b, dr_omega) = marginal_zwanzig(&energies, n_v, n_omega, beta);
@@ -797,19 +801,30 @@ fn cell_model_average(
 
 /// Scan cell-model averaged diffusion over a range of concentrations.
 pub fn cell_model_scan(results: &[DiffusionResult], molarities: &[f64]) -> Vec<CellModelResult> {
+    let r_min = results.first().map_or(0.0, |r| r.r);
+
     molarities
         .iter()
         .map(|&c| {
             let r_cell = r_cell_from_molarity(c);
+            if r_cell < r_min {
+                warn!(
+                    "c={c:.4e} M: R_cell={r_cell:.1} Å < table R_min={r_min:.1} Å, \
+                     result is free-diffusion limit"
+                );
+            }
             let dr_normalized = cell_model_average(results, r_cell, |r| r.dr_normalized);
             let dr_mol_a = cell_model_average(results, r_cell, |r| r.dr_mol_a);
             let dr_mol_b = cell_model_average(results, r_cell, |r| r.dr_mol_b);
             let dr_omega = cell_model_average(results, r_cell, |r| r.dr_omega);
-            let separability = if dr_mol_a * dr_mol_b * dr_omega > 0.0 {
-                dr_normalized / (dr_mol_a * dr_mol_b * dr_omega)
-            } else {
-                0.0
-            };
+            let separability = cell_model_average(results, r_cell, |r| {
+                let product = r.dr_mol_a * r.dr_mol_b * r.dr_omega;
+                if product > 0.0 {
+                    r.dr_normalized / product
+                } else {
+                    0.0
+                }
+            });
             let spectral_ratio = cell_model_average(results, r_cell, |r| {
                 match (r.eigenmodes.first(), r.eigenmodes_free.first()) {
                     (Some(m), Some(mf)) if mf.eigenvalue > 0.0 => m.eigenvalue / mf.eigenvalue,
@@ -841,7 +856,7 @@ mod tests {
     #[test]
     fn test_zwanzig_uniform() {
         let energies = vec![0.0; 100];
-        let (ratio, _, _, _) = zwanzig(&energies, 1.0).unwrap();
+        let (ratio, _, _) = zwanzig(&energies, 1.0).unwrap();
         assert_relative_eq!(ratio, 1.0, epsilon = 1e-10);
     }
 
@@ -856,7 +871,7 @@ mod tests {
             .map(|i| u0 * (2.0 * std::f64::consts::PI * i as f64 / n as f64).cos())
             .collect();
 
-        let (ratio, _, _, _) = zwanzig(&energies, beta).unwrap();
+        let (ratio, _, _) = zwanzig(&energies, beta).unwrap();
         let i0 = bessel_i0(beta * u0);
         let analytical = 1.0 / (i0 * i0);
         assert_relative_eq!(ratio, analytical, epsilon = 1e-4);
@@ -872,7 +887,7 @@ mod tests {
             let energies: Vec<f64> = (0..n)
                 .map(|i| amplitude * (2.0 * std::f64::consts::PI * i as f64 / n as f64).cos())
                 .collect();
-            let (ratio, _, _, _) = zwanzig(&energies, beta).unwrap();
+            let (ratio, _, _) = zwanzig(&energies, beta).unwrap();
             assert!(ratio < prev_ratio, "D/D₀ should decrease with roughness");
             prev_ratio = ratio;
         }
@@ -884,7 +899,7 @@ mod tests {
         let energies: Vec<f64> = (0..n)
             .map(|i| 2.0 * (2.0 * std::f64::consts::PI * i as f64 / n as f64).cos())
             .collect();
-        let (ratio, _, _, _) = zwanzig(&energies, 0.01).unwrap();
+        let (ratio, _, _) = zwanzig(&energies, 0.01).unwrap();
         assert_relative_eq!(ratio, 1.0, epsilon = 1e-3);
     }
 
