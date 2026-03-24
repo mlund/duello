@@ -196,6 +196,53 @@ duello atom-scan \
 The output is a flat binary table (`Table3DFlat`) that can be loaded for fast lookup
 with barycentric interpolation on the icosphere mesh.
 
+## Rotational Diffusion Analysis
+
+The `diffusion` subcommand estimates the normalized rotational diffusion coefficient
+D_r/D_r^0 from a saved 6D energy table, without re-scanning.
+This quantifies how much the inter-molecular energy landscape hinders rotational
+diffusion compared to free rotation at each mass center separation R.
+
+```sh
+duello diffusion \
+    --table table.bin.gz \
+    --temperature 300 \
+    --output diffusion.csv
+```
+
+The temperature can differ from the scan temperature since energies are stored in absolute
+units (kJ/mol). If `--temperature` is omitted, the table's generation temperature is used.
+
+### Output columns
+
+| Column       | Description |
+|--------------|-------------|
+| `R/Å`        | Mass center separation |
+| `D_r/D_r^0`  | Normalized rotational diffusion (Zwanzig formula). 1 = free rotation, 0 = fully locked. |
+| `<exp(-bU)>` | Spatial average of exp(-&beta;U) over the angular grid |
+| `<exp(+bU)>` | Spatial average of exp(+&beta;U) over the angular grid |
+| `lambda_1`   | Spectral gap of the symmetrized transition rate matrix (relaxation rate) |
+| `lambda_free` | Spectral gap for free diffusion (U = 0) on the same grid |
+| `n_active`   | Number of finite-energy grid points at this R |
+
+### Interpretation
+
+**D_r/D_r^0** is computed via the Zwanzig formula for diffusion in a rough potential:
+
+$$
+D_r / D_r^0 = \frac{1}{\langle e^{\beta U} \rangle \cdot \langle e^{-\beta U} \rangle}
+$$
+
+where the averages are over the 5D angular grid.
+This is exact for 1D periodic potentials and a good approximation for higher-dimensional
+landscapes. Values close to 1 indicate nearly free rotation; values near 0 indicate
+strongly hindered rotation due to deep energy minima or steric repulsion.
+
+**lambda_1** is the spectral gap (slowest non-equilibrium eigenvalue) of the symmetrized
+generator built from the grid's neighbor connectivity.
+It characterizes the angular equilibration rate, which complements the transport-based
+Zwanzig estimate. At long range, lambda_1 converges to lambda_free.
+
 ## Preparing PDB files
 
 The following uses `pdb2xyz` to create a coarse grained XYZ file and Calvados topology for Duello:

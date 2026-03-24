@@ -287,6 +287,18 @@ enum Commands {
         #[arg(long)]
         sr_cutoff: Option<f64>,
     },
+
+    /// Estimate rotational diffusion from a saved 6D energy table
+    Diffusion {
+        /// Path to saved Table6DAdaptive (.bin or .bin.gz)
+        table: PathBuf,
+        /// Temperature in K
+        #[arg(short = 'T', long, default_value = "298.15")]
+        temperature: f64,
+        /// Output CSV file for diffusion results
+        #[arg(short = 'o', long, default_value = "diffusion.csv")]
+        output: PathBuf,
+    },
 }
 
 /// Calculate energy of all two-body poses
@@ -700,6 +712,54 @@ fn do_potential(cmd: &Commands) -> Result<()> {
     Ok(())
 }
 
+fn do_diffusion(cmd: &Commands) -> Result<()> {
+    let Commands::Diffusion {
+        table: table_path,
+        temperature,
+        output,
+    } = cmd
+    else {
+        bail!("expected Diffusion command");
+    };
+
+    info!("Loading table from {}", table_path.display());
+    let table = icotable::Table6DAdaptive::<f32>::load(table_path)?;
+
+    let temp = *temperature;
+
+    let beta = 1.0 / (physical_constants::MOLAR_GAS_CONSTANT * 1e-3 * temp);
+    info!(
+        "T = {temp:.2} K, β = {beta:.4} mol/kJ, R range = {:.1}–{:.1} Å, dr = {:.2} Å",
+        table.rmin, table.rmax, table.dr
+    );
+
+    let results = duello::diffusion::diffusion_scan(&table, beta);
+
+    if results.is_empty() {
+        bail!("No R-slices yielded diffusion results");
+    }
+
+    let mut file = File::create(output)?;
+    writeln!(
+        file,
+        "R,D_r/D_r0,exp_minus_bU,exp_plus_bU,lambda_1,lambda_free,n_active"
+    )?;
+    for r in &results {
+        let gap = r.spectral_gap.map_or(String::new(), |g| format!("{g:.6e}"));
+        let gap_free = r
+            .spectral_gap_free
+            .map_or(String::new(), |g| format!("{g:.6e}"));
+        writeln!(
+            file,
+            "{:.2},{:.6e},{:.6e},{:.6e},{},{},{}",
+            r.r, r.dr_normalized, r.avg_exp_minus, r.avg_exp_plus, gap, gap_free, r.n_active
+        )?;
+    }
+
+    info!("Wrote {} R-slices to {}", results.len(), output.display());
+    Ok(())
+}
+
 // Wrapper for main function to handle errors
 fn do_main() -> Result<()> {
     if std::env::var("RUST_LOG").is_err() {
@@ -711,6 +771,7 @@ fn do_main() -> Result<()> {
     match cli.command {
         Some(cmd) => match cmd {
             Commands::AtomScan { .. } => do_atom_scan(&cmd)?,
+            Commands::Diffusion { .. } => do_diffusion(&cmd)?,
             Commands::Dipole { .. } => do_dipole(&cmd)?,
             Commands::Scan { .. } => do_scan(&cmd)?,
             Commands::Potential { .. } => do_potential(&cmd)?,
