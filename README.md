@@ -215,33 +215,37 @@ units (kJ/mol). If `--temperature` is omitted, the table's generation temperatur
 
 ### Output columns
 
-| Column       | Description |
-|--------------|-------------|
-| `R/Å`        | Mass center separation |
-| `D_r/D_r^0`  | Normalized rotational diffusion (Zwanzig formula). 1 = free rotation, 0 = fully locked. |
-| `<exp(-bU)>` | Spatial average of exp(-&beta;U) over the angular grid |
-| `<exp(+bU)>` | Spatial average of exp(+&beta;U) over the angular grid |
-| `lambda_1`   | Spectral gap of the symmetrized transition rate matrix (relaxation rate) |
-| `lambda_free` | Spectral gap for free diffusion (U = 0) on the same grid |
-| `n_active`   | Number of finite-energy grid points at this R |
+| Column | Description |
+|--------|-------------|
+| `R` | Mass center separation (Å) |
+| `D/D⁰` | Normalized rotational diffusion (Zwanzig, full 5D). 1 = free rotation, 0 = locked. |
+| `D_A/D_A⁰` | Per-molecule-A Zwanzig (marginalized over B and dihedral) |
+| `D_B/D_B⁰` | Per-molecule-B Zwanzig (marginalized over A and dihedral) |
+| `D_ω/D_ω⁰` | Per-dihedral Zwanzig (marginalized over both molecules) |
+| `λ1…λk` | First k non-trivial eigenvalue magnitudes of the symmetrized generator |
+| `λ1_free…` | Corresponding free-diffusion eigenvalues for normalization |
+| `n_active` | Number of finite-energy grid points at this R |
 
 ### Interpretation
 
-**D_r/D_r^0** is computed via the Zwanzig formula for diffusion in a rough potential:
+**D/D⁰** is computed via the Zwanzig formula for diffusion in a rough potential:
 
 $$
 D_r / D_r^0 = \frac{1}{\langle e^{\beta U} \rangle \cdot \langle e^{-\beta U} \rangle}
 $$
 
-where the averages are over the 5D angular grid.
-This is exact for 1D periodic potentials and a good approximation for higher-dimensional
-landscapes. Values close to 1 indicate nearly free rotation; values near 0 indicate
-strongly hindered rotation due to deep energy minima or steric repulsion.
+where the averages are over the 5D angular grid (molecule A orientation, molecule B
+orientation, dihedral angle).
 
-**lambda_1** is the spectral gap (slowest non-equilibrium eigenvalue) of the symmetrized
-generator built from the grid's neighbor connectivity.
-It characterizes the angular equilibration rate, which complements the transport-based
-Zwanzig estimate. At long range, lambda_1 converges to lambda_free.
+**D_A/D_A⁰, D_B/D_B⁰, D_ω/D_ω⁰** decompose the diffusion into per-coordinate contributions.
+Each is computed by marginalizing the energy landscape over the other two coordinates
+to get a 1D potential of mean force, then applying Zwanzig to it.
+For symmetric molecules (mol1 = mol2), D_A ≈ D_B at all separations.
+
+**λ1…λk** are the first non-trivial eigenvalue magnitudes of the symmetrized
+generator on the angular grid. Their spread quantifies relaxation anisotropy:
+if λ₂ ≈ λ₁, relaxation is isotropic; if λ₂ >> λ₁, some angular modes
+relax much faster than others. At long range, λk converges to λk_free.
 
 ## Preparing PDB files
 

@@ -31,21 +31,26 @@ use nalgebra::{DMatrix, SymmetricEigen};
 use rayon::prelude::*;
 use sprs::{CsMat, TriMat};
 
+/// Number of non-trivial eigenvalues to extract from the generator spectrum.
+const NUM_EIGENVALUES: usize = 5;
+
 /// Result of diffusion analysis at one R-slice.
 #[derive(Debug, Clone)]
 pub struct DiffusionResult {
     /// Radial distance (Å).
     pub r: f64,
-    /// Normalized diffusion D_r/D_r⁰ (Zwanzig formula).
+    /// Normalized diffusion D_r/D_r⁰ (Zwanzig formula, full 5D).
     pub dr_normalized: f64,
-    /// ⟨exp(-βU)⟩ spatial average.
-    pub avg_exp_minus: f64,
-    /// ⟨exp(+βU)⟩ spatial average.
-    pub avg_exp_plus: f64,
-    /// Spectral gap of the symmetrized generator (if computed).
-    pub spectral_gap: Option<f64>,
-    /// Spectral gap for free diffusion (if computed).
-    pub spectral_gap_free: Option<f64>,
+    /// Per-molecule-A Zwanzig D_A/D_A⁰ (marginalized over vj, oi).
+    pub dr_mol_a: f64,
+    /// Per-molecule-B Zwanzig D_B/D_B⁰ (marginalized over vi, oi).
+    pub dr_mol_b: f64,
+    /// Per-dihedral Zwanzig D_ω/D_ω⁰ (marginalized over vi, vj).
+    pub dr_omega: f64,
+    /// First non-trivial eigenvalue magnitudes |λ₁|, |λ₂|, ... (sorted descending).
+    pub eigenvalues: Vec<f64>,
+    /// Free-diffusion eigenvalues for normalization.
+    pub eigenvalues_free: Vec<f64>,
     /// Number of active states (finite-energy grid points).
     pub n_active: usize,
 }
@@ -150,8 +155,9 @@ fn sparse_matvec(a: &CsMat<f64>, x: &[f64]) -> Vec<f64> {
     y
 }
 
-/// Dense spectral gap for small matrices (convert sparse → dense).
-fn dense_spectral_gap(matrix: &CsMat<f64>, n: usize) -> f64 {
+/// Dense eigenvalues for small matrices (convert sparse → dense).
+/// Returns first `k` non-trivial eigenvalue magnitudes (descending).
+fn dense_eigenvalues(matrix: &CsMat<f64>, n: usize, k: usize) -> Vec<f64> {
     let mut dense = DMatrix::zeros(n, n);
     for (row_idx, row) in matrix.outer_iterator().enumerate() {
         for (col_idx, &val) in row.iter() {
@@ -160,13 +166,15 @@ fn dense_spectral_gap(matrix: &CsMat<f64>, n: usize) -> f64 {
     }
     let eigen = SymmetricEigen::new(dense);
     let mut evals: Vec<f64> = eigen.eigenvalues.iter().copied().collect();
-    // Descending sort: evals[0] ≈ 0 (equilibrium), evals[1] = spectral gap
+    // Descending sort: evals[0] ≈ 0 (equilibrium), evals[1..] are non-trivial
     evals.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    if evals.len() < 2 {
-        0.0
-    } else {
-        -evals[1]
-    }
+    evals
+        .iter()
+        .skip(1)
+        .take(k)
+        .map(|&e| -e)
+        .filter(|&e| e.is_finite() && e > 0.0)
+        .collect()
 }
 
 /// Threshold for switching from dense to Lanczos eigensolver.
@@ -191,22 +199,22 @@ const MIN_ACTIVE_FRACTION: f64 = 0.01;
 /// Reject spectral gaps above this as numerically unstable.
 const MAX_PLAUSIBLE_SPECTRAL_GAP: f64 = 1e10;
 
-/// Find the spectral gap of a sparse symmetric matrix.
+/// Extract first `k` non-trivial eigenvalue magnitudes from a sparse symmetric matrix.
 ///
 /// Dense eigensolver for small matrices (exact, O(n³) but n is small).
 /// Lanczos with full reorthogonalization for larger ones (O(m²·n)).
-fn sparse_spectral_gap(matrix: &CsMat<f64>, n_states: usize) -> f64 {
+fn spectral_eigenvalues(matrix: &CsMat<f64>, n_states: usize, k: usize) -> Vec<f64> {
     if n_states <= DENSE_THRESHOLD {
-        return dense_spectral_gap(matrix, n_states);
+        return dense_eigenvalues(matrix, n_states, k);
     }
-    lanczos_spectral_gap(matrix, n_states)
+    lanczos_eigenvalues(matrix, n_states, k)
 }
 
-/// Lanczos iteration with full reorthogonalization for the spectral gap.
+/// Lanczos iteration with full reorthogonalization.
 ///
-/// Full reorthogonalization prevents loss of orthogonality that causes
-/// spurious eigenvalues in the standard Lanczos algorithm.
-fn lanczos_spectral_gap(matrix: &CsMat<f64>, n_states: usize) -> f64 {
+/// Returns first `k` non-trivial eigenvalue magnitudes (descending).
+/// Full reorthogonalization prevents spurious eigenvalues from loss of orthogonality.
+fn lanczos_eigenvalues(matrix: &CsMat<f64>, n_states: usize, k: usize) -> Vec<f64> {
     let m = MAX_LANCZOS_VECTORS.min(n_states);
 
 
@@ -258,11 +266,11 @@ fn lanczos_spectral_gap(matrix: &CsMat<f64>, n_states: usize) -> f64 {
         basis.push(w);
     }
 
-    let k = alpha.len();
-    let mut tridiag = DMatrix::zeros(k, k);
-    for i in 0..k {
+    let tri_size = alpha.len();
+    let mut tridiag = DMatrix::zeros(tri_size, tri_size);
+    for i in 0..tri_size {
         tridiag[(i, i)] = alpha[i];
-        if i + 1 < k && i < beta_vec.len() {
+        if i + 1 < tri_size && i < beta_vec.len() {
             tridiag[(i, i + 1)] = beta_vec[i];
             tridiag[(i + 1, i)] = beta_vec[i];
         }
@@ -272,11 +280,13 @@ fn lanczos_spectral_gap(matrix: &CsMat<f64>, n_states: usize) -> f64 {
     // Descending sort; NaN from Lanczos instability treated as most negative
     evals.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
 
-    if evals.len() < 2 || !evals[1].is_finite() {
-        0.0
-    } else {
-        -evals[1]
-    }
+    evals
+        .iter()
+        .skip(1)
+        .take(k)
+        .map(|&e| -e)
+        .filter(|&e| e.is_finite() && e > 0.0)
+        .collect()
 }
 
 fn vec_norm(v: &[f64]) -> f64 {
@@ -328,14 +338,109 @@ fn zwanzig(energies: &[f64], beta: f64) -> Option<(f64, f64, f64, usize)> {
     Some((d_ratio, log_avg_minus.exp(), log_avg_plus.exp(), n))
 }
 
+/// Compute 1D Zwanzig D/D⁰ from a marginal PMF array (in energy units).
+///
+/// Returns 1.0 if the PMF is uniform or has fewer than 2 finite values.
+fn zwanzig_1d(pmf: &[f64], beta: f64) -> f64 {
+    zwanzig(pmf, beta).map_or(1.0, |(ratio, _, _, _)| ratio)
+}
+
+/// Compute per-coordinate Zwanzig by marginalizing over the other coordinates.
+///
+/// For each coordinate (vi, vj, oi), integrates out the other two to get a
+/// 1D potential of mean force, then applies Zwanzig independently.
+/// Returns (D_A/D⁰, D_B/D⁰, D_ω/D⁰).
+fn marginal_zwanzig(
+    energies: &[f64],
+    n_v: usize,
+    n_omega: usize,
+    beta: f64,
+) -> (f64, f64, f64) {
+    // w_A(vi) = -kT ln Σ_{vj,oi} exp(-βU) = -(1/β) · log_sum_exp over (vj, oi)
+    let pmf_a: Vec<f64> = (0..n_v)
+        .map(|vi| {
+            let mut max_val = f64::NEG_INFINITY;
+            let mut terms = Vec::new();
+            for vj in 0..n_v {
+                for oi in 0..n_omega {
+                    let u = energies[state_index(vi, vj, oi, n_v, n_omega)];
+                    if u.is_finite() {
+                        let x = -beta * u;
+                        max_val = max_val.max(x);
+                        terms.push(x);
+                    }
+                }
+            }
+            if terms.is_empty() {
+                return f64::INFINITY;
+            }
+            // w_A = -(1/β) · (max + ln Σ exp(x - max))
+            let lse = max_val + terms.iter().map(|&x| (x - max_val).exp()).sum::<f64>().ln();
+            -lse / beta
+        })
+        .collect();
+
+    // w_B(vj) = -kT ln Σ_{vi,oi} exp(-βU)
+    let pmf_b: Vec<f64> = (0..n_v)
+        .map(|vj| {
+            let mut max_val = f64::NEG_INFINITY;
+            let mut terms = Vec::new();
+            for vi in 0..n_v {
+                for oi in 0..n_omega {
+                    let u = energies[state_index(vi, vj, oi, n_v, n_omega)];
+                    if u.is_finite() {
+                        let x = -beta * u;
+                        max_val = max_val.max(x);
+                        terms.push(x);
+                    }
+                }
+            }
+            if terms.is_empty() {
+                return f64::INFINITY;
+            }
+            let lse = max_val + terms.iter().map(|&x| (x - max_val).exp()).sum::<f64>().ln();
+            -lse / beta
+        })
+        .collect();
+
+    // w_ω(oi) = -kT ln Σ_{vi,vj} exp(-βU)
+    let pmf_omega: Vec<f64> = (0..n_omega)
+        .map(|oi| {
+            let mut max_val = f64::NEG_INFINITY;
+            let mut terms = Vec::new();
+            for vi in 0..n_v {
+                for vj in 0..n_v {
+                    let u = energies[state_index(vi, vj, oi, n_v, n_omega)];
+                    if u.is_finite() {
+                        let x = -beta * u;
+                        max_val = max_val.max(x);
+                        terms.push(x);
+                    }
+                }
+            }
+            if terms.is_empty() {
+                return f64::INFINITY;
+            }
+            let lse = max_val + terms.iter().map(|&x| (x - max_val).exp()).sum::<f64>().ln();
+            -lse / beta
+        })
+        .collect();
+
+    (
+        zwanzig_1d(&pmf_a, beta),
+        zwanzig_1d(&pmf_b, beta),
+        zwanzig_1d(&pmf_omega, beta),
+    )
+}
+
 /// Compute diffusion analysis at a single R-slice.
 ///
-/// `free_gaps` maps n_vertices → pre-computed free-diffusion spectral gap.
+/// `free_evals` maps n_vertices → pre-computed free-diffusion eigenvalues.
 fn diffusion_at_r(
     table: &icotable::Table6DAdaptive<f32>,
     ri: usize,
     beta: f64,
-    free_gaps: &std::collections::HashMap<usize, f64>,
+    free_evals: &std::collections::HashMap<usize, Vec<f64>>,
 ) -> Result<DiffusionResult> {
     let r = table.rmin + ri as f64 * table.dr;
     let n_omega = table.n_omega;
@@ -347,37 +452,47 @@ fn diffusion_at_r(
     let n_v = level.n_vertices;
     let n_total = n_v * n_v * n_omega;
 
-    let (dr_normalized, avg_exp_minus, avg_exp_plus, n_active) =
+    let (dr_normalized, _, _, n_active) =
         zwanzig(&energies, beta).ok_or_else(|| anyhow::anyhow!("No finite energies at R={r:.1}"))?;
 
-    let spectral_gap =
+    let (dr_mol_a, dr_mol_b, dr_omega) = marginal_zwanzig(&energies, n_v, n_omega, beta);
+
+    // Eigenvalue spectrum
+    let eigenvalues =
         if n_active > MIN_ACTIVE_STATES && (n_active as f64 / n_total as f64) > MIN_ACTIVE_FRACTION
         {
             let gen = build_sparse_generator(level, n_omega, Some((&energies, beta)));
-            let gap = sparse_spectral_gap(&gen, n_total);
-            if gap.is_finite() && gap > 0.0 && gap < MAX_PLAUSIBLE_SPECTRAL_GAP {
-                Some(gap)
+            let evals = spectral_eigenvalues(&gen, n_total, NUM_EIGENVALUES);
+            // Reject if first eigenvalue is obviously unstable
+            if evals.first().is_some_and(|&e| e < MAX_PLAUSIBLE_SPECTRAL_GAP) {
+                evals
             } else {
-                debug!("R={r:.1} Å: rejecting unstable spectral gap {gap:.2e}");
-                None
+                debug!("R={r:.1} Å: rejecting unstable eigenvalues");
+                Vec::new()
             }
         } else {
-            debug!("R={r:.1} Å: skipping spectral gap (n_active={n_active}/{n_total})");
-            None
+            debug!("R={r:.1} Å: skipping eigenvalues (n_active={n_active}/{n_total})");
+            Vec::new()
         };
 
+    let eigenvalues_free = free_evals
+        .get(&level.n_vertices)
+        .cloned()
+        .unwrap_or_default();
+
     debug!(
-        "R={r:.1} Å: D_r/D_r⁰={dr_normalized:.6}, λ₁={}",
-        spectral_gap.map_or("N/A".into(), |g| format!("{g:.4e}"))
+        "R={r:.1} Å: D_r/D_r⁰={dr_normalized:.6}, D_A={dr_mol_a:.4}, D_B={dr_mol_b:.4}, D_ω={dr_omega:.4}, λ₁={}",
+        eigenvalues.first().map_or("N/A".into(), |g| format!("{g:.4e}"))
     );
 
     Ok(DiffusionResult {
         r,
         dr_normalized,
-        avg_exp_minus,
-        avg_exp_plus,
-        spectral_gap,
-        spectral_gap_free: free_gaps.get(&level.n_vertices).copied(),
+        dr_mol_a,
+        dr_mol_b,
+        dr_omega,
+        eigenvalues,
+        eigenvalues_free,
         n_active,
     })
 }
@@ -387,19 +502,22 @@ pub fn diffusion_scan(
     table: &icotable::Table6DAdaptive<f32>,
     beta: f64,
 ) -> Vec<DiffusionResult> {
-    // Free-diffusion gap depends only on graph topology — one per mesh level
-    let free_gaps: std::collections::HashMap<usize, f64> = table
+    // Free-diffusion eigenvalues depend only on graph topology — one set per mesh level
+    let free_evals: std::collections::HashMap<usize, Vec<f64>> = table
         .levels
         .iter()
         .map(|level| {
             let n_omega = table.n_omega;
             let n_states = level.n_vertices * level.n_vertices * n_omega;
             info!(
-                "Computing free-diffusion spectral gap (n_v={}, n_omega={n_omega})",
+                "Computing free-diffusion eigenvalues (n_v={}, n_omega={n_omega})",
                 level.n_vertices
             );
             let free_gen = build_sparse_generator(level, n_omega, None);
-            (level.n_vertices, sparse_spectral_gap(&free_gen, n_states))
+            (
+                level.n_vertices,
+                spectral_eigenvalues(&free_gen, n_states, NUM_EIGENVALUES),
+            )
         })
         .collect();
 
@@ -407,7 +525,7 @@ pub fn diffusion_scan(
     let mut results: Vec<DiffusionResult> = (0..n_r)
         .into_par_iter()
         .progress_count(n_r as u64)
-        .filter_map(|ri| diffusion_at_r(table, ri, beta, &free_gaps).ok())
+        .filter_map(|ri| diffusion_at_r(table, ri, beta, &free_evals).ok())
         .collect();
 
     results.sort_by(|a, b| a.r.partial_cmp(&b.r).unwrap());
@@ -472,52 +590,111 @@ mod tests {
         assert_relative_eq!(ratio, 1.0, epsilon = 1e-3);
     }
 
-    // --- Spectral gap tests ---
+    // --- Marginal Zwanzig tests ---
 
-    /// Uniform energy: sparse spectral gap ratio = 1.
+    /// Uniform energy: all marginals = 1.
+    #[test]
+    fn test_marginal_uniform() {
+        let n_v = 12;
+        let n_omega = 8;
+        let energies = vec![0.0; n_v * n_v * n_omega];
+        let (da, db, dw) = marginal_zwanzig(&energies, n_v, n_omega, 1.0);
+        assert_relative_eq!(da, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(db, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(dw, 1.0, epsilon = 1e-10);
+    }
+
+    /// Potential depending only on vi: D_A < 1, D_B = 1, D_ω = 1.
+    #[test]
+    fn test_marginal_vi_only() {
+        let level = MeshLevel::new(0);
+        let n_v = level.n_vertices;
+        let n_omega = 8;
+        let u0 = 2.0;
+        let beta = 1.0;
+
+        // U = u0 * cos(θ_A) where θ_A is the polar angle of vertex vi
+        let energies: Vec<f64> = (0..n_v * n_v * n_omega)
+            .map(|idx| {
+                let vi = idx / (n_v * n_omega);
+                u0 * level.vertices[vi][2] // z-component ≈ cos(θ)
+            })
+            .collect();
+
+        let (da, db, dw) = marginal_zwanzig(&energies, n_v, n_omega, beta);
+        assert!(da < 0.99, "D_A should be hindered, got {da}");
+        assert_relative_eq!(db, 1.0, epsilon = 1e-6);
+        assert_relative_eq!(dw, 1.0, epsilon = 1e-6);
+    }
+
+    /// Dihedral-only cosine: D_A = D_B = 1, D_ω = 1/[I₀(βU₀)]².
+    #[test]
+    fn test_marginal_dihedral_only() {
+        let n_v = 12;
+        let n_omega = 64;
+        let u0 = 1.5;
+        let beta = 1.0;
+
+        let energies: Vec<f64> = (0..n_v * n_v * n_omega)
+            .map(|idx| {
+                let oi = idx % n_omega;
+                u0 * (2.0 * std::f64::consts::PI * oi as f64 / n_omega as f64).cos()
+            })
+            .collect();
+
+        let (da, db, dw) = marginal_zwanzig(&energies, n_v, n_omega, beta);
+        let i0 = bessel_i0(beta * u0);
+        let analytical = 1.0 / (i0 * i0);
+
+        assert_relative_eq!(da, 1.0, epsilon = 1e-6);
+        assert_relative_eq!(db, 1.0, epsilon = 1e-6);
+        assert_relative_eq!(dw, analytical, epsilon = 0.01);
+    }
+
+    // --- Spectral eigenvalue tests ---
+
+    /// Uniform energy: eigenvalues match between potential and free.
     #[test]
     fn test_spectral_uniform_sparse() {
-        let level = MeshLevel::new(0); // 12 vertices
+        let level = MeshLevel::new(0);
         let n_v = level.n_vertices;
         let n_omega = 4;
         let n_states = n_v * n_v * n_omega;
 
         let energies = vec![0.0; n_states];
         let gen = build_sparse_generator(&level, n_omega, Some((&energies, 1.0)));
-        let gap = sparse_spectral_gap(&gen, n_states);
+        let evals = spectral_eigenvalues(&gen, n_states, 3);
 
         let free_gen = build_sparse_generator(&level, n_omega, None);
-        let gap_free = sparse_spectral_gap(&free_gen, n_states);
+        let evals_free = spectral_eigenvalues(&free_gen, n_states, 3);
 
-        assert_relative_eq!(gap / gap_free, 1.0, epsilon = 1e-6);
+        assert!(!evals.is_empty());
+        for (e, ef) in evals.iter().zip(&evals_free) {
+            assert_relative_eq!(e / ef, 1.0, epsilon = 1e-6);
+        }
     }
 
-    /// Verify sparse Lanczos agrees with dense eigensolver on a small ring.
+    /// Dense and Lanczos agree on the spectral gap (first non-trivial eigenvalue).
     #[test]
-    fn test_sparse_vs_dense_ring() {
+    fn test_dense_vs_lanczos_ring() {
         let n = 32;
-        // Dense free ring
-        let mut dense = DMatrix::zeros(n, n);
         let mut triplets = TriMat::new((n, n));
         for i in 0..n {
             let prev = if i == 0 { n - 1 } else { i - 1 };
             let next = (i + 1) % n;
-            dense[(i, prev)] = 1.0;
-            dense[(i, next)] = 1.0;
-            dense[(i, i)] = -2.0;
             triplets.add_triplet(i, prev, 1.0);
             triplets.add_triplet(i, next, 1.0);
             triplets.add_triplet(i, i, -2.0);
         }
         let sparse = triplets.to_csr();
 
-        let dense_eigen = SymmetricEigen::new(dense);
-        let mut dense_evals: Vec<f64> = dense_eigen.eigenvalues.iter().copied().collect();
-        dense_evals.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-        let dense_gap = -dense_evals[1];
+        let dense = dense_eigenvalues(&sparse, n, 1);
+        let lanczos = lanczos_eigenvalues(&sparse, n, 1);
 
-        let sparse_gap = sparse_spectral_gap(&sparse, n);
-        assert_relative_eq!(sparse_gap, dense_gap, epsilon = 1e-8);
+        // Ring has degenerate eigenvalue pairs; both solvers should agree on the gap
+        assert_eq!(dense.len(), 1);
+        assert_eq!(lanczos.len(), 1);
+        assert_relative_eq!(dense[0], lanczos[0], epsilon = 1e-8);
     }
 
     /// Spectral gap of a ring should agree with the analytical result.
@@ -534,16 +711,16 @@ mod tests {
         }
         let sparse = triplets.to_csr();
 
-        // Analytical: λ_1 = -2(1 - cos(2π/n))
         let analytical_gap = 2.0 * (1.0 - (2.0 * std::f64::consts::PI / n as f64).cos());
-        let gap = sparse_spectral_gap(&sparse, n);
+        let evals = spectral_eigenvalues(&sparse, n, 1);
 
-        assert_relative_eq!(gap, analytical_gap, epsilon = 1e-8);
+        assert_eq!(evals.len(), 1);
+        assert_relative_eq!(evals[0], analytical_gap, epsilon = 1e-8);
     }
 
-    /// Lanczos with a potential should give the same result as dense eigensolver.
+    /// Multiple eigenvalues from Lanczos with a potential match dense solver.
     #[test]
-    fn test_lanczos_vs_dense_with_potential() {
+    fn test_eigenvalues_with_potential() {
         let n = 64;
         let u0 = 1.5;
         let beta = 1.0;
@@ -567,10 +744,13 @@ mod tests {
         }
         let sparse = triplets.to_csr();
 
-        let dense_gap = dense_spectral_gap(&sparse, n);
-        let lanczos_gap = lanczos_spectral_gap(&sparse, n);
+        let dense = dense_eigenvalues(&sparse, n, 3);
+        let lanczos = lanczos_eigenvalues(&sparse, n, 3);
 
-        assert_relative_eq!(lanczos_gap, dense_gap, epsilon = 1e-8);
+        assert_eq!(dense.len(), 3);
+        for (d, l) in dense.iter().zip(&lanczos) {
+            assert_relative_eq!(d, l, epsilon = 1e-8);
+        }
     }
 
     fn bessel_i0(x: f64) -> f64 {

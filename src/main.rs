@@ -740,20 +740,46 @@ fn do_diffusion(cmd: &Commands) -> Result<()> {
     }
 
     let mut file = File::create(output)?;
-    writeln!(
-        file,
-        "R,D_r/D_r0,exp_minus_bU,exp_plus_bU,lambda_1,lambda_free,n_active"
-    )?;
+
+    // Build header with dynamic eigenvalue columns
+    let max_evals = results.iter().map(|r| r.eigenvalues.len()).max().unwrap_or(0);
+    let max_evals_free = results
+        .iter()
+        .map(|r| r.eigenvalues_free.len())
+        .max()
+        .unwrap_or(0);
+    let mut header =
+        "R,D/D⁰,D_A/D_A⁰,D_B/D_B⁰,D_ω/D_ω⁰".to_string();
+    for i in 1..=max_evals {
+        header.push_str(&format!(",λ{i}"));
+    }
+    for i in 1..=max_evals_free {
+        header.push_str(&format!(",λ{i}_free"));
+    }
+    header.push_str(",n_active");
+    writeln!(file, "{header}")?;
+
     for r in &results {
-        let gap = r.spectral_gap.map_or(String::new(), |g| format!("{g:.6e}"));
-        let gap_free = r
-            .spectral_gap_free
-            .map_or(String::new(), |g| format!("{g:.6e}"));
-        writeln!(
+        write!(
             file,
-            "{:.2},{:.6e},{:.6e},{:.6e},{},{},{}",
-            r.r, r.dr_normalized, r.avg_exp_minus, r.avg_exp_plus, gap, gap_free, r.n_active
+            "{:.2},{:.6e},{:.6e},{:.6e},{:.6e}",
+            r.r, r.dr_normalized, r.dr_mol_a, r.dr_mol_b, r.dr_omega
         )?;
+        for i in 0..max_evals {
+            if let Some(&e) = r.eigenvalues.get(i) {
+                write!(file, ",{e:.6e}")?;
+            } else {
+                write!(file, ",")?;
+            }
+        }
+        for i in 0..max_evals_free {
+            if let Some(&e) = r.eigenvalues_free.get(i) {
+                write!(file, ",{e:.6e}")?;
+            } else {
+                write!(file, ",")?;
+            }
+        }
+        writeln!(file, ",{}", r.n_active)?;
     }
 
     info!("Wrote {} R-slices to {}", results.len(), output.display());
