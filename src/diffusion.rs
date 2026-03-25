@@ -25,16 +25,10 @@
 //!    symmetrized generator, computed via sparse Lanczos iteration.
 
 use anyhow::Result;
-use dyn_stack::{MemBuffer, MemStack};
-use faer::matrix_free::eigen::{
-    partial_self_adjoint_eigen, partial_self_adjoint_eigen_scratch, PartialEigenParams,
-};
-use faer::matrix_free::LinOp;
-use faer::prelude::*;
-use faer::sparse::linalg::solvers::Lu;
-use faer::sparse::SparseColMat;
 use icotable::adaptive::MeshLevel;
-use indicatif::ProgressIterator;
+use indicatif::ParallelProgressIterator;
+use nalgebra::{DMatrix, SymmetricEigen};
+use rayon::prelude::*;
 
 /// Number of non-trivial eigenmodes to extract from the generator spectrum.
 const NUM_EIGENMODES: usize = 5;
@@ -255,14 +249,14 @@ impl ActiveStates {
 
 /// Build a sparse CSR generator over the compact active state space.
 ///
-/// Returns the generator matrix (n_active × n_active) and the index mapping.
-/// For potential: Smoluchowski rate with energy threshold filtering.
-/// For free diffusion (None): all states active.
-fn build_sparse_generator(
+/// Build a dense generator matrix over the compact active state space.
+///
+/// Returns (n_active × n_active DMatrix, ActiveStates mapping).
+fn build_generator(
     level: &MeshLevel,
     n_omega: usize,
     potential: Option<(&[f64], f64)>,
-) -> (SparseColMat<usize, f64>, ActiveStates) {
+) -> (DMatrix<f64>, ActiveStates) {
     let n_v = level.n_vertices;
 
     let active = ActiveStates::new(potential, n_v, n_omega);
@@ -276,7 +270,7 @@ fn build_sparse_generator(
             .fold(f64::INFINITY, f64::min)
     });
 
-    let mut triplets: Vec<faer::sparse::Triplet<usize, usize, f64>> = Vec::new();
+    let mut mat = DMatrix::zeros(n, n);
 
     for (ci, &(vi, vj, oi)) in active.coords.iter().enumerate() {
         let full_idx = state_index(vi, vj, oi, n_v, n_omega);
@@ -297,183 +291,50 @@ fn build_sparse_generator(
             } else {
                 exit_rate += 1.0;
             }
-            triplets.push(faer::sparse::Triplet {
-                row: ci,
-                col: cj,
-                val: 1.0,
-            });
+            mat[(ci, cj)] = 1.0;
         });
-        triplets.push(faer::sparse::Triplet {
-            row: ci,
-            col: ci,
-            val: -exit_rate,
-        });
+        mat[(ci, ci)] = -exit_rate;
     }
 
-    let mat =
-        SparseColMat::<usize, f64>::try_new_from_triplets(n, n, &triplets).expect("valid triplets");
     (mat, active)
 }
 
-/// Dense eigensolver for trivially small matrices only.
-const DENSE_THRESHOLD: usize = 500;
+/// Use dense O(n³) eigensolver up to this size. Sparse LU fill-in on
+/// product-graph Laplacians is too large for shift-invert to win below ~20K.
+/// Skip spectral analysis for active sets larger than this.
+/// Dense O(n³): ~0.1s at n=1K, ~1s at n=2K, ~30s at n=10K.
+const DENSE_THRESHOLD: usize = 10_000;
 
-/// Direct Krylov-Schur for well-conditioned matrices (free diffusion).
-/// Finds largest-magnitude eigenvalues directly without shift-invert.
-fn direct_krylov_eigenmodes(
-    matrix: &SparseColMat<usize, f64>,
+/// Extract first `k` non-trivial eigenmodes using dense eigensolver.
+fn dense_eigenmodes(
+    matrix: &DMatrix<f64>,
     active: &ActiveStates,
     k: usize,
     level: &MeshLevel,
 ) -> Vec<EigenMode> {
     let n = active.n_active;
-    let n_eigs = k.min(n - 1);
-    let par = Par::Rayon(std::num::NonZeroUsize::new(1).unwrap());
-    let params = PartialEigenParams::default();
-
-    let mut eigvecs = Mat::<f64>::zeros(n, n_eigs);
-    let mut eigvals = vec![0.0f64; n_eigs];
-    let v0 = Col::<f64>::from_fn(n, |i| ((i * 7 + 13) % 97) as f64 / 97.0 - 0.5);
-
-    let scratch_req = partial_self_adjoint_eigen_scratch::<f64>(matrix, n_eigs, par, params);
-    let mut mem = MemBuffer::new(scratch_req);
-    let mut stack = MemStack::new(&mut mem);
-
-    let _info = partial_self_adjoint_eigen(
-        eigvecs.as_mut(),
-        &mut eigvals,
-        matrix,
-        v0.as_ref(),
-        1e-10,
-        par,
-        &mut stack,
-        params,
-    );
-
-    // Sort by value descending (least negative = near zero first)
-    let mut indexed: Vec<(usize, f64)> = eigvals.iter().copied().enumerate().collect();
-    indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-    indexed
-        .iter()
-        .skip(1) // skip λ₀ ≈ 0
-        .take(k)
-        .filter(|(_, e)| e.is_finite() && *e < 0.0)
-        .map(|&(i, e)| {
-            let eigvec: Vec<f64> = (0..n).map(|r| eigvecs[(r, i)]).collect();
-            let (fa, fb, fw) =
-                coordinate_projection(&eigvec, active, level, active.n_v, active.n_omega);
-            EigenMode {
-                eigenvalue: -e,
-                frac_mol_a: fa,
-                frac_mol_b: fb,
-                frac_omega: fw,
-            }
-        })
-        .collect()
-}
-
-/// Shift-invert operator: applies (A - σI)⁻¹ via sparse LU factorization.
-/// Eigenvalues of this operator near σ become the largest, which the
-/// Krylov-Schur algorithm in faer converges to first.
-struct ShiftInvertOp<'a> {
-    lu: &'a Lu<usize, f64>,
-    n: usize,
-}
-
-impl core::fmt::Debug for ShiftInvertOp<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "ShiftInvertOp(n={})", self.n)
-    }
-}
-
-impl LinOp<f64> for ShiftInvertOp<'_> {
-    fn nrows(&self) -> usize {
-        self.n
-    }
-    fn ncols(&self) -> usize {
-        self.n
-    }
-    fn apply_scratch(&self, _rhs_ncols: usize, _par: Par) -> dyn_stack::StackReq {
-        dyn_stack::StackReq::empty()
-    }
-    fn apply(
-        &self,
-        mut out: MatMut<'_, f64>,
-        rhs: MatRef<'_, f64>,
-        _par: Par,
-        _stack: &mut MemStack,
-    ) {
-        out.copy_from(rhs);
-        self.lu.solve_in_place(out.rb_mut());
-    }
-    fn conj_apply(
-        &self,
-        out: MatMut<'_, f64>,
-        rhs: MatRef<'_, f64>,
-        par: Par,
-        stack: &mut MemStack,
-    ) {
-        self.apply(out, rhs, par, stack);
-    }
-}
-
-/// Extract first `k` non-trivial eigenmodes.
-///
-/// - Dense for n_active ≤ DENSE_THRESHOLD (exact, reliable)
-/// - Shift-invert Krylov-Schur for larger ill-conditioned matrices (with potential)
-/// - Direct Krylov-Schur for larger well-conditioned matrices (free diffusion)
-fn spectral_eigenmodes(
-    matrix: &SparseColMat<usize, f64>,
-    active: &ActiveStates,
-    k: usize,
-    level: &MeshLevel,
-    well_conditioned: bool,
-) -> Vec<EigenMode> {
-    let n = active.n_active;
-    if n < 3 {
+    if n < 3 || n > DENSE_THRESHOLD {
         return Vec::new();
     }
 
-    if n <= DENSE_THRESHOLD {
-        return dense_eigenmodes(matrix, active, k, level);
-    }
+    let eigen = SymmetricEigen::new(matrix.clone());
+    let evals = &eigen.eigenvalues;
 
-    if well_conditioned {
-        direct_krylov_eigenmodes(matrix, active, k, level)
-    } else {
-        shift_invert_eigenmodes(matrix, active, k, level)
-    }
-}
+    // Sort descending: evals[0] ≈ 0 (equilibrium), evals[1] = spectral gap
+    let mut indices: Vec<usize> = (0..n).collect();
+    indices.sort_by(|&a, &b| {
+        evals[b]
+            .partial_cmp(&evals[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
-/// Dense eigensolver: convert sparse → dense, use faer self_adjoint_eigen.
-fn dense_eigenmodes(
-    matrix: &SparseColMat<usize, f64>,
-    active: &ActiveStates,
-    k: usize,
-    level: &MeshLevel,
-) -> Vec<EigenMode> {
-    let n = active.n_active;
-    let dense = matrix.to_dense();
-
-    let eigen = dense
-        .self_adjoint_eigen(faer::Side::Lower)
-        .expect("eigen decomposition");
-    let evals = eigen.S().column_vector();
-    // faer returns eigenvalues in nondecreasing order (most negative first)
-    // We want the largest (near zero), so iterate from the end
-    let n_evals = evals.nrows();
-
-    (0..n_evals)
-        .rev()
-        .skip(1) // skip λ₀ ≈ 0 (the largest)
+    indices
+        .iter()
+        .skip(1) // skip λ₀ ≈ 0
         .take(k)
-        .filter(|&i| {
-            let e = evals[i];
-            e.is_finite() && e < 0.0
-        })
-        .map(|i| {
-            let eigvec: Vec<f64> = (0..n).map(|r| eigen.U()[(r, i)]).collect();
+        .filter(|&&i| evals[i].is_finite() && evals[i] < 0.0)
+        .map(|&i| {
+            let eigvec: Vec<f64> = eigen.eigenvectors.column(i).iter().copied().collect();
             let (fa, fb, fw) =
                 coordinate_projection(&eigvec, active, level, active.n_v, active.n_omega);
             EigenMode {
@@ -486,103 +347,69 @@ fn dense_eigenmodes(
         .collect()
 }
 
-/// Shift-invert Krylov-Schur for large sparse matrices.
+/// Compute free-diffusion eigenmodes analytically from graph structure.
 ///
-/// Factorizes (A - σI) and finds eigenvalues of the inverse operator,
-/// which converges to eigenvalues of A nearest to σ ≈ 0.
-fn shift_invert_eigenmodes(
-    matrix: &SparseColMat<usize, f64>,
-    active: &ActiveStates,
-    k: usize,
-    level: &MeshLevel,
-) -> Vec<EigenMode> {
-    let n = active.n_active;
-    let sigma = -1e-8; // small negative shift to avoid singularity at λ₀ = 0
+/// The product graph (icosphere_A × icosphere_B × ring_ω) has eigenvalues
+/// that are sums: λ_{k,l,m} = λ_k^A + λ_l^B + λ_m^ω.
+/// We compute the icosphere and ring eigenvalues separately (small problems),
+/// then combine the smallest non-trivial sums.
+fn free_eigenmodes_analytical(level: &MeshLevel, n_omega: usize, k: usize) -> Vec<EigenMode> {
+    let n_v = level.n_vertices;
 
-    // Build (A - σI): copy triplets and shift diagonal
-    let shifted = {
-        let mut triplets: Vec<faer::sparse::Triplet<usize, usize, f64>> = Vec::new();
-        let csc = matrix.as_ref();
-        for j in 0..n {
-            let range = csc.col_range(j);
-            let row_idx = csc.row_idx();
-            let vals = csc.val();
-            for idx in range {
-                let i = row_idx[idx];
-                let mut v = vals[idx];
-                if i == j {
-                    v -= sigma;
+    // Icosphere graph Laplacian eigenvalues (n_v × n_v dense — at most 162×162)
+    let ico_evals = icosphere_eigenvalues(level);
+
+    // Periodic ring eigenvalues: λ_m = 2(1 - cos(2πm/n_ω)) for m = 0..n_ω-1
+    let mut ring_evals: Vec<f64> = (0..n_omega)
+        .map(|m| 2.0 * (1.0 - (2.0 * std::f64::consts::PI * m as f64 / n_omega as f64).cos()))
+        .collect();
+    ring_evals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    // Product eigenvalues: λ = λ_A + λ_B + λ_ω (all combinations)
+    // Collect the k+1 smallest non-negative sums, then skip the zero
+    let mut product_evals: Vec<(f64, f64, f64, f64)> = Vec::new(); // (total, frac_A, frac_B, frac_ω)
+    for &la in &ico_evals {
+        for &lb in &ico_evals {
+            for &lw in &ring_evals {
+                let total = la + lb + lw;
+                if total > 1e-10 {
+                    // Coordinate fractions: which component dominates this mode
+                    let sum = la + lb + lw;
+                    product_evals.push((total, la / sum, lb / sum, lw / sum));
                 }
-                triplets.push(faer::sparse::Triplet {
-                    row: i,
-                    col: j,
-                    val: v,
-                });
             }
         }
-        SparseColMat::<usize, f64>::try_new_from_triplets(n, n, &triplets).expect("shifted matrix")
-    };
+    }
+    product_evals.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    product_evals.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-10);
 
-    // Sparse LU factorization
-    let lu = match shifted.sp_lu() {
-        Ok(lu) => lu,
-        Err(e) => {
-            debug!("Shift-invert LU failed: {e:?}");
-            return Vec::new();
-        }
-    };
-
-    let op = ShiftInvertOp { lu: &lu, n };
-
-    // Allocate output
-    let n_eigs = k.min(n - 1);
-    let mut eigvecs = Mat::<f64>::zeros(n, n_eigs);
-    let mut eigvals = vec![0.0f64; n_eigs];
-
-    // Starting vector
-    let v0 = Col::<f64>::from_fn(n, |i| ((i * 7 + 13) % 97) as f64 / 97.0 - 0.5);
-
-    let par = Par::Rayon(std::num::NonZeroUsize::new(1).unwrap());
-    let params = PartialEigenParams::default();
-    let scratch_req = partial_self_adjoint_eigen_scratch::<f64>(&op, n_eigs, par, params);
-    let mut mem = MemBuffer::new(scratch_req);
-    let mut stack = MemStack::new(&mut mem);
-
-    let _info = partial_self_adjoint_eigen(
-        eigvecs.as_mut(),
-        &mut eigvals,
-        &op,
-        v0.as_ref(),
-        1e-10,
-        par,
-        &mut stack,
-        params,
-    );
-
-    // Map back from inverse eigenvalues: λ_A = σ + 1/λ_inv
-    eigvals
+    product_evals
         .iter()
-        .enumerate()
-        .filter(|(_, &mu)| mu.is_finite() && mu.abs() > 1e-15)
-        .map(|(i, &mu)| {
-            let lambda = sigma + 1.0 / mu;
-            // lambda should be negative (generator eigenvalue)
-            if !lambda.is_finite() || lambda >= 0.0 {
-                return None;
-            }
-            let eigvec: Vec<f64> = (0..n).map(|r| eigvecs[(r, i)]).collect();
-            let (fa, fb, fw) =
-                coordinate_projection(&eigvec, active, level, active.n_v, active.n_omega);
-            Some(EigenMode {
-                eigenvalue: -lambda,
-                frac_mol_a: fa,
-                frac_mol_b: fb,
-                frac_omega: fw,
-            })
-        })
-        .flatten()
         .take(k)
+        .map(|&(ev, fa, fb, fw)| EigenMode {
+            eigenvalue: ev,
+            frac_mol_a: fa,
+            frac_mol_b: fb,
+            frac_omega: fw,
+        })
         .collect()
+}
+
+/// Compute eigenvalues of the icosphere graph Laplacian (small dense problem).
+fn icosphere_eigenvalues(level: &MeshLevel) -> Vec<f64> {
+    let n = level.n_vertices;
+    let mut lap = DMatrix::zeros(n, n);
+    for i in 0..n {
+        let deg = level.neighbors[i].len();
+        lap[(i, i)] = deg as f64;
+        for &j in &level.neighbors[i] {
+            lap[(i, j as usize)] = -1.0;
+        }
+    }
+    let eigen = SymmetricEigen::new(lap);
+    let mut vals: Vec<f64> = eigen.eigenvalues.iter().map(|&e| e.max(0.0)).collect();
+    vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    vals
 }
 
 /// Boltzmann exponent cutoff: exp(-x) for |x| > this is treated as zero to avoid overflow.
@@ -813,13 +640,10 @@ fn diffusion_at_r(
     let eigenmodes = if n_active > MIN_ACTIVE_STATES
         && (n_active as f64 / n_total as f64) > MIN_ACTIVE_FRACTION
     {
-        let (gen, active) = build_sparse_generator(level, n_omega, Some((&energies, beta)));
-        debug!(
-            "R={r:.1} Å: spectral active states: {}/{n_total}",
-            active.n_active
-        );
-        let modes = spectral_eigenmodes(&gen, &active, NUM_EIGENMODES, level, false);
-        // Reject if largest eigenvalue exceeds free value by too much (Lanczos instability)
+        let (gen, active) = build_generator(level, n_omega, Some((&energies, beta)));
+        debug!("R={r:.1} Å: n_active={}/{n_total}", active.n_active);
+        let modes = dense_eigenmodes(&gen, &active, NUM_EIGENMODES, level);
+        // Reject if largest eigenvalue exceeds free value by too much
         let max_plausible = eigenmodes_free
             .first()
             .map_or(f64::INFINITY, |m| m.eigenvalue * MAX_EIGENVALUE_RATIO);
@@ -867,32 +691,152 @@ pub fn diffusion_scan(
         info!("Applying exchange symmetrization (homo-dimer)");
     }
     // Free-diffusion eigenmodes depend only on graph topology — one set per mesh level
+    // Free-diffusion eigenvalues computed analytically from graph structure.
+    // Product graph eigenvalues are sums: λ = λ_A + λ_B + λ_ω.
+    // The spectral gap is the smallest sum with at least one non-zero component.
     let free_evals: std::collections::HashMap<usize, Vec<EigenMode>> = table
         .levels
         .iter()
         .map(|level| {
             let n_v = level.n_vertices;
             let n_omega = table.n_omega;
-            let n_states = n_v * n_v * n_omega;
+            let modes = free_eigenmodes_analytical(level, n_omega, NUM_EIGENMODES);
             info!(
-                "Computing free-diffusion eigenmodes (n_v={n_v}, n_omega={n_omega}, n={n_states})"
+                "Free-diffusion eigenmodes (n_v={n_v}, n_omega={n_omega}): λ₁={:.4e}",
+                modes.first().map_or(0.0, |m| m.eigenvalue)
             );
-            let (free_gen, free_active) = build_sparse_generator(level, n_omega, None);
-            // Free diffusion is well-conditioned: direct Krylov converges fast
-            let modes = spectral_eigenmodes(&free_gen, &free_active, NUM_EIGENMODES, level, true);
             (n_v, modes)
         })
         .collect();
 
     let n_r = table.n_r;
-    // Sequential: each R-slice's eigensolver uses all cores internally via faer
+    // Parallel over R-slices: folded spectrum uses only sparse matvec (low memory per thread)
     let mut results: Vec<DiffusionResult> = (0..n_r)
+        .into_par_iter()
         .progress_count(n_r as u64)
         .filter_map(|ri| diffusion_at_r(table, ri, beta, &free_evals, homo_dimer).ok())
         .collect();
 
     results.sort_by(|a, b| a.r.partial_cmp(&b.r).unwrap());
     results
+}
+
+/// Export generator matrices as Matrix Market files for Python postprocessing.
+///
+/// Saves per R-slice:
+/// - `generator_R{R}.mtx` — symmetric generator in Matrix Market COO format
+/// - `coords_R{R}.csv` — compact index → (vi, vj, oi) mapping for eigenvector projection
+///
+/// Saves once:
+/// - `metadata.csv` — R, n_active, n_total, n_v, n_omega, lambda1_free
+/// - `icosphere.csv` — vertex adjacency list for the icosphere graph
+///
+/// The matrices can be loaded in Python with `scipy.io.mmread()`.
+pub fn export_generator_matrices(
+    table: &icotable::Table6DAdaptive<f32>,
+    beta: f64,
+    homo_dimer: bool,
+    dir: &std::path::Path,
+) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    use std::io::Write;
+
+    let free_evals: std::collections::HashMap<usize, Vec<EigenMode>> = table
+        .levels
+        .iter()
+        .map(|level| {
+            let n_v = level.n_vertices;
+            let n_omega = table.n_omega;
+            let modes = free_eigenmodes_analytical(level, n_omega, NUM_EIGENMODES);
+            (n_v, modes)
+        })
+        .collect();
+
+    // Export icosphere neighbor lists (one file per distinct mesh level)
+    for level in &table.levels {
+        let path = dir.join(format!("icosphere_nv{}.csv", level.n_vertices));
+        if !path.exists() {
+            let mut f = std::fs::File::create(&path)?;
+            writeln!(f, "vertex,neighbors")?;
+            for (i, nbrs) in level.neighbors.iter().enumerate() {
+                let nbr_str: Vec<String> = nbrs.iter().map(|n| n.to_string()).collect();
+                writeln!(f, "{},{}", i, nbr_str.join(" "))?;
+            }
+            info!(
+                "Exported icosphere adjacency (n_v={}) to {}",
+                level.n_vertices,
+                path.display()
+            );
+        }
+    }
+
+    let mut meta = std::fs::File::create(dir.join("metadata.csv"))?;
+    writeln!(meta, "R,n_active,n_total,n_v,n_omega,lambda1_free")?;
+
+    for ri in 0..table.n_r {
+        let r = table.rmin + ri as f64 * table.dr;
+        let n_omega = table.n_omega;
+
+        let Some((mut energies, level)) = table.energies_at_r(ri) else {
+            continue;
+        };
+        let n_v = level.n_vertices;
+        let n_total = n_v * n_v * n_omega;
+
+        if homo_dimer {
+            symmetrize_exchange(&mut energies, n_v, n_omega);
+        }
+
+        let (mat, active) = build_generator(level, n_omega, Some((&energies, beta)));
+        let n = active.n_active;
+        if n < 3 {
+            continue;
+        }
+
+        let lambda1_free = free_evals
+            .get(&n_v)
+            .and_then(|m| m.first())
+            .map_or(0.0, |m| m.eigenvalue);
+
+        // Write coordinate mapping for eigenvector projection
+        let coords_path = dir.join(format!("coords_R{:.1}.csv", r));
+        let mut cf = std::fs::File::create(&coords_path)?;
+        writeln!(cf, "compact,vi,vj,oi")?;
+        for (ci, &(vi, vj, oi)) in active.coords.iter().enumerate() {
+            writeln!(cf, "{ci},{vi},{vj},{oi}")?;
+        }
+
+        // Write Matrix Market format (COO)
+        let path = dir.join(format!("generator_R{:.1}.mtx", r));
+        let mut f = std::fs::File::create(&path)?;
+        writeln!(f, "%%MatrixMarket matrix coordinate real symmetric")?;
+        let mut nnz = 0usize;
+        for i in 0..n {
+            for j in i..n {
+                if mat[(i, j)] != 0.0 {
+                    nnz += 1;
+                }
+            }
+        }
+        writeln!(f, "{n} {n} {nnz}")?;
+        for i in 0..n {
+            for j in i..n {
+                let v = mat[(i, j)];
+                if v != 0.0 {
+                    writeln!(f, "{} {} {:.15e}", i + 1, j + 1, v)?; // 1-indexed
+                }
+            }
+        }
+
+        writeln!(
+            meta,
+            "{r:.2},{n},{n_total},{n_v},{n_omega},{lambda1_free:.6e}"
+        )?;
+        info!("R={r:.1} Å: exported {n}×{n} generator to {}", path.display());
+    }
+
+    info!("Exported matrices to {}", dir.display());
+    Ok(())
 }
 
 /// Cell-model result at one concentration.
@@ -1149,11 +1093,11 @@ mod tests {
         let n_states = n_v * n_v * n_omega;
 
         let energies = vec![0.0; n_states];
-        let (gen, active) = build_sparse_generator(&level, n_omega, Some((&energies, 1.0)));
-        let modes = spectral_eigenmodes(&gen, &active, 3, &level, false);
+        let (gen, active) = build_generator(&level, n_omega, Some((&energies, 1.0)));
+        let modes = dense_eigenmodes(&gen, &active, 3, &level);
 
-        let (free_gen, free_active) = build_sparse_generator(&level, n_omega, None);
-        let free_modes = spectral_eigenmodes(&free_gen, &free_active, 3, &level, true);
+        let (free_gen, free_active) = build_generator(&level, n_omega, None);
+        let free_modes = dense_eigenmodes(&free_gen, &free_active, 3, &level);
 
         assert!(!modes.is_empty());
         for (m, mf) in modes.iter().zip(&free_modes) {
@@ -1169,8 +1113,8 @@ mod tests {
         let n_omega = 8;
         let n_states = n_v * n_v * n_omega;
 
-        let (free_gen, free_active) = build_sparse_generator(&level, n_omega, None);
-        let modes = spectral_eigenmodes(&free_gen, &free_active, 5, &level, true);
+        let (free_gen, free_active) = build_generator(&level, n_omega, None);
+        let modes = dense_eigenmodes(&free_gen, &free_active, 5, &level);
 
         for m in &modes {
             let sum = m.frac_mol_a + m.frac_mol_b + m.frac_omega;
@@ -1193,13 +1137,49 @@ mod tests {
             })
             .collect();
 
-        let (gen, active) = build_sparse_generator(&level, n_omega, Some((&energies, 1.0)));
-        let modes = spectral_eigenmodes(&gen, &active, 5, &level, false);
+        let (gen, active) = build_generator(&level, n_omega, Some((&energies, 1.0)));
+        let modes = dense_eigenmodes(&gen, &active, 5, &level);
 
         for m in &modes {
             let sum = m.frac_mol_a + m.frac_mol_b + m.frac_omega;
             assert_relative_eq!(sum, 1.0, epsilon = 1e-6);
         }
+    }
+
+    /// Icosphere eigenvalues: sorted nondecreasing, first ≈ 0, rest positive.
+    #[test]
+    fn test_icosphere_eigenvalues() {
+        let level = MeshLevel::new(0);
+        let evals = icosphere_eigenvalues(&level);
+
+        assert_eq!(evals.len(), 12);
+        assert_relative_eq!(evals[0], 0.0, epsilon = 1e-10);
+        // All positive and sorted
+        for i in 1..evals.len() {
+            assert!(evals[i] > 0.0);
+            assert!(evals[i] >= evals[i - 1] - 1e-10);
+        }
+        // Spectral gap should be reasonable (> 0, < max degree)
+        assert!(evals[1] > 0.1);
+        assert!(evals[1] < 12.0);
+    }
+
+    /// Free-diffusion analytical eigenmodes: spectral gap matches ring eigenvalue
+    /// when the ring has fewer bins than icosphere vertices.
+    #[test]
+    fn test_free_eigenmodes_analytical() {
+        let level = MeshLevel::new(0); // 12 vertices
+        let n_omega = 8;
+        let modes = free_eigenmodes_analytical(&level, n_omega, 3);
+
+        // Ring spectral gap: 2(1 - cos(2π/8)) = 2(1 - cos(π/4)) = 2(1 - √2/2) ≈ 0.5858
+        let ring_gap = 2.0 * (1.0 - (2.0 * std::f64::consts::PI / n_omega as f64).cos());
+        // Icosphere spectral gap: 5 - √5 ≈ 2.764
+        // Product spectral gap = min(ring_gap, ico_gap) = ring_gap ≈ 0.5858
+        assert!(!modes.is_empty());
+        assert_relative_eq!(modes[0].eigenvalue, ring_gap, epsilon = 1e-6);
+        // First mode should be dihedral-dominated (f_ω ≈ 1)
+        assert!(modes[0].frac_omega > 0.9);
     }
 
     fn bessel_i0(x: f64) -> f64 {
