@@ -28,11 +28,18 @@ def plot_isotropic(df: pd.DataFrame, ax: plt.Axes):
     r = df["R"]
     ax.plot(r, df["D/D⁰"], "o-", color="C0", label="$D_r/D_r^0$ (Zwanzig)", markersize=3)
 
+    ax.set_xlabel("R (Å)")
+    ax.set_ylabel("$D_r/D_r^0$ (Zwanzig)", color="C0")
+    ax.set_ylim(-0.05, 1.1)
+    ax.axhline(1.0, color="gray", linestyle=":", linewidth=0.5)
+    ax.tick_params(axis="y", labelcolor="C0")
+
     if "λ1" in df.columns and "λ1_free" in df.columns:
         mask = df["λ1"].notna() & df["λ1_free"].notna() & (df["λ1_free"] > 0)
         if mask.any():
             ratio = df.loc[mask, "λ1"] / df.loc[mask, "λ1_free"]
-            ax.plot(
+            ax2 = ax.twinx()
+            ax2.plot(
                 df.loc[mask, "R"],
                 ratio,
                 "s--",
@@ -40,12 +47,13 @@ def plot_isotropic(df: pd.DataFrame, ax: plt.Axes):
                 label="$\\lambda_1 / \\lambda_1^{\\mathrm{free}}$",
                 markersize=3,
             )
+            ax2.set_yscale("log")
+            ax2.set_ylabel("$\\lambda_1 / \\lambda_1^{\\mathrm{free}}$ (log)", color="C1", fontsize=8)
+            ax2.tick_params(axis="y", labelcolor="C1", labelsize=7)
+            ax2.axhline(1.0, color="C1", linestyle=":", linewidth=0.5, alpha=0.3)
+            ax2.legend(fontsize=7, loc="center right")
 
-    ax.set_xlabel("R (Å)")
-    ax.set_ylabel("Normalized diffusion / relaxation")
-    ax.set_ylim(-0.05, 1.1)
-    ax.axhline(1.0, color="gray", linestyle=":", linewidth=0.5)
-    ax.legend()
+    ax.legend(fontsize=7, loc="center left")
     ax.set_title("Isotropic rotational diffusion")
 
 
@@ -102,9 +110,7 @@ def plot_eigenvalue_spectrum(df: pd.DataFrame, axes, hetero: bool = False):
         valid = ratio.between(0, 2.0)
         r = df.loc[mask, "R"][valid].values
         y = ratio[valid].values
-        # Normalize so that the long-range limit is exactly 1
-        if len(y) > 0 and y[-1] > 0:
-            y = y / y[-1]
+        # No normalization — show raw λ_k/λ_k_free ratios on log scale
         fa = df.loc[mask, col_fa][valid].values if col_fa in df.columns else np.zeros_like(r)
         fb = df.loc[mask, col_fb][valid].values if col_fb in df.columns else np.zeros_like(r)
         fw = df.loc[mask, col_fw][valid].values if col_fw in df.columns else np.zeros_like(r)
@@ -120,7 +126,8 @@ def plot_eigenvalue_spectrum(df: pd.DataFrame, axes, hetero: bool = False):
             ax.plot(r, y, "-", color="gray", alpha=0.2, linewidth=0.5)
 
         ax.axhline(1.0, color="gray", linestyle=":", linewidth=0.5)
-        ax.set_ylim(0, 1.5)
+        ax.set_yscale("log")
+        ax.set_ylim(0.1, None)
         ax.set_ylabel(f"$\\lambda_{i}/\\lambda_{i}^{{free}}$", fontsize=8)
         ax.tick_params(labelsize=7)
 
