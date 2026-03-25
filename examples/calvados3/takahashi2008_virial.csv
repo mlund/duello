@@ -1,0 +1,15 @@
+I_M,B22_1e-4_ml_mol_g2,source
+0.1,2.5,Guo1999
+0.3,-0.5,Guo1999
+0.5,-2.0,Guo1999
+0.7,-3.5,Guo1999
+1.0,-5.0,Guo1999
+1.2,-6.5,Guo1999
+0.2,2.0,Velev1998
+0.5,-1.0,Velev1998
+0.1,-0.5,Takahashi2008_Bprime22
+0.5,-2.5,Takahashi2008_Bprime22
+0.95,-4.0,Takahashi2008_Bprime22
+1.0,-5.5,Takahashi2008_Bprime22
+1.47,-8.5,Takahashi2008_Bprime22
+1.80,-13.0,Takahashi2008_Bprime22

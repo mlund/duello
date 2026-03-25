@@ -288,8 +288,10 @@ fn dense_eigenmodes(
 const DENSE_THRESHOLD: usize = 5_000;
 
 /// Maximum Lanczos basis vectors. Memory per thread ~ n_states × m × 8B.
-/// For 143K states: 143K × 60 × 8B ≈ 69 MB per thread.
-const MAX_LANCZOS_VECTORS: usize = 60;
+/// For 143K states: 143K × 200 × 8B ≈ 230 MB per thread.
+/// Needs to be large enough to resolve the spectral gap when the potential
+/// creates a wide range of exit rates across the angular grid.
+const MAX_LANCZOS_VECTORS: usize = 200;
 
 /// Lanczos convergence tolerance for the residual norm.
 const LANCZOS_TOLERANCE: f64 = 1e-14;
@@ -303,8 +305,10 @@ const MIN_ACTIVE_STATES: usize = 100;
 /// Skip spectral gap when active fraction is below this threshold.
 const MIN_ACTIVE_FRACTION: f64 = 0.01;
 
-/// Reject spectral gaps above this as numerically unstable.
-const MAX_PLAUSIBLE_SPECTRAL_GAP: f64 = 1e10;
+/// Reject eigenvalues exceeding this multiple of the free-diffusion value.
+/// Large ratios (10-100×) are physical in the bounding-sphere overlap region
+/// where the energy landscape funnels the system into a few accessible orientations.
+const MAX_EIGENVALUE_RATIO: f64 = 1000.0;
 
 /// Extract first `k` non-trivial eigenmodes from a sparse symmetric matrix.
 ///
@@ -400,6 +404,15 @@ fn lanczos_eigenmodes(
         }
     }
     let eigen = SymmetricEigen::new(tridiag);
+
+    // Debug: log tridiag eigenvalue range
+    let evals_debug = &eigen.eigenvalues;
+    let ev_min = evals_debug.iter().copied().fold(f64::INFINITY, f64::min);
+    let ev_max = evals_debug.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let n_neg = evals_debug.iter().filter(|&&e| e < 0.0).count();
+    debug!(
+        "Lanczos tridiag: size={tri_size}, evals in [{ev_min:.2e}, {ev_max:.2e}], {n_neg} negative"
+    );
 
     // Sort eigenpairs by eigenvalue descending
     let mut indices: Vec<usize> = (0..tri_size).collect();
@@ -637,34 +650,45 @@ fn diffusion_at_r(
         symmetrize_exchange(&mut energies, n_v, n_omega);
     }
 
-    let (dr_normalized, boltzmann_weight, n_active) = zwanzig(&energies, beta)
+    let (dr_zwanzig, boltzmann_weight, n_active) = zwanzig(&energies, beta)
         .ok_or_else(|| anyhow::anyhow!("No finite energies at R={r:.1}"))?;
 
     let (dr_mol_a, dr_mol_b, dr_omega) = marginal_zwanzig(&energies, n_v, n_omega, beta);
+
+    // Full 5D Zwanzig underflows when steric clashes dominate ⟨exp(βU)⟩.
+    // The product of marginals is a better estimate in the bounding-sphere overlap region.
+    let dr_normalized = dr_zwanzig.max(dr_mol_a * dr_mol_b * dr_omega);
+
+    let eigenmodes_free = free_evals
+        .get(&level.n_vertices)
+        .cloned()
+        .unwrap_or_default();
 
     let eigenmodes = if n_active > MIN_ACTIVE_STATES
         && (n_active as f64 / n_total as f64) > MIN_ACTIVE_FRACTION
     {
         let gen = build_sparse_generator(level, n_omega, Some((&energies, beta)));
         let modes = spectral_eigenmodes(&gen, n_total, NUM_EIGENMODES, level, n_v, n_omega);
+        // Reject if largest eigenvalue exceeds free value by too much (Lanczos instability)
+        let max_plausible = eigenmodes_free
+            .first()
+            .map_or(f64::INFINITY, |m| m.eigenvalue * MAX_EIGENVALUE_RATIO);
         if modes
             .first()
-            .is_some_and(|m| m.eigenvalue < MAX_PLAUSIBLE_SPECTRAL_GAP)
+            .is_some_and(|m| m.eigenvalue < max_plausible)
         {
             modes
         } else {
-            debug!("R={r:.1} Å: rejecting unstable eigenmodes");
+            debug!(
+                "R={r:.1} Å: rejecting eigenmodes (λ₁={:.2e}, max={max_plausible:.2e})",
+                modes.first().map_or(0.0, |m| m.eigenvalue)
+            );
             Vec::new()
         }
     } else {
         debug!("R={r:.1} Å: skipping eigenmodes (n_active={n_active}/{n_total})");
         Vec::new()
     };
-
-    let eigenmodes_free = free_evals
-        .get(&level.n_vertices)
-        .cloned()
-        .unwrap_or_default();
 
     debug!(
         "R={r:.1} Å: D_r/D_r⁰={dr_normalized:.6}, D_A={dr_mol_a:.4}, D_B={dr_mol_b:.4}, D_ω={dr_omega:.4}, λ₁={}",

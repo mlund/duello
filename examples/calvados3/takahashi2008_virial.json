@@ -1,0 +1,14 @@
+{
+  "doi": "10.1529/biophysj.107.111872",
+  "authors": "Takahashi, Nishimoto, Murase, Yamashita",
+  "figure": "6",
+  "buffer": "100 mM sodium acetate, pH 4.5",
+  "temperature_K": 293.15,
+  "units": "B22 in 10^-4 mL·mol/g²",
+  "sources": {
+    "Guo1999": "B22 from DLS, doi:10.1016/S0022-0248(99)00294-1",
+    "Velev1998": "B22 from light/neutron scattering, doi:10.1016/S0006-3495(98)77612-X",
+    "Takahashi2008_Bprime22": "B'22 derived from k_rot via B'22 = (k_rot + v) / 2M_W"
+  },
+  "note": "Values approximate (graphical extraction from Figure 6)."
+}

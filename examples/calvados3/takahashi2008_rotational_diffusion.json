@@ -1,0 +1,8 @@
+{
+  "doi": "10.1529/biophysj.107.111872",
+  "authors": "Takahashi, Nishimoto, Murase, Yamashita",
+  "figure": "4A",
+  "buffer": "100 mM sodium acetate, pH 4.5",
+  "temperature_K": 293.15,
+  "note": "D_rot/D_rot0 vs lysozyme concentration. Values approximate (graphical extraction)."
+}
