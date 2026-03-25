@@ -25,12 +25,16 @@
 //!    symmetrized generator, computed via sparse Lanczos iteration.
 
 use anyhow::Result;
+use dyn_stack::{MemBuffer, MemStack};
+use faer::matrix_free::eigen::{
+    partial_self_adjoint_eigen, partial_self_adjoint_eigen_scratch, PartialEigenParams,
+};
+use faer::matrix_free::LinOp;
+use faer::prelude::*;
+use faer::sparse::linalg::solvers::Lu;
+use faer::sparse::SparseColMat;
 use icotable::adaptive::MeshLevel;
-use indicatif::ParallelProgressIterator;
-use lanczos::{Hermitian, Order};
-use nalgebra::{DMatrix, SymmetricEigen};
-use nalgebra_sparse::{CooMatrix, CsrMatrix};
-use rayon::prelude::*;
+use indicatif::ProgressIterator;
 
 /// Number of non-trivial eigenmodes to extract from the generator spectrum.
 const NUM_EIGENMODES: usize = 5;
@@ -145,9 +149,21 @@ fn coordinate_projection(
         }
     }
 
-    let norm_a = if edges_a > 0 { var_a / edges_a as f64 } else { 0.0 };
-    let norm_b = if edges_b > 0 { var_b / edges_b as f64 } else { 0.0 };
-    let norm_omega = if edges_omega > 0 { var_omega / edges_omega as f64 } else { 0.0 };
+    let norm_a = if edges_a > 0 {
+        var_a / edges_a as f64
+    } else {
+        0.0
+    };
+    let norm_b = if edges_b > 0 {
+        var_b / edges_b as f64
+    } else {
+        0.0
+    };
+    let norm_omega = if edges_omega > 0 {
+        var_omega / edges_omega as f64
+    } else {
+        0.0
+    };
 
     let total = norm_a + norm_b + norm_omega;
     if total < 1e-30 {
@@ -171,29 +187,52 @@ struct ActiveStates {
 
 impl ActiveStates {
     /// Build active set: all states for free diffusion, energy-filtered for potential.
-    fn new(
-        energies: Option<(&[f64], f64)>,
-        n_v: usize,
-        n_omega: usize,
-    ) -> Self {
+    ///
+    /// For potentials, keeps states covering PARTITION_FRACTION (99.9%) of the
+    /// partition function. This adaptively selects the thermally relevant states.
+    fn new(energies: Option<(&[f64], f64)>, n_v: usize, n_omega: usize) -> Self {
         let n_states = n_v * n_v * n_omega;
         let mut compact = vec![usize::MAX; n_states];
         let mut coords = Vec::new();
 
-        let u_min = energies.map(|(e, _)| {
-            e.iter().copied().filter(|u| u.is_finite()).fold(f64::INFINITY, f64::min)
+        // Compute adaptive energy cutoff from partition function
+        let cutoff = energies.map(|(e, beta)| {
+            let u_min = e
+                .iter()
+                .copied()
+                .filter(|u| u.is_finite())
+                .fold(f64::INFINITY, f64::min);
+            // Sort finite shifted energies, accumulate Boltzmann weight
+            let mut shifted: Vec<f64> = e
+                .iter()
+                .copied()
+                .filter(|u| u.is_finite())
+                .map(|u| u - u_min)
+                .collect();
+            shifted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let z_total: f64 = shifted.iter().map(|&u| (-beta * u).exp()).sum();
+            let target = PARTITION_FRACTION * z_total;
+            let mut z_accum = 0.0;
+            let mut energy_cutoff = f64::INFINITY;
+            for &u in &shifted {
+                z_accum += (-beta * u).exp();
+                if z_accum >= target {
+                    energy_cutoff = u;
+                    break;
+                }
+            }
+            (u_min, energy_cutoff)
         });
 
         for vi in 0..n_v {
             for vj in 0..n_v {
                 for oi in 0..n_omega {
                     let idx = state_index(vi, vj, oi, n_v, n_omega);
-                    let active = match energies {
-                        Some((e, beta)) => {
-                            e[idx].is_finite()
-                                && beta * (e[idx] - u_min.unwrap()) <= SPECTRAL_ENERGY_THRESHOLD
+                    let active = match (energies, cutoff) {
+                        (Some((e, _)), Some((u_min, threshold))) => {
+                            e[idx].is_finite() && (e[idx] - u_min) <= threshold
                         }
-                        None => true,
+                        _ => true,
                     };
                     if active {
                         compact[idx] = coords.len();
@@ -204,7 +243,13 @@ impl ActiveStates {
         }
 
         let n_active = coords.len();
-        Self { compact, coords, n_active, n_v, n_omega }
+        Self {
+            compact,
+            coords,
+            n_active,
+            n_v,
+            n_omega,
+        }
     }
 }
 
@@ -217,12 +262,11 @@ fn build_sparse_generator(
     level: &MeshLevel,
     n_omega: usize,
     potential: Option<(&[f64], f64)>,
-) -> (CsrMatrix<f64>, ActiveStates) {
+) -> (SparseColMat<usize, f64>, ActiveStates) {
     let n_v = level.n_vertices;
 
     let active = ActiveStates::new(potential, n_v, n_omega);
     let n = active.n_active;
-    let mut coo = CooMatrix::new(n, n);
 
     let u_min = potential.map(|(energies, _)| {
         energies
@@ -231,6 +275,8 @@ fn build_sparse_generator(
             .filter(|u| u.is_finite())
             .fold(f64::INFINITY, f64::min)
     });
+
+    let mut triplets: Vec<faer::sparse::Triplet<usize, usize, f64>> = Vec::new();
 
     for (ci, &(vi, vj, oi)) in active.coords.iter().enumerate() {
         let full_idx = state_index(vi, vj, oi, n_v, n_omega);
@@ -251,49 +297,70 @@ fn build_sparse_generator(
             } else {
                 exit_rate += 1.0;
             }
-            coo.push(ci, cj, 1.0);
+            triplets.push(faer::sparse::Triplet {
+                row: ci,
+                col: cj,
+                val: 1.0,
+            });
         });
-        coo.push(ci, ci, -exit_rate);
+        triplets.push(faer::sparse::Triplet {
+            row: ci,
+            col: ci,
+            val: -exit_rate,
+        });
     }
 
-    (CsrMatrix::from(&coo), active)
+    let mat =
+        SparseColMat::<usize, f64>::try_new_from_triplets(n, n, &triplets).expect("valid triplets");
+    (mat, active)
 }
 
-/// Extract first `k` non-trivial eigenmodes.
-///
-/// Dense eigensolver for n_active ≤ DENSE_THRESHOLD (exact, reliable).
-/// `lanczos` crate with `Order::Largest` for larger matrices (targets near-zero eigenvalues).
-const DENSE_THRESHOLD: usize = 10_000;
+/// Dense eigensolver for trivially small matrices only.
+const DENSE_THRESHOLD: usize = 500;
 
-fn spectral_eigenmodes(
-    matrix: &CsrMatrix<f64>,
+/// Direct Krylov-Schur for well-conditioned matrices (free diffusion).
+/// Finds largest-magnitude eigenvalues directly without shift-invert.
+fn direct_krylov_eigenmodes(
+    matrix: &SparseColMat<usize, f64>,
     active: &ActiveStates,
     k: usize,
     level: &MeshLevel,
 ) -> Vec<EigenMode> {
     let n = active.n_active;
-    if n < 3 {
-        return Vec::new();
-    }
+    let n_eigs = k.min(n - 1);
+    let par = Par::Rayon(std::num::NonZeroUsize::new(1).unwrap());
+    let params = PartialEigenParams::default();
 
-    if n <= DENSE_THRESHOLD {
-        return dense_eigenmodes(matrix, active, k, level);
-    }
+    let mut eigvecs = Mat::<f64>::zeros(n, n_eigs);
+    let mut eigvals = vec![0.0f64; n_eigs];
+    let v0 = Col::<f64>::from_fn(n, |i| ((i * 7 + 13) % 97) as f64 / 97.0 - 0.5);
 
-    // Lanczos via `lanczos` crate for large matrices
-    let iterations = n.min(300);
-    let eigen = matrix.eigsh(iterations, Order::Largest);
+    let scratch_req = partial_self_adjoint_eigen_scratch::<f64>(matrix, n_eigs, par, params);
+    let mut mem = MemBuffer::new(scratch_req);
+    let mut stack = MemStack::new(&mut mem);
 
-    // Convert lanczos crate types (nalgebra 0.33) to our types (0.34)
-    let evals: Vec<f64> = eigen.eigenvalues.iter().copied().collect();
-    evals
+    let _info = partial_self_adjoint_eigen(
+        eigvecs.as_mut(),
+        &mut eigvals,
+        matrix,
+        v0.as_ref(),
+        1e-10,
+        par,
+        &mut stack,
+        params,
+    );
+
+    // Sort by value descending (least negative = near zero first)
+    let mut indexed: Vec<(usize, f64)> = eigvals.iter().copied().enumerate().collect();
+    indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    indexed
         .iter()
-        .enumerate()
-        .skip(1)
+        .skip(1) // skip λ₀ ≈ 0
         .take(k)
-        .filter(|(_, &e)| e.is_finite() && e < 0.0)
-        .map(|(i, &e)| {
-            let eigvec: Vec<f64> = eigen.eigenvectors.column(i).iter().copied().collect();
+        .filter(|(_, e)| e.is_finite() && *e < 0.0)
+        .map(|&(i, e)| {
+            let eigvec: Vec<f64> = (0..n).map(|r| eigvecs[(r, i)]).collect();
             let (fa, fb, fw) =
                 coordinate_projection(&eigvec, active, level, active.n_v, active.n_omega);
             EigenMode {
@@ -306,34 +373,107 @@ fn spectral_eigenmodes(
         .collect()
 }
 
-/// Dense eigensolver: convert sparse → dense, use nalgebra SymmetricEigen.
+/// Shift-invert operator: applies (A - σI)⁻¹ via sparse LU factorization.
+/// Eigenvalues of this operator near σ become the largest, which the
+/// Krylov-Schur algorithm in faer converges to first.
+struct ShiftInvertOp<'a> {
+    lu: &'a Lu<usize, f64>,
+    n: usize,
+}
+
+impl core::fmt::Debug for ShiftInvertOp<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "ShiftInvertOp(n={})", self.n)
+    }
+}
+
+impl LinOp<f64> for ShiftInvertOp<'_> {
+    fn nrows(&self) -> usize {
+        self.n
+    }
+    fn ncols(&self) -> usize {
+        self.n
+    }
+    fn apply_scratch(&self, _rhs_ncols: usize, _par: Par) -> dyn_stack::StackReq {
+        dyn_stack::StackReq::empty()
+    }
+    fn apply(
+        &self,
+        mut out: MatMut<'_, f64>,
+        rhs: MatRef<'_, f64>,
+        _par: Par,
+        _stack: &mut MemStack,
+    ) {
+        out.copy_from(rhs);
+        self.lu.solve_in_place(out.rb_mut());
+    }
+    fn conj_apply(
+        &self,
+        out: MatMut<'_, f64>,
+        rhs: MatRef<'_, f64>,
+        par: Par,
+        stack: &mut MemStack,
+    ) {
+        self.apply(out, rhs, par, stack);
+    }
+}
+
+/// Extract first `k` non-trivial eigenmodes.
+///
+/// - Dense for n_active ≤ DENSE_THRESHOLD (exact, reliable)
+/// - Shift-invert Krylov-Schur for larger ill-conditioned matrices (with potential)
+/// - Direct Krylov-Schur for larger well-conditioned matrices (free diffusion)
+fn spectral_eigenmodes(
+    matrix: &SparseColMat<usize, f64>,
+    active: &ActiveStates,
+    k: usize,
+    level: &MeshLevel,
+    well_conditioned: bool,
+) -> Vec<EigenMode> {
+    let n = active.n_active;
+    if n < 3 {
+        return Vec::new();
+    }
+
+    if n <= DENSE_THRESHOLD {
+        return dense_eigenmodes(matrix, active, k, level);
+    }
+
+    if well_conditioned {
+        direct_krylov_eigenmodes(matrix, active, k, level)
+    } else {
+        shift_invert_eigenmodes(matrix, active, k, level)
+    }
+}
+
+/// Dense eigensolver: convert sparse → dense, use faer self_adjoint_eigen.
 fn dense_eigenmodes(
-    matrix: &CsrMatrix<f64>,
+    matrix: &SparseColMat<usize, f64>,
     active: &ActiveStates,
     k: usize,
     level: &MeshLevel,
 ) -> Vec<EigenMode> {
     let n = active.n_active;
-    let mut dense = DMatrix::zeros(n, n);
-    for (i, j, &v) in matrix.triplet_iter() {
-        dense[(i, j)] = v;
-    }
-    let eigen = SymmetricEigen::new(dense);
-    // Sort descending (largest = λ₀ ≈ 0 first)
-    let mut indices: Vec<usize> = (0..n).collect();
-    let evals = &eigen.eigenvalues;
-    indices.sort_by(|&a, &b| {
-        evals[b]
-            .partial_cmp(&evals[a])
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    indices
-        .iter()
-        .skip(1)
+    let dense = matrix.to_dense();
+
+    let eigen = dense
+        .self_adjoint_eigen(faer::Side::Lower)
+        .expect("eigen decomposition");
+    let evals = eigen.S().column_vector();
+    // faer returns eigenvalues in nondecreasing order (most negative first)
+    // We want the largest (near zero), so iterate from the end
+    let n_evals = evals.nrows();
+
+    (0..n_evals)
+        .rev()
+        .skip(1) // skip λ₀ ≈ 0 (the largest)
         .take(k)
-        .filter(|&&i| evals[i].is_finite() && evals[i] < 0.0)
-        .map(|&i| {
-            let eigvec: Vec<f64> = eigen.eigenvectors.column(i).iter().copied().collect();
+        .filter(|&i| {
+            let e = evals[i];
+            e.is_finite() && e < 0.0
+        })
+        .map(|i| {
+            let eigvec: Vec<f64> = (0..n).map(|r| eigen.U()[(r, i)]).collect();
             let (fa, fb, fw) =
                 coordinate_projection(&eigvec, active, level, active.n_v, active.n_omega);
             EigenMode {
@@ -346,12 +486,110 @@ fn dense_eigenmodes(
         .collect()
 }
 
+/// Shift-invert Krylov-Schur for large sparse matrices.
+///
+/// Factorizes (A - σI) and finds eigenvalues of the inverse operator,
+/// which converges to eigenvalues of A nearest to σ ≈ 0.
+fn shift_invert_eigenmodes(
+    matrix: &SparseColMat<usize, f64>,
+    active: &ActiveStates,
+    k: usize,
+    level: &MeshLevel,
+) -> Vec<EigenMode> {
+    let n = active.n_active;
+    let sigma = -1e-8; // small negative shift to avoid singularity at λ₀ = 0
+
+    // Build (A - σI): copy triplets and shift diagonal
+    let shifted = {
+        let mut triplets: Vec<faer::sparse::Triplet<usize, usize, f64>> = Vec::new();
+        let csc = matrix.as_ref();
+        for j in 0..n {
+            let range = csc.col_range(j);
+            let row_idx = csc.row_idx();
+            let vals = csc.val();
+            for idx in range {
+                let i = row_idx[idx];
+                let mut v = vals[idx];
+                if i == j {
+                    v -= sigma;
+                }
+                triplets.push(faer::sparse::Triplet {
+                    row: i,
+                    col: j,
+                    val: v,
+                });
+            }
+        }
+        SparseColMat::<usize, f64>::try_new_from_triplets(n, n, &triplets).expect("shifted matrix")
+    };
+
+    // Sparse LU factorization
+    let lu = match shifted.sp_lu() {
+        Ok(lu) => lu,
+        Err(e) => {
+            debug!("Shift-invert LU failed: {e:?}");
+            return Vec::new();
+        }
+    };
+
+    let op = ShiftInvertOp { lu: &lu, n };
+
+    // Allocate output
+    let n_eigs = k.min(n - 1);
+    let mut eigvecs = Mat::<f64>::zeros(n, n_eigs);
+    let mut eigvals = vec![0.0f64; n_eigs];
+
+    // Starting vector
+    let v0 = Col::<f64>::from_fn(n, |i| ((i * 7 + 13) % 97) as f64 / 97.0 - 0.5);
+
+    let par = Par::Rayon(std::num::NonZeroUsize::new(1).unwrap());
+    let params = PartialEigenParams::default();
+    let scratch_req = partial_self_adjoint_eigen_scratch::<f64>(&op, n_eigs, par, params);
+    let mut mem = MemBuffer::new(scratch_req);
+    let mut stack = MemStack::new(&mut mem);
+
+    let _info = partial_self_adjoint_eigen(
+        eigvecs.as_mut(),
+        &mut eigvals,
+        &op,
+        v0.as_ref(),
+        1e-10,
+        par,
+        &mut stack,
+        params,
+    );
+
+    // Map back from inverse eigenvalues: λ_A = σ + 1/λ_inv
+    eigvals
+        .iter()
+        .enumerate()
+        .filter(|(_, &mu)| mu.is_finite() && mu.abs() > 1e-15)
+        .map(|(i, &mu)| {
+            let lambda = sigma + 1.0 / mu;
+            // lambda should be negative (generator eigenvalue)
+            if !lambda.is_finite() || lambda >= 0.0 {
+                return None;
+            }
+            let eigvec: Vec<f64> = (0..n).map(|r| eigvecs[(r, i)]).collect();
+            let (fa, fb, fw) =
+                coordinate_projection(&eigvec, active, level, active.n_v, active.n_omega);
+            Some(EigenMode {
+                eigenvalue: -lambda,
+                frac_mol_a: fa,
+                frac_mol_b: fb,
+                frac_omega: fw,
+            })
+        })
+        .flatten()
+        .take(k)
+        .collect()
+}
+
 /// Boltzmann exponent cutoff: exp(-x) for |x| > this is treated as zero to avoid overflow.
 const BOLTZMANN_OVERFLOW_GUARD: f64 = 50.0;
 
-/// Energy threshold for spectral analysis: states with β(U - U_min) above this
-/// are excluded from the generator to improve conditioning.
-const SPECTRAL_ENERGY_THRESHOLD: f64 = 30.0;
+/// Fraction of the partition function to retain in the active state set.
+const PARTITION_FRACTION: f64 = 0.999;
 
 /// Skip spectral gap when fewer than this many active states exist.
 const MIN_ACTIVE_STATES: usize = 100;
@@ -576,16 +814,16 @@ fn diffusion_at_r(
         && (n_active as f64 / n_total as f64) > MIN_ACTIVE_FRACTION
     {
         let (gen, active) = build_sparse_generator(level, n_omega, Some((&energies, beta)));
-        debug!("R={r:.1} Å: spectral active states: {}/{n_total}", active.n_active);
-        let modes = spectral_eigenmodes(&gen, &active, NUM_EIGENMODES, level);
+        debug!(
+            "R={r:.1} Å: spectral active states: {}/{n_total}",
+            active.n_active
+        );
+        let modes = spectral_eigenmodes(&gen, &active, NUM_EIGENMODES, level, false);
         // Reject if largest eigenvalue exceeds free value by too much (Lanczos instability)
         let max_plausible = eigenmodes_free
             .first()
             .map_or(f64::INFINITY, |m| m.eigenvalue * MAX_EIGENVALUE_RATIO);
-        if modes
-            .first()
-            .is_some_and(|m| m.eigenvalue < max_plausible)
-        {
+        if modes.first().is_some_and(|m| m.eigenvalue < max_plausible) {
             modes
         } else {
             debug!(
@@ -636,18 +874,19 @@ pub fn diffusion_scan(
             let n_v = level.n_vertices;
             let n_omega = table.n_omega;
             let n_states = n_v * n_v * n_omega;
-            info!("Computing free-diffusion eigenmodes (n_v={n_v}, n_omega={n_omega})");
+            info!(
+                "Computing free-diffusion eigenmodes (n_v={n_v}, n_omega={n_omega}, n={n_states})"
+            );
             let (free_gen, free_active) = build_sparse_generator(level, n_omega, None);
-            (
-                n_v,
-                spectral_eigenmodes(&free_gen, &free_active, NUM_EIGENMODES, level),
-            )
+            // Free diffusion is well-conditioned: direct Krylov converges fast
+            let modes = spectral_eigenmodes(&free_gen, &free_active, NUM_EIGENMODES, level, true);
+            (n_v, modes)
         })
         .collect();
 
     let n_r = table.n_r;
+    // Sequential: each R-slice's eigensolver uses all cores internally via faer
     let mut results: Vec<DiffusionResult> = (0..n_r)
-        .into_par_iter()
         .progress_count(n_r as u64)
         .filter_map(|ri| diffusion_at_r(table, ri, beta, &free_evals, homo_dimer).ok())
         .collect();
@@ -911,10 +1150,10 @@ mod tests {
 
         let energies = vec![0.0; n_states];
         let (gen, active) = build_sparse_generator(&level, n_omega, Some((&energies, 1.0)));
-        let modes = spectral_eigenmodes(&gen, &active, 3, &level);
+        let modes = spectral_eigenmodes(&gen, &active, 3, &level, false);
 
         let (free_gen, free_active) = build_sparse_generator(&level, n_omega, None);
-        let free_modes = spectral_eigenmodes(&free_gen, &free_active, 3, &level);
+        let free_modes = spectral_eigenmodes(&free_gen, &free_active, 3, &level, true);
 
         assert!(!modes.is_empty());
         for (m, mf) in modes.iter().zip(&free_modes) {
@@ -931,7 +1170,7 @@ mod tests {
         let n_states = n_v * n_v * n_omega;
 
         let (free_gen, free_active) = build_sparse_generator(&level, n_omega, None);
-        let modes = spectral_eigenmodes(&free_gen, &free_active, 5, &level);
+        let modes = spectral_eigenmodes(&free_gen, &free_active, 5, &level, true);
 
         for m in &modes {
             let sum = m.frac_mol_a + m.frac_mol_b + m.frac_omega;
@@ -955,7 +1194,7 @@ mod tests {
             .collect();
 
         let (gen, active) = build_sparse_generator(&level, n_omega, Some((&energies, 1.0)));
-        let modes = spectral_eigenmodes(&gen, &active, 5, &level);
+        let modes = spectral_eigenmodes(&gen, &active, 5, &level, false);
 
         for m in &modes {
             let sum = m.frac_mol_a + m.frac_mol_b + m.frac_omega;
