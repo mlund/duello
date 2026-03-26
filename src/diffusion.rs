@@ -27,8 +27,7 @@
 use anyhow::Result;
 use icotable::adaptive::MeshLevel;
 use indicatif::ParallelProgressIterator;
-use lanczos::{Hermitian, Order};
-use nalgebra::{DMatrix, SymmetricEigen};
+use nalgebra::{DMatrix, DVector, SymmetricEigen};
 use nalgebra_sparse::{CooMatrix, CscMatrix};
 use rayon::prelude::*;
 
@@ -70,6 +69,8 @@ pub struct DiffusionResult {
     pub eigenmodes_free: Vec<EigenMode>,
     /// Number of active states (finite-energy grid points).
     pub n_active: usize,
+    /// Number of disconnected components in the generator graph.
+    pub n_components: usize,
 }
 
 /// Flatten a 5D state (vi, vj, oi) into a linear index.
@@ -108,9 +109,9 @@ fn coordinate_projection(
     eigvec: &[f64],
     active: &ActiveStates,
     level: &MeshLevel,
-    n_v: usize,
-    n_omega: usize,
 ) -> (f64, f64, f64) {
+    let n_v = active.n_v;
+    let n_omega = active.n_omega;
     let mut var_a = 0.0;
     let mut var_b = 0.0;
     let mut var_omega = 0.0;
@@ -145,27 +146,17 @@ fn coordinate_projection(
         }
     }
 
-    let norm_a = if edges_a > 0 {
-        var_a / edges_a as f64
-    } else {
-        0.0
-    };
-    let norm_b = if edges_b > 0 {
-        var_b / edges_b as f64
-    } else {
-        0.0
-    };
-    let norm_omega = if edges_omega > 0 {
-        var_omega / edges_omega as f64
-    } else {
-        0.0
-    };
-
-    let total = norm_a + norm_b + norm_omega;
+    let safe_div = |v: f64, e: u64| if e > 0 { v / e as f64 } else { 0.0 };
+    let (na, nb, nw) = (
+        safe_div(var_a, edges_a),
+        safe_div(var_b, edges_b),
+        safe_div(var_omega, edges_omega),
+    );
+    let total = na + nb + nw;
     if total < 1e-30 {
         return (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0);
     }
-    (norm_a / total, norm_b / total, norm_omega / total)
+    (na / total, nb / total, nw / total)
 }
 
 /// Compact index mapping from full state space to active subset.
@@ -251,13 +242,12 @@ impl ActiveStates {
 
 /// Build a sparse CscMatrix generator over the compact active state space.
 fn build_generator(
+    active: &ActiveStates,
     level: &MeshLevel,
-    n_omega: usize,
     potential: Option<(&[f64], f64)>,
-) -> (CscMatrix<f64>, ActiveStates) {
+) -> CscMatrix<f64> {
     let n_v = level.n_vertices;
-
-    let active = ActiveStates::new(potential, n_v, n_omega);
+    let n_omega = active.n_omega;
     let n = active.n_active;
 
     let u_min = potential.map(|(energies, _)| {
@@ -294,20 +284,21 @@ fn build_generator(
         coo.push(ci, ci, -exit_rate);
     }
 
-    (CscMatrix::from(&coo), active)
+    CscMatrix::from(&coo)
 }
 
-/// Use dense O(n³) eigensolver up to this size; sparse Lanczos above.
+/// Dense O(n³) is ~0.01s at n=500; above this Lanczos with m=100 wins.
 const DENSE_THRESHOLD: usize = 500;
 
-/// Eigenvalues below this magnitude are treated as null space (λ₀ ≈ 0).
+/// Safety net for dense solver; sparse path uses component counting instead.
 const ZERO_THRESHOLD: f64 = 1e-6;
 
-/// Count connected components via BFS on the sparsity pattern.
+/// Count connected components via BFS on the active state neighbor graph.
 ///
 /// Each disconnected component contributes one zero eigenvalue to the null space.
-fn count_components(matrix: &CscMatrix<f64>) -> usize {
-    let n = matrix.nrows();
+/// Works directly on ActiveStates + MeshLevel without building a sparse matrix.
+fn count_components(active: &ActiveStates, level: &MeshLevel) -> usize {
+    let n = active.n_active;
     let mut visited = vec![false; n];
     let mut n_components = 0;
     let mut queue = std::collections::VecDeque::new();
@@ -319,15 +310,15 @@ fn count_components(matrix: &CscMatrix<f64>) -> usize {
         n_components += 1;
         visited[start] = true;
         queue.push_back(start);
-        while let Some(node) = queue.pop_front() {
-            // Iterate over non-zero entries in column `node`
-            let col = matrix.col(node);
-            for (&row, _) in col.row_indices().iter().zip(col.values()) {
-                if !visited[row] {
-                    visited[row] = true;
-                    queue.push_back(row);
+        while let Some(ci) = queue.pop_front() {
+            let (vi, vj, oi) = active.coords[ci];
+            for_each_neighbor(vi, vj, oi, level, active.n_v, active.n_omega, |full_j| {
+                let cj = active.compact[full_j];
+                if cj != usize::MAX && !visited[cj] {
+                    visited[cj] = true;
+                    queue.push_back(cj);
                 }
-            }
+            });
         }
     }
     n_components
@@ -344,6 +335,22 @@ fn csc_to_dense(matrix: &CscMatrix<f64>) -> DMatrix<f64> {
         }
     }
     dense
+}
+
+/// Build an EigenMode from an eigenvalue and its eigenvector via edge-variance projection.
+fn eigenmode_from_eigvec(
+    eigenvalue: f64,
+    eigvec: &[f64],
+    active: &ActiveStates,
+    level: &MeshLevel,
+) -> EigenMode {
+    let (fa, fb, fw) = coordinate_projection(eigvec, active, level);
+    EigenMode {
+        eigenvalue,
+        frac_mol_a: fa,
+        frac_mol_b: fb,
+        frac_omega: fw,
+    }
 }
 
 /// Extract first `k` non-trivial eigenmodes using dense eigensolver.
@@ -376,16 +383,95 @@ fn dense_eigenmodes(
         .take(k)
         .map(|&i| {
             let eigvec: Vec<f64> = eigen.eigenvectors.column(i).iter().copied().collect();
-            let (fa, fb, fw) =
-                coordinate_projection(&eigvec, active, level, active.n_v, active.n_omega);
-            EigenMode {
-                eigenvalue: -evals[i],
-                frac_mol_a: fa,
-                frac_mol_b: fb,
-                frac_omega: fw,
-            }
+            eigenmode_from_eigvec(-evals[i], &eigvec, active, level)
         })
         .collect()
+}
+
+/// Lanczos with full re-orthogonalization for the m largest eigenvalues.
+///
+/// Cost is O(m²n) but m is fixed (~100), so the m² factor is negligible
+/// next to the m sparse matvecs at ~12n each.
+/// Returns (eigenvalues, eigenvectors) sorted descending (largest first).
+fn lanczos_largest(matrix: &CscMatrix<f64>, m: usize) -> (Vec<f64>, Vec<DVector<f64>>) {
+    let n = matrix.nrows();
+    let m = m.min(n);
+
+    // Basis stored as columns of a dense matrix for efficient Ritz vector recovery
+    let mut vs = DMatrix::zeros(n, m);
+    let mut alpha = DVector::zeros(m);
+    let mut beta = Vec::with_capacity(m);
+
+    // Golden-ratio hash gives a deterministic, non-uniform start vector.
+    // A uniform vector would lie entirely in the null space (equilibrium).
+    let q0 = DVector::from_fn(n, |i, _| {
+        let x = (i as f64 + 1.0) * 0.6180339887;
+        x - x.floor() - 0.5
+    })
+    .normalize();
+    vs.set_column(0, &q0);
+
+    let w_prime: DVector<f64> = matrix * &q0;
+    alpha[0] = w_prime.dot(&q0);
+    let mut w: DVector<f64> = &w_prime - &q0 * alpha[0];
+
+    // CscMatrix * DVector requires an owned vector, not a column view.
+    // Reuse one buffer to avoid 143K-element allocation per iteration.
+    let mut vi_buf = DVector::zeros(n);
+
+    let mut m_actual = m;
+    for i in 1..m {
+        let b = w.norm();
+        beta.push(b);
+        if b < 1e-12 {
+            m_actual = i;
+            break;
+        }
+        vs.set_column(i, &w.normalize());
+
+        vi_buf.copy_from(&vs.column(i));
+        let w_prime: DVector<f64> = matrix * &vi_buf;
+        alpha[i] = w_prime.dot(&vi_buf);
+        w = &w_prime - &vi_buf * alpha[i] - vs.column(i - 1) * b;
+
+        // Without re-orth, Lanczos produces ghost (duplicate) eigenvalues
+        // near the spectral gap — indistinguishable from the real null space.
+        for j in 0..=i {
+            let proj = w.dot(&vs.column(j));
+            w -= vs.column(j) * proj;
+        }
+    }
+
+    // Build and solve tridiagonal eigenproblem
+    let tri = DMatrix::from_fn(m_actual, m_actual, |i, j| {
+        if i == j {
+            alpha[i]
+        } else if i + 1 == j && i < beta.len() {
+            beta[i]
+        } else if j + 1 == i && j < beta.len() {
+            beta[j]
+        } else {
+            0.0
+        }
+    });
+
+    let eigen = SymmetricEigen::new(tri);
+    let mut indices: Vec<usize> = (0..m_actual).collect();
+    indices.sort_by(|&a, &b| {
+        eigen.eigenvalues[b]
+            .partial_cmp(&eigen.eigenvalues[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Ritz vectors: V * y (single matrix multiply is faster than column-by-column)
+    let vs_active = vs.columns(0, m_actual);
+    let evals: Vec<f64> = indices.iter().map(|&i| eigen.eigenvalues[i]).collect();
+    let evecs: Vec<DVector<f64>> = indices
+        .iter()
+        .map(|&i| vs_active * eigen.eigenvectors.column(i))
+        .collect();
+
+    (evals, evecs)
 }
 
 /// Extract first `k` non-trivial eigenmodes using sparse Lanczos iteration.
@@ -397,48 +483,32 @@ fn sparse_eigenmodes(
     active: &ActiveStates,
     k: usize,
     level: &MeshLevel,
+    n_components: usize,
 ) -> Vec<EigenMode> {
     let n = active.n_active;
     if n < 3 {
         return Vec::new();
     }
 
-    let n_components = count_components(matrix);
-
-    // eigsh(iterations, order): iterations = Krylov subspace size, not #eigenvalues.
-    // Need enough iterations for the k+n_components largest eigenvalues to converge.
     let n_eigs = (n_components + k).min(n - 1);
-    let n_iter = n_eigs.max(100).min(n - 1);
+    let m = n_eigs.max(100).min(n - 1);
 
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        matrix.eigsh(n_iter, Order::Largest)
-    }));
+    let (evals, evecs) = lanczos_largest(matrix, m);
 
-    let eigen = match result {
-        Ok(eigen) => eigen,
-        Err(_) => {
-            warn!("Lanczos failed for n={n}, falling back to dense solver");
-            return dense_eigenmodes(matrix, active, k, level);
-        }
-    };
-
-    // eigenvalues sorted descending: [≈0, ≈0, ..., λ₁, λ₂, ...]
-    // Skip null space, take k non-trivial
+    // Eigenvalues are sorted descending (nearest zero first). Each disconnected
+    // component contributes one λ ≈ 0. We skip exactly n_components of these before
+    // extracting the physical modes. Positive eigenvalues are numerical noise.
     let mut modes = Vec::new();
-    for i in 0..eigen.eigenvalues.len() {
-        let ev = eigen.eigenvalues[i];
-        if ev.abs() <= ZERO_THRESHOLD || ev > 0.0 {
+    let mut null_skipped = 0;
+    for (ev, evec) in evals.iter().zip(&evecs) {
+        if *ev >= 0.0 {
             continue;
         }
-        let eigvec: Vec<f64> = eigen.eigenvectors.column(i).iter().copied().collect();
-        let (fa, fb, fw) =
-            coordinate_projection(&eigvec, active, level, active.n_v, active.n_omega);
-        modes.push(EigenMode {
-            eigenvalue: -ev,
-            frac_mol_a: fa,
-            frac_mol_b: fb,
-            frac_omega: fw,
-        });
+        if null_skipped < n_components {
+            null_skipped += 1;
+            continue;
+        }
+        modes.push(eigenmode_from_eigvec(-ev, evec.as_slice(), active, level));
         if modes.len() >= k {
             break;
         }
@@ -609,85 +679,59 @@ fn zwanzig_1d(pmf: &[f64], beta: f64) -> f64 {
     zwanzig(pmf, beta).map_or(1.0, |(ratio, _, _)| ratio)
 }
 
+/// Marginal PMF along one coordinate: w(k) = -kT ln Σ_other exp(-βU).
+///
+/// `n_bins`: number of bins for the marginalized coordinate.
+/// `energy_at`: maps (bin_index, inner_index) → energy value.
+/// `n_inner`: number of states to sum over for each bin.
+fn marginal_pmf(
+    n_bins: usize,
+    n_inner: usize,
+    beta: f64,
+    energy_at: impl Fn(usize, usize) -> f64,
+) -> Vec<f64> {
+    (0..n_bins)
+        .map(|k| {
+            let mut max_val = f64::NEG_INFINITY;
+            let mut terms = Vec::new();
+            for j in 0..n_inner {
+                let u = energy_at(k, j);
+                if u.is_finite() {
+                    let x = -beta * u;
+                    max_val = max_val.max(x);
+                    terms.push(x);
+                }
+            }
+            if terms.is_empty() {
+                return f64::INFINITY;
+            }
+            let lse = max_val + terms.iter().map(|&x| (x - max_val).exp()).sum::<f64>().ln();
+            -lse / beta
+        })
+        .collect()
+}
+
 /// Compute per-coordinate Zwanzig by marginalizing over the other coordinates.
 ///
 /// For each coordinate (vi, vj, oi), integrates out the other two to get a
 /// 1D potential of mean force, then applies Zwanzig independently.
-/// Returns (D_A/D⁰, D_B/D⁰, D_ω/D⁰).
 ///
 /// Note: marginalization smooths cross-correlations, so D_A × D_B × D_ω ≥ D/D⁰.
 /// The ratio D/D⁰ / (D_A × D_B × D_ω) measures coordinate separability.
 fn marginal_zwanzig(energies: &[f64], n_v: usize, n_omega: usize, beta: f64) -> (f64, f64, f64) {
-    // w_A(vi) = -kT ln Σ_{vj,oi} exp(-βU) = -(1/β) · log_sum_exp over (vj, oi)
-    let pmf_a: Vec<f64> = (0..n_v)
-        .map(|vi| {
-            let mut max_val = f64::NEG_INFINITY;
-            let mut terms = Vec::new();
-            for vj in 0..n_v {
-                for oi in 0..n_omega {
-                    let u = energies[state_index(vi, vj, oi, n_v, n_omega)];
-                    if u.is_finite() {
-                        let x = -beta * u;
-                        max_val = max_val.max(x);
-                        terms.push(x);
-                    }
-                }
-            }
-            if terms.is_empty() {
-                return f64::INFINITY;
-            }
-            // w_A = -(1/β) · (max + ln Σ exp(x - max))
-            let lse = max_val + terms.iter().map(|&x| (x - max_val).exp()).sum::<f64>().ln();
-            -lse / beta
-        })
-        .collect();
-
-    // w_B(vj) = -kT ln Σ_{vi,oi} exp(-βU)
-    let pmf_b: Vec<f64> = (0..n_v)
-        .map(|vj| {
-            let mut max_val = f64::NEG_INFINITY;
-            let mut terms = Vec::new();
-            for vi in 0..n_v {
-                for oi in 0..n_omega {
-                    let u = energies[state_index(vi, vj, oi, n_v, n_omega)];
-                    if u.is_finite() {
-                        let x = -beta * u;
-                        max_val = max_val.max(x);
-                        terms.push(x);
-                    }
-                }
-            }
-            if terms.is_empty() {
-                return f64::INFINITY;
-            }
-            let lse = max_val + terms.iter().map(|&x| (x - max_val).exp()).sum::<f64>().ln();
-            -lse / beta
-        })
-        .collect();
-
-    // w_ω(oi) = -kT ln Σ_{vi,vj} exp(-βU)
-    let pmf_omega: Vec<f64> = (0..n_omega)
-        .map(|oi| {
-            let mut max_val = f64::NEG_INFINITY;
-            let mut terms = Vec::new();
-            for vi in 0..n_v {
-                for vj in 0..n_v {
-                    let u = energies[state_index(vi, vj, oi, n_v, n_omega)];
-                    if u.is_finite() {
-                        let x = -beta * u;
-                        max_val = max_val.max(x);
-                        terms.push(x);
-                    }
-                }
-            }
-            if terms.is_empty() {
-                return f64::INFINITY;
-            }
-            let lse = max_val + terms.iter().map(|&x| (x - max_val).exp()).sum::<f64>().ln();
-            -lse / beta
-        })
-        .collect();
-
+    let n_inner = n_v * n_omega;
+    let pmf_a = marginal_pmf(n_v, n_inner, beta, |vi, j| {
+        let (vj, oi) = (j / n_omega, j % n_omega);
+        energies[state_index(vi, vj, oi, n_v, n_omega)]
+    });
+    let pmf_b = marginal_pmf(n_v, n_inner, beta, |vj, j| {
+        let (vi, oi) = (j / n_omega, j % n_omega);
+        energies[state_index(vi, vj, oi, n_v, n_omega)]
+    });
+    let pmf_omega = marginal_pmf(n_omega, n_v * n_v, beta, |oi, j| {
+        let (vi, vj) = (j / n_v, j % n_v);
+        energies[state_index(vi, vj, oi, n_v, n_omega)]
+    });
     (
         zwanzig_1d(&pmf_a, beta),
         zwanzig_1d(&pmf_b, beta),
@@ -734,15 +778,26 @@ fn diffusion_at_r(
         .cloned()
         .unwrap_or_default();
 
+    // BFS on the neighbor graph is O(n_active) and avoids building the
+    // full CscMatrix, which is only needed when eigenmodes are computed.
+    let active = ActiveStates::new(Some((&energies, beta)), n_v, n_omega);
+    let n_components = count_components(&active, level);
+    debug!(
+        "R={r:.1} Å: n_active={}/{n_total}, components={n_components}",
+        active.n_active
+    );
+
+    // At short R, steep energy cliffs create artificially fast eigenmodes
+    // (λ₁/λ₁_free >> 1) that reflect barrier topology, not physical diffusion.
     let eigenmodes = if n_active > MIN_ACTIVE_STATES
         && (n_active as f64 / n_total as f64) > MIN_ACTIVE_FRACTION
+        && dr_normalized > 0.01
     {
-        let (gen, active) = build_generator(level, n_omega, Some((&energies, beta)));
-        debug!("R={r:.1} Å: n_active={}/{n_total}", active.n_active);
+        let gen = build_generator(&active, level, Some((&energies, beta)));
         let modes = if active.n_active <= DENSE_THRESHOLD {
             dense_eigenmodes(&gen, &active, NUM_EIGENMODES, level)
         } else {
-            sparse_eigenmodes(&gen, &active, NUM_EIGENMODES, level)
+            sparse_eigenmodes(&gen, &active, NUM_EIGENMODES, level, n_components)
         };
         // Reject if largest eigenvalue exceeds free value by too much
         let max_plausible = eigenmodes_free
@@ -758,7 +813,6 @@ fn diffusion_at_r(
             Vec::new()
         }
     } else {
-        debug!("R={r:.1} Å: skipping eigenmodes (n_active={n_active}/{n_total})");
         Vec::new()
     };
 
@@ -777,6 +831,7 @@ fn diffusion_at_r(
         eigenmodes,
         eigenmodes_free,
         n_active,
+        n_components,
     })
 }
 
@@ -791,10 +846,7 @@ pub fn diffusion_scan(
     if homo_dimer {
         info!("Applying exchange symmetrization (homo-dimer)");
     }
-    // Free-diffusion eigenmodes depend only on graph topology — one set per mesh level
-    // Free-diffusion eigenvalues computed analytically from graph structure.
-    // Product graph eigenvalues are sums: λ = λ_A + λ_B + λ_ω.
-    // The spectral gap is the smallest sum with at least one non-zero component.
+    // One set per mesh level (depends only on graph topology)
     let free_evals: std::collections::HashMap<usize, Vec<EigenMode>> = table
         .levels
         .iter()
@@ -888,7 +940,8 @@ pub fn export_generator_matrices(
             symmetrize_exchange(&mut energies, n_v, n_omega);
         }
 
-        let (mat, active) = build_generator(level, n_omega, Some((&energies, beta)));
+        let active = ActiveStates::new(Some((&energies, beta)), n_v, n_omega);
+        let mat = build_generator(&active, level, Some((&energies, beta)));
         let n = active.n_active;
         if n < 3 {
             continue;
@@ -1199,10 +1252,12 @@ mod tests {
         let n_states = n_v * n_v * n_omega;
 
         let energies = vec![0.0; n_states];
-        let (gen, active) = build_generator(&level, n_omega, Some((&energies, 1.0)));
+        let active = ActiveStates::new(Some((&energies, 1.0)), n_v, n_omega);
+        let gen = build_generator(&active, &level, Some((&energies, 1.0)));
         let modes = dense_eigenmodes(&gen, &active, 3, &level);
 
-        let (free_gen, free_active) = build_generator(&level, n_omega, None);
+        let free_active = ActiveStates::new(None, n_v, n_omega);
+        let free_gen = build_generator(&free_active, &level, None);
         let free_modes = dense_eigenmodes(&free_gen, &free_active, 3, &level);
 
         assert!(!modes.is_empty());
@@ -1219,7 +1274,8 @@ mod tests {
         let n_omega = 8;
         let n_states = n_v * n_v * n_omega;
 
-        let (free_gen, free_active) = build_generator(&level, n_omega, None);
+        let free_active = ActiveStates::new(None, n_v, n_omega);
+        let free_gen = build_generator(&free_active, &level, None);
         let modes = dense_eigenmodes(&free_gen, &free_active, 5, &level);
 
         for m in &modes {
@@ -1243,7 +1299,8 @@ mod tests {
             })
             .collect();
 
-        let (gen, active) = build_generator(&level, n_omega, Some((&energies, 1.0)));
+        let active = ActiveStates::new(Some((&energies, 1.0)), n_v, n_omega);
+        let gen = build_generator(&active, &level, Some((&energies, 1.0)));
         let modes = dense_eigenmodes(&gen, &active, 5, &level);
 
         for m in &modes {
@@ -1295,9 +1352,11 @@ mod tests {
         let n_v = level.n_vertices;
         let n_omega = 4;
 
-        let (gen, active) = build_generator(&level, n_omega, None);
+        let active = ActiveStates::new(None, n_v, n_omega);
+        let gen = build_generator(&active, &level, None);
+        let n_components = count_components(&active, &level);
         let dense_modes = dense_eigenmodes(&gen, &active, 3, &level);
-        let sparse_modes = sparse_eigenmodes(&gen, &active, 3, &level);
+        let sparse_modes = sparse_eigenmodes(&gen, &active, 3, &level, n_components);
 
         assert_eq!(dense_modes.len(), sparse_modes.len());
         for (dm, sm) in dense_modes.iter().zip(&sparse_modes) {
@@ -1309,11 +1368,12 @@ mod tests {
     #[test]
     fn test_count_components() {
         let level = MeshLevel::new(0);
+        let n_v = level.n_vertices;
         let n_omega = 4;
 
         // Fully connected free diffusion: 1 component
-        let (gen, _) = build_generator(&level, n_omega, None);
-        assert_eq!(count_components(&gen), 1);
+        let active = ActiveStates::new(None, n_v, n_omega);
+        assert_eq!(count_components(&active, &level), 1);
     }
 
     fn bessel_i0(x: f64) -> f64 {

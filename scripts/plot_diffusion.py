@@ -63,7 +63,7 @@ def plot_spectral(df: pd.DataFrame, axes, homo: bool):
         if not mask.any():
             continue
         ratio = df.loc[mask, col_ev] / df.loc[mask, col_free]
-        valid = ratio.between(0, 10.0)
+        valid = ratio > 0
         r = df.loc[mask, "R"][valid]
         y = ratio[valid]
         alpha = 1.0 if i == 1 else 0.4
@@ -79,38 +79,38 @@ def plot_spectral(df: pd.DataFrame, axes, homo: bool):
         )
 
     ax_ratio.axhline(1.0, color="gray", linestyle=":", linewidth=0.5)
-    ax_ratio.set_ylim(-0.05, 1.15)
+    ax_ratio.set_yscale("log")
+    ax_ratio.set_xlabel("R (Å)")
     ax_ratio.set_ylabel("$\\lambda_k / \\lambda_k^{\\mathrm{free}}$")
-    ax_ratio.set_xticklabels([])
     ax_ratio.legend(fontsize=9, frameon=False, ncol=3)
     ax_ratio.set_title("Spectral analysis")
 
-    # --- Bottom: coordinate fractions of spectral-gap eigenvector ---
-    cols = ["f_A1", "f_B1", "f_ω1"]
-    if not all(c in df.columns for c in cols):
+    # --- Bottom: patchiness (components + slow eigenvalue count) ---
+    if "n_components" not in df.columns:
         ax_frac.set_visible(False)
         return
 
-    mask = df["λ1"].notna()
-    r = df.loc[mask, "R"]
-    fa = df.loc[mask, "f_A1"]
-    fb = df.loc[mask, "f_B1"]
-    fw = df.loc[mask, "f_ω1"]
+    r = df["R"]
+    ax_frac.plot(r, df["n_components"], "o-", color="C3", markersize=3, label="components")
 
-    if homo:
-        ax_frac.plot(
-            r, fa + fb, "o-", color="C0", markersize=3, label="molecular (A+B)"
-        )
-        ax_frac.plot(r, fw, "^-", color="C2", markersize=3, label="dihedral")
-    else:
-        ax_frac.plot(r, fa, "o-", color="C0", markersize=3, label="mol A")
-        ax_frac.plot(r, fb, "s-", color="C1", markersize=3, label="mol B")
-        ax_frac.plot(r, fw, "^-", color="C2", markersize=3, label="dihedral")
+    # Count eigenvalues with λ_k/λ_k_free < 0.5 as "slow" (patch bottlenecks)
+    n_slow = []
+    for _, row in df.iterrows():
+        count = 0
+        for i in range(1, n_modes + 1):
+            lk = row.get(f"λ{i}", float("nan"))
+            lf = row.get(f"λ{i}_free", float("nan"))
+            if lf > 0 and lk == lk and lf == lf and lk / lf < 0.5:
+                count += 1
+        n_slow.append(count)
+    ax_frac.plot(r, n_slow, "s-", color="C4", markersize=3,
+                 label="slow modes ($\\lambda_k/\\lambda_k^{free} < 0.5$)")
 
-    ax_frac.set_ylim(-0.05, 1.05)
     ax_frac.set_xlabel("R (Å)")
-    ax_frac.set_ylabel("Fraction of $\\lambda_1$ eigenvector")
+    ax_frac.set_ylabel("Count")
+    ax_frac.set_yscale("symlog", linthresh=1)
     ax_frac.legend(fontsize=9, frameon=False)
+    ax_frac.set_title("Patchiness")
 
 
 def main():
@@ -141,7 +141,6 @@ def main():
 
     plot_zwanzig(df, axes[0])
     axes[1].sharex(axes[0])
-    axes[1].sharey(axes[0])
     plot_spectral(df, axes[1:], homo=args.homo)
 
     outpath = f"{args.output}.png"

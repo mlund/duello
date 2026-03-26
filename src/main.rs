@@ -310,6 +310,12 @@ enum Commands {
         /// Output CSV for cell-model D(c) results
         #[arg(long, default_value = "cell_diffusion.csv")]
         cell_output: PathBuf,
+        /// Export generator matrices as Matrix Market files for Python postprocessing
+        #[arg(long)]
+        export_matrices: Option<PathBuf>,
+        /// Number of threads (0 = all cores)
+        #[arg(short = 'j', long, default_value = "0")]
+        threads: usize,
     },
 }
 
@@ -739,10 +745,19 @@ fn do_diffusion(cmd: &Commands) -> Result<()> {
         cmax,
         cn,
         cell_output,
+        export_matrices,
+        threads,
     } = cmd
     else {
         bail!("expected Diffusion command");
     };
+
+    if *threads > 0 {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(*threads)
+            .build_global()
+            .ok();
+    }
 
     info!("Loading table from {}", table_path.display());
     let table = icotable::Table6DAdaptive::<f32>::load(table_path)?;
@@ -762,6 +777,13 @@ fn do_diffusion(cmd: &Commands) -> Result<()> {
     if homo_dimer {
         info!("Homo-dimer table detected");
     }
+
+    if let Some(dir) = export_matrices {
+        duello::diffusion::export_generator_matrices(&table, beta, homo_dimer, dir)?;
+        info!("Matrix export complete. Use Python for eigenvalue analysis.");
+        return Ok(());
+    }
+
     let results = duello::diffusion::diffusion_scan(&table, beta, homo_dimer);
 
     if results.is_empty() {
@@ -788,7 +810,7 @@ fn do_diffusion(cmd: &Commands) -> Result<()> {
     for i in 1..=max_free {
         header.push_str(&format!(",λ{i}_free,f_A{i}_free,f_B{i}_free,f_ω{i}_free"));
     }
-    header.push_str(",n_active");
+    header.push_str(",n_active,n_components");
     writeln!(file, "{header}")?;
 
     for r in &results {
@@ -826,7 +848,7 @@ fn do_diffusion(cmd: &Commands) -> Result<()> {
                 write!(file, ",,,,")?;
             }
         }
-        writeln!(file, ",{}", r.n_active)?;
+        writeln!(file, ",{},{}", r.n_active, r.n_components)?;
     }
 
     info!("Wrote {} R-slices to {}", results.len(), output.display());

@@ -200,18 +200,25 @@ with barycentric interpolation on the icosphere mesh.
 
 The `diffusion` subcommand estimates the normalized rotational diffusion coefficient
 D_r/D_r^0 from a saved 6D energy table, without re-scanning.
+Two complementary methods are used:
+
+1. **Zwanzig formula** — transport coefficient from the energy landscape roughness
+2. **Spectral gap** — slowest relaxation rate from sparse Lanczos eigendecomposition of the
+   symmetrized generator matrix, with eigenvector projection into angular coordinates
+
 This quantifies how much the inter-molecular energy landscape hinders rotational
 diffusion compared to free rotation at each mass center separation R.
 
 ```sh
-duello diffusion \
-    --table table.bin.gz \
-    --temperature 300 \
-    --output diffusion.csv
+duello diffusion table.bin.gz \
+    -T 300 \
+    -o diffusion.csv \
+    -j 4
 ```
 
 The temperature can differ from the scan temperature since energies are stored in absolute
-units (kJ/mol). If `--temperature` is omitted, the table's generation temperature is used.
+units (kJ/mol). The `-j` flag controls the number of parallel threads (default: all cores).
+Use fewer threads to reduce memory usage for high-resolution tables.
 
 ### Output columns
 
@@ -245,9 +252,10 @@ to get a 1D potential of mean force, then applying Zwanzig to it.
 For symmetric molecules (mol1 = mol2), D_A ≈ D_B at all separations.
 
 **λk with (f_A, f_B, f_ω)** are eigenvalue magnitudes of the symmetrized generator
-with coordinate decomposition. The fractions f_A + f_B + f_ω = 1 show whether
-mode k is primarily molecule A tumbling (high f_A), molecule B tumbling (high f_B),
-or dihedral rotation (high f_ω). Mixed values indicate coupled modes.
+computed via sparse Lanczos iteration (n > 500) or dense eigensolver (n ≤ 500).
+The fractions f_A + f_B + f_ω = 1 show whether mode k is primarily molecule A
+tumbling (high f_A), molecule B tumbling (high f_B), or dihedral rotation (high f_ω).
+Mixed values indicate coupled modes.
 For homo-dimers (identical molecules), the table is exchange-symmetrized
 automatically so that D_A = D_B and f_A ≈ f_B.
 
