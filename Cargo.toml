@@ -44,8 +44,8 @@ wide = "0.7"
 wgpu = "23"
 pollster = "0.4"
 bytemuck = { version = "1.21", features = ["derive"] }
-faer = "0.24"
-dyn-stack = "0.13"
+lanczos = "0.2"
+nalgebra-sparse = "0.10"
 
 [dev-dependencies]
 lazy_static = "1.5"

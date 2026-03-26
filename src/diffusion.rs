@@ -27,7 +27,9 @@
 use anyhow::Result;
 use icotable::adaptive::MeshLevel;
 use indicatif::ParallelProgressIterator;
+use lanczos::{Hermitian, Order};
 use nalgebra::{DMatrix, SymmetricEigen};
+use nalgebra_sparse::{CooMatrix, CscMatrix};
 use rayon::prelude::*;
 
 /// Number of non-trivial eigenmodes to extract from the generator spectrum.
@@ -247,16 +249,12 @@ impl ActiveStates {
     }
 }
 
-/// Build a sparse CSR generator over the compact active state space.
-///
-/// Build a dense generator matrix over the compact active state space.
-///
-/// Returns (n_active × n_active DMatrix, ActiveStates mapping).
+/// Build a sparse CscMatrix generator over the compact active state space.
 fn build_generator(
     level: &MeshLevel,
     n_omega: usize,
     potential: Option<(&[f64], f64)>,
-) -> (DMatrix<f64>, ActiveStates) {
+) -> (CscMatrix<f64>, ActiveStates) {
     let n_v = level.n_vertices;
 
     let active = ActiveStates::new(potential, n_v, n_omega);
@@ -270,7 +268,7 @@ fn build_generator(
             .fold(f64::INFINITY, f64::min)
     });
 
-    let mut mat = DMatrix::zeros(n, n);
+    let mut coo = CooMatrix::new(n, n);
 
     for (ci, &(vi, vj, oi)) in active.coords.iter().enumerate() {
         let full_idx = state_index(vi, vj, oi, n_v, n_omega);
@@ -291,33 +289,77 @@ fn build_generator(
             } else {
                 exit_rate += 1.0;
             }
-            mat[(ci, cj)] = 1.0;
+            coo.push(ci, cj, 1.0);
         });
-        mat[(ci, ci)] = -exit_rate;
+        coo.push(ci, ci, -exit_rate);
     }
 
-    (mat, active)
+    (CscMatrix::from(&coo), active)
 }
 
-/// Use dense O(n³) eigensolver up to this size. Sparse LU fill-in on
-/// product-graph Laplacians is too large for shift-invert to win below ~20K.
-/// Skip spectral analysis for active sets larger than this.
-/// Dense O(n³): ~0.1s at n=1K, ~1s at n=2K, ~30s at n=10K.
-const DENSE_THRESHOLD: usize = 10_000;
+/// Use dense O(n³) eigensolver up to this size; sparse Lanczos above.
+const DENSE_THRESHOLD: usize = 500;
+
+/// Eigenvalues below this magnitude are treated as null space (λ₀ ≈ 0).
+const ZERO_THRESHOLD: f64 = 1e-6;
+
+/// Count connected components via BFS on the sparsity pattern.
+///
+/// Each disconnected component contributes one zero eigenvalue to the null space.
+fn count_components(matrix: &CscMatrix<f64>) -> usize {
+    let n = matrix.nrows();
+    let mut visited = vec![false; n];
+    let mut n_components = 0;
+    let mut queue = std::collections::VecDeque::new();
+
+    for start in 0..n {
+        if visited[start] {
+            continue;
+        }
+        n_components += 1;
+        visited[start] = true;
+        queue.push_back(start);
+        while let Some(node) = queue.pop_front() {
+            // Iterate over non-zero entries in column `node`
+            let col = matrix.col(node);
+            for (&row, _) in col.row_indices().iter().zip(col.values()) {
+                if !visited[row] {
+                    visited[row] = true;
+                    queue.push_back(row);
+                }
+            }
+        }
+    }
+    n_components
+}
+
+/// Convert CscMatrix to nalgebra DMatrix for dense eigensolver.
+fn csc_to_dense(matrix: &CscMatrix<f64>) -> DMatrix<f64> {
+    let n = matrix.nrows();
+    let mut dense = DMatrix::zeros(n, n);
+    for j in 0..n {
+        let col = matrix.col(j);
+        for (&i, &v) in col.row_indices().iter().zip(col.values()) {
+            dense[(i, j)] = v;
+        }
+    }
+    dense
+}
 
 /// Extract first `k` non-trivial eigenmodes using dense eigensolver.
 fn dense_eigenmodes(
-    matrix: &DMatrix<f64>,
+    matrix: &CscMatrix<f64>,
     active: &ActiveStates,
     k: usize,
     level: &MeshLevel,
 ) -> Vec<EigenMode> {
     let n = active.n_active;
-    if n < 3 || n > DENSE_THRESHOLD {
+    if n < 3 {
         return Vec::new();
     }
 
-    let eigen = SymmetricEigen::new(matrix.clone());
+    let dense = csc_to_dense(matrix);
+    let eigen = SymmetricEigen::new(dense);
     let evals = &eigen.eigenvalues;
 
     // Sort descending: evals[0] ≈ 0 (equilibrium), evals[1] = spectral gap
@@ -330,9 +372,8 @@ fn dense_eigenmodes(
 
     indices
         .iter()
-        .skip(1) // skip λ₀ ≈ 0
+        .filter(|&&i| evals[i].abs() > ZERO_THRESHOLD && evals[i] < 0.0)
         .take(k)
-        .filter(|&&i| evals[i].is_finite() && evals[i] < 0.0)
         .map(|&i| {
             let eigvec: Vec<f64> = eigen.eigenvectors.column(i).iter().copied().collect();
             let (fa, fb, fw) =
@@ -347,6 +388,64 @@ fn dense_eigenmodes(
         .collect()
 }
 
+/// Extract first `k` non-trivial eigenmodes using sparse Lanczos iteration.
+///
+/// All generator eigenvalues are ≤ 0, so eigenvalues nearest zero are the
+/// *largest*. We request extra to cover the null space from disconnected components.
+fn sparse_eigenmodes(
+    matrix: &CscMatrix<f64>,
+    active: &ActiveStates,
+    k: usize,
+    level: &MeshLevel,
+) -> Vec<EigenMode> {
+    let n = active.n_active;
+    if n < 3 {
+        return Vec::new();
+    }
+
+    let n_components = count_components(matrix);
+
+    // eigsh(iterations, order): iterations = Krylov subspace size, not #eigenvalues.
+    // Need enough iterations for the k+n_components largest eigenvalues to converge.
+    let n_eigs = (n_components + k).min(n - 1);
+    let n_iter = n_eigs.max(100).min(n - 1);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        matrix.eigsh(n_iter, Order::Largest)
+    }));
+
+    let eigen = match result {
+        Ok(eigen) => eigen,
+        Err(_) => {
+            warn!("Lanczos failed for n={n}, falling back to dense solver");
+            return dense_eigenmodes(matrix, active, k, level);
+        }
+    };
+
+    // eigenvalues sorted descending: [≈0, ≈0, ..., λ₁, λ₂, ...]
+    // Skip null space, take k non-trivial
+    let mut modes = Vec::new();
+    for i in 0..eigen.eigenvalues.len() {
+        let ev = eigen.eigenvalues[i];
+        if ev.abs() <= ZERO_THRESHOLD || ev > 0.0 {
+            continue;
+        }
+        let eigvec: Vec<f64> = eigen.eigenvectors.column(i).iter().copied().collect();
+        let (fa, fb, fw) =
+            coordinate_projection(&eigvec, active, level, active.n_v, active.n_omega);
+        modes.push(EigenMode {
+            eigenvalue: -ev,
+            frac_mol_a: fa,
+            frac_mol_b: fb,
+            frac_omega: fw,
+        });
+        if modes.len() >= k {
+            break;
+        }
+    }
+    modes
+}
+
 /// Compute free-diffusion eigenmodes analytically from graph structure.
 ///
 /// The product graph (icosphere_A × icosphere_B × ring_ω) has eigenvalues
@@ -354,8 +453,6 @@ fn dense_eigenmodes(
 /// We compute the icosphere and ring eigenvalues separately (small problems),
 /// then combine the smallest non-trivial sums.
 fn free_eigenmodes_analytical(level: &MeshLevel, n_omega: usize, k: usize) -> Vec<EigenMode> {
-    let n_v = level.n_vertices;
-
     // Icosphere graph Laplacian eigenvalues (n_v × n_v dense — at most 162×162)
     let ico_evals = icosphere_eigenvalues(level);
 
@@ -642,7 +739,11 @@ fn diffusion_at_r(
     {
         let (gen, active) = build_generator(level, n_omega, Some((&energies, beta)));
         debug!("R={r:.1} Å: n_active={}/{n_total}", active.n_active);
-        let modes = dense_eigenmodes(&gen, &active, NUM_EIGENMODES, level);
+        let modes = if active.n_active <= DENSE_THRESHOLD {
+            dense_eigenmodes(&gen, &active, NUM_EIGENMODES, level)
+        } else {
+            sparse_eigenmodes(&gen, &active, NUM_EIGENMODES, level)
+        };
         // Reject if largest eigenvalue exceeds free value by too much
         let max_plausible = eigenmodes_free
             .first()
@@ -806,23 +907,25 @@ pub fn export_generator_matrices(
             writeln!(cf, "{ci},{vi},{vj},{oi}")?;
         }
 
-        // Write Matrix Market format (COO)
+        // Write Matrix Market format (COO) from sparse CscMatrix
         let path = dir.join(format!("generator_R{:.1}.mtx", r));
         let mut f = std::fs::File::create(&path)?;
         writeln!(f, "%%MatrixMarket matrix coordinate real symmetric")?;
+        // Count upper-triangle non-zeros
         let mut nnz = 0usize;
-        for i in 0..n {
-            for j in i..n {
-                if mat[(i, j)] != 0.0 {
+        for j in 0..n {
+            let col = mat.col(j);
+            for (&i, &v) in col.row_indices().iter().zip(col.values()) {
+                if i <= j && v != 0.0 {
                     nnz += 1;
                 }
             }
         }
         writeln!(f, "{n} {n} {nnz}")?;
-        for i in 0..n {
-            for j in i..n {
-                let v = mat[(i, j)];
-                if v != 0.0 {
+        for j in 0..n {
+            let col = mat.col(j);
+            for (&i, &v) in col.row_indices().iter().zip(col.values()) {
+                if i <= j && v != 0.0 {
                     writeln!(f, "{} {} {:.15e}", i + 1, j + 1, v)?; // 1-indexed
                 }
             }
@@ -832,7 +935,10 @@ pub fn export_generator_matrices(
             meta,
             "{r:.2},{n},{n_total},{n_v},{n_omega},{lambda1_free:.6e}"
         )?;
-        info!("R={r:.1} Å: exported {n}×{n} generator to {}", path.display());
+        info!(
+            "R={r:.1} Å: exported {n}×{n} generator to {}",
+            path.display()
+        );
     }
 
     info!("Exported matrices to {}", dir.display());
@@ -1180,6 +1286,34 @@ mod tests {
         assert_relative_eq!(modes[0].eigenvalue, ring_gap, epsilon = 1e-6);
         // First mode should be dihedral-dominated (f_ω ≈ 1)
         assert!(modes[0].frac_omega > 0.9);
+    }
+
+    /// Sparse Lanczos matches dense eigensolver on free diffusion.
+    #[test]
+    fn test_sparse_eigenmodes_matches_dense() {
+        let level = MeshLevel::new(0);
+        let n_v = level.n_vertices;
+        let n_omega = 4;
+
+        let (gen, active) = build_generator(&level, n_omega, None);
+        let dense_modes = dense_eigenmodes(&gen, &active, 3, &level);
+        let sparse_modes = sparse_eigenmodes(&gen, &active, 3, &level);
+
+        assert_eq!(dense_modes.len(), sparse_modes.len());
+        for (dm, sm) in dense_modes.iter().zip(&sparse_modes) {
+            assert_relative_eq!(dm.eigenvalue, sm.eigenvalue, epsilon = 1e-4);
+        }
+    }
+
+    /// Connected components are counted correctly.
+    #[test]
+    fn test_count_components() {
+        let level = MeshLevel::new(0);
+        let n_omega = 4;
+
+        // Fully connected free diffusion: 1 component
+        let (gen, _) = build_generator(&level, n_omega, None);
+        assert_eq!(count_components(&gen), 1);
     }
 
     fn bessel_i0(x: f64) -> f64 {

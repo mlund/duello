@@ -47,7 +47,11 @@ def load_metadata(directory: Path) -> pd.DataFrame:
         raise FileNotFoundError(f"metadata.csv not found in {directory}")
     df = pd.read_csv(path)
     df = df.set_index("R")
-    log.info("Loaded metadata: %d R-slices, λ₁_free = %.6g", len(df), df["lambda1_free"].iloc[0])
+    log.info(
+        "Loaded metadata: %d R-slices, λ₁_free = %.6g",
+        len(df),
+        df["lambda1_free"].iloc[0],
+    )
     return df
 
 
@@ -58,8 +62,11 @@ def count_null_space(A_sparse) -> int:
     We detect this cheaply from the sparsity pattern using scipy.
     """
     import scipy.sparse.csgraph
+
     # Treat as undirected adjacency (ignore diagonal / signs)
-    n_components, _ = scipy.sparse.csgraph.connected_components(A_sparse, directed=False)
+    n_components, _ = scipy.sparse.csgraph.connected_components(
+        A_sparse, directed=False
+    )
     return n_components
 
 
@@ -83,6 +90,51 @@ def load_icosphere_neighbors(directory: Path, n_v: int) -> list[list[int]] | Non
             _, nbrs = line.strip().split(",", 1)
             neighbors.append([int(x) for x in nbrs.split()])
     return neighbors
+
+
+def free_coordinate_fractions(
+    neighbors: list[list[int]],
+    n_omega: int,
+    k: int = 1,
+) -> list[tuple[float, float, float]]:
+    """Compute coordinate fractions for free-diffusion eigenmodes.
+
+    Replicates `free_eigenmodes_analytical()` from diffusion.rs:
+    icosphere Laplacian eigenvalues × ring eigenvalues, then
+    fraction = component / sum for the k smallest non-trivial products.
+    """
+    n_v = len(neighbors)
+
+    # Icosphere graph Laplacian eigenvalues
+    lap = np.zeros((n_v, n_v))
+    for i, nbrs in enumerate(neighbors):
+        lap[i, i] = len(nbrs)
+        for j in nbrs:
+            lap[i, j] = -1.0
+    ico_evals = np.sort(np.maximum(np.linalg.eigvalsh(lap), 0.0))
+
+    # Periodic ring eigenvalues: λ_m = 2(1 - cos(2πm/n_ω))
+    ring_evals = np.sort(
+        [2.0 * (1.0 - np.cos(2.0 * np.pi * m / n_omega)) for m in range(n_omega)]
+    )
+
+    # Product eigenvalues λ = λ_A + λ_B + λ_ω with fractions
+    products = []
+    for la in ico_evals:
+        for lb in ico_evals:
+            for lw in ring_evals:
+                total = la + lb + lw
+                if total > 1e-10:
+                    products.append((total, la / total, lb / total, lw / total))
+    products.sort(key=lambda x: x[0])
+
+    # Dedup near-identical eigenvalues
+    deduped = [products[0]] if products else []
+    for p in products[1:]:
+        if abs(p[0] - deduped[-1][0]) > 1e-10:
+            deduped.append(p)
+
+    return [(fa, fb, fw) for _, fa, fb, fw in deduped[:k]]
 
 
 def coordinate_projection(
@@ -148,7 +200,9 @@ def coordinate_projection(
     return (norm_a / total, norm_b / total, norm_omega / total)
 
 
-def solve_dense(A_dense: np.ndarray, k: int, n_components: int) -> tuple[np.ndarray, np.ndarray, str]:
+def solve_dense(
+    A_dense: np.ndarray, k: int, n_components: int
+) -> tuple[np.ndarray, np.ndarray, str]:
     """Full symmetric eigensolver, requesting enough eigenvalues to skip the null space."""
     n = A_dense.shape[0]
     k_req = min(n_components + k, n)
@@ -158,7 +212,9 @@ def solve_dense(A_dense: np.ndarray, k: int, n_components: int) -> tuple[np.ndar
     return vals[::-1], vecs[:, ::-1], "dense"
 
 
-def solve_lobpcg(A_sparse, k: int, n_components: int) -> tuple[np.ndarray, np.ndarray, str]:
+def solve_lobpcg(
+    A_sparse, k: int, n_components: int
+) -> tuple[np.ndarray, np.ndarray, str]:
     """LOBPCG for largest eigenvalues (nearest zero) of the generator.
 
     All generator eigenvalues are ≤ 0, so the k eigenvalues nearest zero
@@ -170,14 +226,25 @@ def solve_lobpcg(A_sparse, k: int, n_components: int) -> tuple[np.ndarray, np.nd
     rng = np.random.default_rng(seed=42)
     X0 = rng.standard_normal((n, k_req))
     vals, vecs = scipy.sparse.linalg.lobpcg(
-        A_sparse, X0, largest=True, tol=1e-8, maxiter=500, verbosityLevel=0,
+        A_sparse,
+        X0,
+        largest=True,
+        tol=1e-8,
+        maxiter=500,
+        verbosityLevel=0,
     )
     order = np.argsort(vals)[::-1]
     return vals[order], vecs[:, order], "lobpcg"
 
 
-def process_matrix(path: Path, meta_row: pd.Series, k: int, dense_threshold: int,
-                   directory: Path) -> dict:
+def process_matrix(
+    path: Path,
+    meta_row: pd.Series,
+    k: int,
+    dense_threshold: int,
+    directory: Path,
+    free_fracs: tuple[float, float, float] | None,
+) -> dict:
     R = float(meta_row.name)
     n_active = int(meta_row["n_active"])
     lambda1_free = float(meta_row["lambda1_free"])
@@ -207,40 +274,85 @@ def process_matrix(path: Path, meta_row: pd.Series, k: int, dense_threshold: int
     vals_out += [float("nan")] * (k - len(vals_out))
 
     # Spectral gap: first non-null eigenvalue (all are ≤ 0).
-    spectral_gap = vals_out[0] if vals_out and np.isfinite(vals_out[0]) else float("nan")
-    ratio = abs(spectral_gap) / lambda1_free if np.isfinite(spectral_gap) else float("nan")
+    spectral_gap = (
+        vals_out[0] if vals_out and np.isfinite(vals_out[0]) else float("nan")
+    )
+    ratio = (
+        abs(spectral_gap) / lambda1_free if np.isfinite(spectral_gap) else float("nan")
+    )
 
-    # Coordinate projection for the spectral-gap eigenvector
+    # Coordinate projection for the spectral-gap eigenvector, normalized by free values
     frac_a = frac_b = frac_omega = float("nan")
     if np.isfinite(spectral_gap) and vecs_nonnull.shape[1] > 0:
         coords = load_coords(directory, R)
         neighbors = load_icosphere_neighbors(directory, n_v)
         if coords is not None and neighbors is not None:
-            frac_a, frac_b, frac_omega = coordinate_projection(
-                vecs_nonnull[:, 0], coords, neighbors, n_v, n_omega,
+            raw_a, raw_b, raw_w = coordinate_projection(
+                vecs_nonnull[:, 0],
+                coords,
+                neighbors,
+                n_v,
+                n_omega,
             )
+            if free_fracs is not None:
+                fa0, fb0, fw0 = free_fracs
+                frac_a = raw_a / fa0 if fa0 > 1e-30 else float("nan")
+                frac_b = raw_b / fb0 if fb0 > 1e-30 else float("nan")
+                frac_omega = raw_w / fw0 if fw0 > 1e-30 else float("nan")
+            else:
+                frac_a, frac_b, frac_omega = raw_a, raw_b, raw_w
 
     log.info(
         "R=%5.1f Å  n=%5d  comp=%3d  λ₁/λ_free=%.4f  "
         "frac(A=%.2f B=%.2f ω=%.2f)  %.3fs [%s]",
-        R, n_active, n_components, ratio, frac_a, frac_b, frac_omega, elapsed, method,
+        R,
+        n_active,
+        n_components,
+        ratio,
+        frac_a,
+        frac_b,
+        frac_omega,
+        elapsed,
+        method,
     )
 
-    row = {"R": R, "n_active": n_active, "n_components": n_components,
-           "method": method, "spectral_gap": spectral_gap, "lambda1_over_free": ratio,
-           "frac_a": frac_a, "frac_b": frac_b, "frac_omega": frac_omega}
+    row = {
+        "R": R,
+        "n_active": n_active,
+        "n_components": n_components,
+        "method": method,
+        "spectral_gap": spectral_gap,
+        "lambda1_over_free": ratio,
+        "frac_a": frac_a,
+        "frac_b": frac_b,
+        "frac_omega": frac_omega,
+    }
     for i, v in enumerate(vals_out):
         row[f"lambda{i}"] = v
     return row
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("directory", type=Path, help="Directory containing generator_R*.mtx and metadata.csv")
-    parser.add_argument("--k", type=int, default=4, help="Number of eigenvalues to compute (default: 4)")
-    parser.add_argument("--dense-threshold", type=int, default=500,
-                        help="Use dense solver for n_active ≤ this (default: 500)")
-    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING"])
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "directory",
+        type=Path,
+        help="Directory containing generator_R*.mtx and metadata.csv",
+    )
+    parser.add_argument(
+        "--k", type=int, default=4, help="Number of eigenvalues to compute (default: 4)"
+    )
+    parser.add_argument(
+        "--dense-threshold",
+        type=int,
+        default=500,
+        help="Use dense solver for n_active ≤ this (default: 500)",
+    )
+    parser.add_argument(
+        "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING"]
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -257,6 +369,25 @@ def main():
 
     meta = load_metadata(directory)
 
+    # Precompute free-diffusion coordinate fractions per icosphere size
+    free_fracs_cache: dict[tuple[int, int], tuple[float, float, float]] = {}
+    if "n_v" in meta.columns and "n_omega" in meta.columns:
+        for _, row in meta.iterrows():
+            nv, nw = int(row["n_v"]), int(row["n_omega"])
+            key = (nv, nw)
+            if key not in free_fracs_cache:
+                neighbors = load_icosphere_neighbors(directory, nv)
+                if neighbors is not None:
+                    fracs = free_coordinate_fractions(neighbors, nw, k=1)
+                    if fracs:
+                        free_fracs_cache[key] = fracs[0]
+                        log.info(
+                            "Free fractions (n_v=%d, n_ω=%d): A=%.4f B=%.4f ω=%.4f",
+                            nv,
+                            nw,
+                            *fracs[0],
+                        )
+
     mtx_files = sorted(
         directory.glob("generator_R*.mtx"),
         key=lambda p: float(re.search(r"R([\d.]+?)\.mtx", p.name).group(1)),
@@ -267,7 +398,10 @@ def main():
     log.info("Found %d matrix files", len(mtx_files))
 
     import warnings
-    warnings.filterwarnings("ignore", message=".*not reaching the requested tolerance.*")
+
+    warnings.filterwarnings(
+        "ignore", message=".*not reaching the requested tolerance.*"
+    )
     warnings.filterwarnings("ignore", message=".*Exited postprocessing.*")
 
     results = []
@@ -277,7 +411,12 @@ def main():
         if R not in meta.index:
             log.warning("No metadata for R=%.1f, skipping", R)
             continue
-        results.append(process_matrix(path, meta.loc[R], args.k, args.dense_threshold, directory))
+        row = meta.loc[R]
+        key = (int(row["n_v"]), int(row["n_omega"])) if "n_v" in meta.columns else None
+        free_f = free_fracs_cache.get(key) if key else None
+        results.append(
+            process_matrix(path, row, args.k, args.dense_threshold, directory, free_f)
+        )
     t_total = time.perf_counter() - t_total
 
     if not results:
@@ -286,8 +425,20 @@ def main():
 
     # Write CSV to stdout
     lambda_cols = [f"lambda{i}" for i in range(args.k)]
-    fieldnames = ["R", "n_active", "n_components", "lambda1_over_free", "spectral_gap",
-                  "frac_a", "frac_b", "frac_omega"] + lambda_cols + ["method"]
+    fieldnames = (
+        [
+            "R",
+            "n_active",
+            "n_components",
+            "lambda1_over_free",
+            "spectral_gap",
+            "frac_a",
+            "frac_b",
+            "frac_omega",
+        ]
+        + lambda_cols
+        + ["method"]
+    )
     writer = csv.DictWriter(sys.stdout, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()
     writer.writerows(results)
