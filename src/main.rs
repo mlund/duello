@@ -179,7 +179,7 @@ enum Commands {
         #[arg(short = 'M', long, default_value = "0.1")]
         molarity: f64,
         /// Cutoff distance for pair-wise interactions (angstroms)
-        #[arg(long, default_value = "50.0")]
+        #[arg(long, default_value = "30.0")]
         cutoff: f64,
         /// Temperature in K
         #[arg(short = 'T', long, default_value = "298.15")]
@@ -216,7 +216,7 @@ enum Commands {
         #[arg(short = 'M', long, default_value = "0.1")]
         molarity: f64,
         /// Cutoff distance for pair-wise interactions (angstroms)
-        #[arg(long, default_value = "50.0")]
+        #[arg(long, default_value = "30.0")]
         cutoff: f64,
         /// Temperature in K
         #[arg(short = 'T', long, default_value = "298.15")]
@@ -253,7 +253,7 @@ enum Commands {
         #[arg(short = 'M', long, default_value = "0.1")]
         molarity: f64,
         /// Cutoff distance for pair-wise interactions (angstroms)
-        #[arg(long, default_value = "50.0")]
+        #[arg(long, default_value = "30.0")]
         cutoff: f64,
         /// Temperature in K
         #[arg(short = 'T', long, default_value = "298.15")]

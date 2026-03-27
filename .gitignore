@@ -17,6 +17,9 @@ Cargo.lock
 *.pdb
 *.xtc
 *.pdf
+*.csv
+*.log
+*.png
 potential.pqr
 potential_angles.pqr
 

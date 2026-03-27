@@ -106,7 +106,7 @@ duello scan \
     --rmin 37 --rmax 50 --dr 0.5 \
     --top topology.yaml \
     --max-ndiv 3 \
-    --cutoff 50 \
+    --cutoff 30 \
     --molarity 0.05 \
     --temperature 298.15 \
     --backend auto \
@@ -143,11 +143,29 @@ gradient is evaluated and slabs are classified into tiers:
 The `--gradient-threshold` (default: 10.0 kJ/mol/rad) controls when resolution
 is reduced. A summary of slab classifications is printed after generation.
 
+## Cutoff
+
+The `--cutoff` flag (default 30 Å) sets the spline range for short-range (SR) pair potentials
+in the GPU and SIMD backends. Beyond this distance the spline returns zero.
+It does **not** affect the analytical Coulomb/Yukawa evaluation, which is always computed
+without cutoff.
+
+Each pair potential in the topology may define its own cutoff
+(e.g. `AshbaughHatch {cutoff: 20.0}`), beyond which the potential itself is zero.
+The CLI `--cutoff` must be **≥** the largest topology cutoff; otherwise the spline
+silently truncates the potential early. Setting `--cutoff` much larger than the
+topology cutoff wastes spline grid points on zeros but is otherwise harmless.
+
+For optimal accuracy and efficiency, use `--sr-cutoff` to match the SR potential range
+exactly (e.g. `--sr-cutoff 20` for AshbaughHatch with cutoff 20 Å), while keeping
+`--cutoff` at a larger default.
+
+The `reference` backend ignores `--cutoff` entirely and evaluates the original
+potentials directly with their native cutoffs.
+
 ## Spline Grid Options
 
 The `--grid` option controls interpolation of short-range pair potentials (GPU/SIMD backends).
-The `--cutoff` sets the spline range in angstroms; it should cover the SR potential
-(e.g. AshbaughHatch cutoff) but does not affect the analytical Coulomb/Yukawa evaluation.
 
 | Key          | Values               | Default     | Description                              |
 |--------------|----------------------|-------------|------------------------------------------|

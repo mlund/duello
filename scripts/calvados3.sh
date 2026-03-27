@@ -21,7 +21,7 @@ for mol in $MOLARITIES; do
             -2 4lzt.xyz \
             --rmin 24 --rmax 60 --dr 1.0 \
             --top topology.yaml \
-            --max-ndiv 1 \
+            --max-ndiv 2 \
             --cutoff 2000 \
             --molarity $mol \
             --temperature 293.15 \
