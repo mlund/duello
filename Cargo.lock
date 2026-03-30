@@ -809,7 +809,7 @@ dependencies = [
 [[package]]
 name = "faunus"
 version = "0.2.0"
-source = "git+https://github.com/mlund/faunus-rs.git#dff724b9a262f2eb067e0c10f8e414efabe58137"
+source = "git+https://github.com/mlund/faunus-rs.git#18628e49a4037b3bd0af7ed3adaece9fb000f924"
 dependencies = [
  "anyhow",
  "average 0.13.1",

@@ -924,7 +924,7 @@ pub fn export_generator_matrices(
     }
 
     let mut meta = std::fs::File::create(dir.join("metadata.csv"))?;
-    writeln!(meta, "R,n_active,n_total,n_v,n_omega,lambda1_free")?;
+    writeln!(meta, "R,n_active,n_total,n_v,n_omega,lambda1_free,boltzmann_weight")?;
 
     for ri in 0..table.n_r {
         let r = table.rmin + ri as f64 * table.dr;
@@ -952,12 +952,13 @@ pub fn export_generator_matrices(
             .and_then(|m| m.first())
             .map_or(0.0, |m| m.eigenvalue);
 
-        // Write coordinate mapping for eigenvector projection
+        // Write coordinate mapping and per-state energies for eigenvector projection
         let coords_path = dir.join(format!("coords_R{:.1}.csv", r));
         let mut cf = std::fs::File::create(&coords_path)?;
-        writeln!(cf, "compact,vi,vj,oi")?;
+        writeln!(cf, "compact,vi,vj,oi,energy")?;
         for (ci, &(vi, vj, oi)) in active.coords.iter().enumerate() {
-            writeln!(cf, "{ci},{vi},{vj},{oi}")?;
+            let full_idx = state_index(vi, vj, oi, n_v, n_omega);
+            writeln!(cf, "{ci},{vi},{vj},{oi},{:.6e}", energies[full_idx])?;
         }
 
         // Write Matrix Market format (COO) from sparse CscMatrix
@@ -984,9 +985,26 @@ pub fn export_generator_matrices(
             }
         }
 
+        // ⟨exp(-βU)⟩ = (1/n_total) Σ exp(-βU_i) over all states (infinite U → 0 contribution)
+        let u_min = energies
+            .iter()
+            .copied()
+            .filter(|u| u.is_finite())
+            .fold(f64::INFINITY, f64::min);
+        let boltzmann_weight = if u_min.is_finite() {
+            let sum: f64 = energies
+                .iter()
+                .filter(|u| u.is_finite())
+                .map(|u| (-beta * (u - u_min)).exp())
+                .sum();
+            (sum / n_total as f64) * (-beta * u_min).exp()
+        } else {
+            0.0
+        };
+
         writeln!(
             meta,
-            "{r:.2},{n},{n_total},{n_v},{n_omega},{lambda1_free:.6e}"
+            "{r:.2},{n},{n_total},{n_v},{n_omega},{lambda1_free:.6e},{boltzmann_weight:.6e}"
         )?;
         info!(
             "R={r:.1} Å: exported {n}×{n} generator to {}",

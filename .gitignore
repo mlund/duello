@@ -32,3 +32,5 @@ output.*
 .DS_Store
 .mypy*
 .ipynb_checkpoints
+__pycache__/
+latex_spectral_analysis/

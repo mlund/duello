@@ -19,9 +19,9 @@ for mol in $MOLARITIES; do
             -- scan \
             -1 4lzt.xyz \
             -2 4lzt.xyz \
-            --rmin 24 --rmax 60 --dr 1.0 \
+            --rmin 24 --rmax 60 --dr 2.0 \
             --top topology.yaml \
-            --max-ndiv 2 \
+            --max-ndiv 0 \
             --cutoff 2000 \
             --molarity $mol \
             --temperature 293.15 \
