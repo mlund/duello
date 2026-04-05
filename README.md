@@ -194,6 +194,7 @@ duello scan \
 | `--model`                | calvados3     | Force field model                                     |
 | `--cg`                   | single        | Coarse-graining policy: `single` or `multi`           |
 | `--scale-hydrophobic`    | --            | Hydrophobic scaling, e.g. `lambda:1.2` or `epsilon:0.8` |
+| `--chain`                | (all)         | Keep only these chain IDs (repeatable: `--chain A --chain B`) |
 
 ## `duello atom-scan` -- Atom Scan
 

@@ -29,6 +29,8 @@ pub struct CgOptions {
     pub single_bead: bool,
     /// Hydrophobic scaling (default: no scaling).
     pub scale_hydrophobic: cgkitten::forcefield::HydrophobicScaling,
+    /// Chain IDs to keep (empty = all chains).
+    pub chains: Vec<String>,
 }
 
 impl Default for CgOptions {
@@ -38,6 +40,7 @@ impl Default for CgOptions {
             model: "calvados3".to_string(),
             single_bead: true,
             scale_hydrophobic: cgkitten::forcefield::HydrophobicScaling::NoScale,
+            chains: Vec::new(),
         }
     }
 }
@@ -71,6 +74,10 @@ pub fn load_molecule(
     if is_structure_file(mol_path) {
         load_from_structure(mol_path, cg_opts)
     } else {
+        anyhow::ensure!(
+            cg_opts.chains.is_empty(),
+            "--chain is only supported for PDB/CIF input, not XYZ"
+        );
         // XYZ path — topology file is required
         let top = top_path.context("--top is required when input is an XYZ file")?;
         load_from_xyz(mol_path, top)
@@ -111,11 +118,11 @@ fn load_from_structure(mol_path: &Path, cg_opts: &CgOptions) -> Result<LoadedMol
         &cgkitten::MultiBead
     };
 
-    let charge_calc = cgkitten::ChargeCalc::new().ph(cg_opts.ph).mc(10000);
-
     let file = std::fs::File::open(mol_path)
         .with_context(|| format!("Could not open {}", mol_path.display()))?;
     let reader = BufReader::new(file);
+
+    let charge_calc = cgkitten::ChargeCalc::new().ph(cg_opts.ph).mc(10000);
 
     cgkitten::coarse_grain_to_files(
         reader,
@@ -125,6 +132,7 @@ fn load_from_structure(mol_path: &Path, cg_opts: &CgOptions) -> Result<LoadedMol
         policy,
         0.02,
         cg_opts.scale_hydrophobic,
+        &cg_opts.chains,
         &xyz_path,
         &top_path,
     )

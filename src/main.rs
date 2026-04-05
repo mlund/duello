@@ -48,6 +48,7 @@ fn cg_options_from_args(
     model: &str,
     cg: &CgPolicy,
     scale_hydrophobic: &Option<String>,
+    chains: &[String],
 ) -> CgOptions {
     let scaling = scale_hydrophobic
         .as_deref()
@@ -58,6 +59,7 @@ fn cg_options_from_args(
         model: model.to_string(),
         single_bead: matches!(cg, CgPolicy::Single),
         scale_hydrophobic: scaling,
+        chains: chains.to_vec(),
     }
 }
 
@@ -266,6 +268,9 @@ enum Commands {
         /// Hydrophobic scaling, e.g. "lambda:1.2" or "epsilon:0.8" (only used for PDB/CIF input)
         #[arg(long)]
         scale_hydrophobic: Option<String>,
+        /// Include only these chain IDs (only for PDB/CIF input). Repeat for multiple: --chain A --chain B
+        #[arg(long)]
+        chain: Vec<String>,
     },
 
     /// Scan angles and tabulate energy between two rigid bodies
@@ -337,6 +342,9 @@ enum Commands {
         /// Hydrophobic scaling, e.g. "lambda:1.2" or "epsilon:0.8" (only used for PDB/CIF input)
         #[arg(long)]
         scale_hydrophobic: Option<String>,
+        /// Include only these chain IDs (only for PDB/CIF input). Repeat for multiple: --chain A --chain B
+        #[arg(long)]
+        chain: Vec<String>,
     },
 
     /// Estimate rotational diffusion from a saved 6D energy table
@@ -394,13 +402,14 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         model,
         cg,
         scale_hydrophobic,
+        chain,
     } = cmd
     else {
         bail!("Unknown command");
     };
     assert!(rmin < rmax);
 
-    let cg_opts = cg_options_from_args(*ph, model, cg, scale_hydrophobic);
+    let cg_opts = cg_options_from_args(*ph, model, cg, scale_hydrophobic, chain);
     let loaded_a = loader::load_molecule(mol1, top_file.as_deref(), &cg_opts)?;
     let loaded_b = loader::load_molecule(mol2, top_file.as_deref(), &cg_opts)?;
     let top_path = &loaded_a.topology_path;
@@ -548,13 +557,14 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
         model,
         cg,
         scale_hydrophobic,
+        chain,
     } = cmd
     else {
         bail!("Unknown command");
     };
     anyhow::ensure!(rmin < rmax, "rmin ({rmin}) must be less than rmax ({rmax})");
 
-    let cg_opts = cg_options_from_args(*ph, model, cg, scale_hydrophobic);
+    let cg_opts = cg_options_from_args(*ph, model, cg, scale_hydrophobic, chain);
     let loaded = loader::load_molecule(mol1, top_file.as_deref(), &cg_opts)?;
     let top_path = &loaded.topology_path;
     let topology = loaded.topology;
