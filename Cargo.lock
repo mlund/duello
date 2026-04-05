@@ -292,6 +292,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd16c4719339c4530435d38e511904438d07cce7950afa3718a84ac36c10e89e"
 
 [[package]]
+name = "cgkitten"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "077e15bd3620fddfd5dff14e4d9ccdb1906efc7687e5dc8f07bb9028a8d16593"
+dependencies = [
+ "log",
+ "rand",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -668,12 +678,13 @@ dependencies = [
 
 [[package]]
 name = "duello"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "approx",
  "average 0.16.0",
  "bytemuck",
+ "cgkitten",
  "clap",
  "faunus",
  "flate2",
@@ -688,6 +699,7 @@ dependencies = [
  "log",
  "molly",
  "nalgebra",
+ "nalgebra-sparse",
  "nu-ansi-term",
  "num-traits",
  "physical_constants",
@@ -699,7 +711,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "serde_yaml",
+ "serde_yml",
  "textplots",
  "wgpu",
  "wide 0.7.33",
@@ -716,9 +728,6 @@ name = "easy-cast"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4bd102ee8c418348759919b83b81cdbdc933ffe29740b903df448b4bafaa348e"
-dependencies = [
- "libm",
-]
 
 [[package]]
 name = "easy-cast"
@@ -809,7 +818,7 @@ dependencies = [
 [[package]]
 name = "faunus"
 version = "0.2.0"
-source = "git+https://github.com/mlund/faunus-rs.git#18628e49a4037b3bd0af7ed3adaece9fb000f924"
+source = "git+https://github.com/mlund/faunus-rs.git#87eff8febc5119e5c665d5027af7c9b85f7c1344"
 dependencies = [
  "anyhow",
  "average 0.13.1",
@@ -823,17 +832,16 @@ dependencies = [
  "interatomic",
  "itertools 0.10.5",
  "log",
+ "minijinja",
  "molly",
  "nalgebra",
  "ndarray",
- "num",
  "paste",
  "physical_constants",
  "rand",
- "regex",
  "serde",
  "serde_with",
- "serde_yaml",
+ "serde_yml",
  "typetag",
  "unordered-pair",
  "validator",
@@ -1246,6 +1254,7 @@ dependencies = [
 [[package]]
 name = "icotable"
 version = "0.1.0"
+source = "git+https://github.com/mlund/icotable.git#116a7f4d4cef6d636498bfa40eafce3b765a8b35"
 dependencies = [
  "anyhow",
  "bincode",
@@ -1407,17 +1416,14 @@ dependencies = [
 [[package]]
 name = "interatomic"
 version = "0.6.0"
-source = "git+https://github.com/mlund/interatomic.git#65785d517023fbff7c9a6c0392045eb0cadf3bd9"
+source = "git+https://github.com/mlund/interatomic.git#f0ba2e92856bc9ecb743cac1400cf32759a169f0"
 dependencies = [
- "anyhow",
  "bytemuck",
  "coulomb",
  "dyn-clone",
  "exmex",
- "itertools 0.10.5",
  "nalgebra",
  "num",
- "physical_constants",
  "serde",
  "wide 1.2.0",
 ]
@@ -1583,6 +1589,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
+name = "libyml"
+version = "0.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3302702afa434ffa30847a83305f0a69d6abd74293b6554c18ec85c7ef30c980"
+dependencies = [
+ "anyhow",
+ "version_check",
+]
+
+[[package]]
 name = "litemap"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1635,6 +1651,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
+name = "memo-map"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38d1115007560874e373613744c6fba374c17688327a71c1476d1a5954cc857b"
+
+[[package]]
 name = "metal"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1647,6 +1669,16 @@ dependencies = [
  "log",
  "objc",
  "paste",
+]
+
+[[package]]
+name = "minijinja"
+version = "2.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "805bfd7352166bae857ee569628b52bcd85a1cecf7810861ebceb1686b72b75d"
+dependencies = [
+ "memo-map",
+ "serde",
 ]
 
 [[package]]
@@ -1742,6 +1774,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "nalgebra-sparse"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df054d7815152d4e66955fc59a1f97f4036e5103134a381b6b54ec55babfa6b7"
+dependencies = [
+ "nalgebra",
+ "num-traits",
 ]
 
 [[package]]
@@ -2400,16 +2442,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_yaml"
-version = "0.9.34+deprecated"
+name = "serde_yml"
+version = "0.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
+checksum = "59e2dd588bf1597a252c3b920e0143eb99b0f76e4e082f4c92ce34fbc9e71ddd"
 dependencies = [
  "indexmap 2.13.0",
  "itoa",
+ "libyml",
+ "memchr",
  "ryu",
  "serde",
- "unsafe-libyaml",
+ "version_check",
 ]
 
 [[package]]
@@ -2703,12 +2747,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "unsafe-libyaml"
-version = "0.2.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
-
-[[package]]
 name = "uom"
 version = "0.36.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2780,17 +2818,15 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "voronota-ltr"
-version = "0.1.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b2628fd6ed2c07241cc7edf2e54f9bd3c0e6030e9da58a4cf00a95d47adee81"
+checksum = "a09831f5c89807767b55fd2aa6252ae3dd56ef84f361671b426ac2e2b954e176"
 dependencies = [
  "clap",
  "env_logger 0.11.9",
  "log",
  "nalgebra",
  "rayon",
- "serde",
- "serde_json",
 ]
 
 [[package]]
