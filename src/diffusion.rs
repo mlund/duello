@@ -924,7 +924,10 @@ pub fn export_generator_matrices(
     }
 
     let mut meta = std::fs::File::create(dir.join("metadata.csv"))?;
-    writeln!(meta, "R,n_active,n_total,n_v,n_omega,lambda1_free,boltzmann_weight")?;
+    writeln!(
+        meta,
+        "R,n_active,n_total,n_v,n_omega,lambda1_free,boltzmann_weight"
+    )?;
 
     for ri in 0..table.n_r {
         let r = table.rmin + ri as f64 * table.dr;

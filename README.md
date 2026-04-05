@@ -91,13 +91,35 @@ cargo install --git https://github.com/mlund/duello
 The command-line tool `duello` does the 6D scanning and calculates
 the angularly averaged potential of mean force, _w(R)_, which
 is used to derive the 2nd virial coefficient and two-body dissociation constant, $K_d$.
-The two input structures should be in `.xyz` format and all particle names must
-be defined in the topology file under `atoms`.
-The topology also defines the particular pair-potential to use, see below.
+Input structures can be all-atom PDB/mmCIF files or pre-generated coarse-grained `.xyz` files.
+When PDB or CIF files are given, duello automatically coarse-grains them on the fly
+using [cgkitten](https://github.com/mlund/cgkitten), generating `.xyz` and topology files.
+For `.xyz` input, a topology file (`--top`) must be provided with all particle names
+defined under `atoms`, along with the pair-potential to use.
 Note that a Coulomb/Yukawa potential is automatically added and should
 hence _not_ be specified in the topology.
 Coulomb is evaluated analytically (no cutoff) in all backends, while
 short-range potentials (e.g. AshbaughHatch, WCA) are splined for GPU/SIMD backends.
+
+### Direct PDB/CIF input (recommended)
+
+```sh
+duello scan \
+    --mol1 4lzt.pdb \
+    --mol2 4lzt.pdb \
+    --rmin 24 --rmax 80 --dr 0.5 \
+    --molarity 0.05 \
+    --ph 7.0 \
+    --model calvados3 \
+    --cg single
+```
+
+When using PDB/CIF input, the `--ph` (default 7.0), `--model` (default calvados3),
+and `--cg` (default single; options: single, multi) flags control the coarse-graining.
+Charges are computed using Monte Carlo titration.
+The generated `.xyz` and `_topology.yaml` files are saved alongside the input.
+
+### Pre-generated XYZ input
 
 ```sh
 duello scan \
@@ -279,7 +301,11 @@ automatically so that D_A = D_B and f_A ≈ f_B.
 
 ## Preparing PDB files
 
-The following uses `pdb2xyz` to create a coarse grained XYZ file and Calvados topology for Duello:
+PDB and mmCIF files can be passed directly to duello -- coarse-graining is done
+automatically via cgkitten. If your PDB file has missing atoms or residues, you
+may need to pre-process it with [pdbfixer](https://github.com/openmm/pdbfixer?tab=readme-ov-file).
+
+For pre-generated XYZ files, you can alternatively use `pdb2xyz`:
 
 ```sh
 pip install pdb2xyz
@@ -291,9 +317,6 @@ duello scan \
   --top topology.yaml \
   --molarity 0.05
 ```
-
-If `pdb2xyz` gives errors, you may be able to correct your PDB file with
-[pdbfixer](https://github.com/openmm/pdbfixer?tab=readme-ov-file).
 
 ## Examples
 

@@ -16,7 +16,9 @@ use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use duello::{
     backend::{self, GpuBackend, SimdBackend},
-    energy, icoscan, report,
+    energy, icoscan,
+    loader::{self, CgOptions},
+    report,
     structure::{pqr_write_atom, Structure},
     Adaptive3DBuilder, IcoTable2D, Sample, SphericalCoord, UnitQuaternion, Vector3,
 };
@@ -33,6 +35,31 @@ extern crate pretty_env_logger;
 extern crate log;
 use iter_num_tools::arange;
 use rand::Rng;
+
+/// Coarse-graining policy for PDB/CIF input
+#[derive(Clone, clap::ValueEnum)]
+enum CgPolicy {
+    Single,
+    Multi,
+}
+
+fn cg_options_from_args(
+    ph: f64,
+    model: &str,
+    cg: &CgPolicy,
+    scale_hydrophobic: &Option<String>,
+) -> CgOptions {
+    let scaling = scale_hydrophobic
+        .as_deref()
+        .map(|s| s.parse().expect("invalid --scale-hydrophobic value"))
+        .unwrap_or_default();
+    CgOptions {
+        ph,
+        model: model.to_string(),
+        single_bead: matches!(cg, CgPolicy::Single),
+        scale_hydrophobic: scaling,
+    }
+}
 
 /// Spline grid type selection
 #[derive(Clone, Copy, Debug, Default)]
@@ -188,7 +215,7 @@ enum Commands {
 
     /// Scan angles and tabulate energy between a rigid body and a single atom
     AtomScan {
-        /// Path to rigid body XYZ file
+        /// Path to structure file (XYZ, PDB, or mmCIF)
         #[arg(short = '1', long)]
         mol1: PathBuf,
         /// Name of atom type to scan (looked up in topology)
@@ -209,9 +236,9 @@ enum Commands {
         /// Mass center distance step
         #[arg(long)]
         dr: f64,
-        /// YAML file with atom definitions (names, charges, etc.)
+        /// YAML file with atom definitions (required for XYZ input, generated for PDB/CIF)
         #[arg(short = 'a', long = "top")]
-        topology: PathBuf,
+        topology: Option<PathBuf>,
         /// 1:1 salt molarity in mol/l
         #[arg(short = 'M', long, default_value = "0.1")]
         molarity: f64,
@@ -227,14 +254,26 @@ enum Commands {
         /// Output file for PMF
         #[arg(long = "pmf", default_value = "pmf.dat")]
         pmf_file: PathBuf,
+        /// pH for coarse-graining (only used for PDB/CIF input)
+        #[arg(long, default_value = "7.0")]
+        ph: f64,
+        /// Force field model for coarse-graining (only used for PDB/CIF input)
+        #[arg(long, default_value = "calvados3")]
+        model: String,
+        /// Coarse-graining policy: "single" or "multi" (only used for PDB/CIF input)
+        #[arg(long, default_value = "single")]
+        cg: CgPolicy,
+        /// Hydrophobic scaling, e.g. "lambda:1.2" or "epsilon:0.8" (only used for PDB/CIF input)
+        #[arg(long)]
+        scale_hydrophobic: Option<String>,
     },
 
     /// Scan angles and tabulate energy between two rigid bodies
     Scan {
-        /// Path to first XYZ file
+        /// Path to first structure file (XYZ, PDB, or mmCIF)
         #[arg(short = '1', long)]
         mol1: PathBuf,
-        /// Path to second XYZ file
+        /// Path to second structure file (XYZ, PDB, or mmCIF)
         #[arg(short = '2', long)]
         mol2: PathBuf,
         /// Minimum mass center distance
@@ -246,9 +285,9 @@ enum Commands {
         /// Mass center distance step
         #[arg(long)]
         dr: f64,
-        /// YAML file with atom definitions (names, charges, etc.)
+        /// YAML file with atom definitions (required for XYZ input, generated for PDB/CIF)
         #[arg(short = 'a', long = "top")]
-        topology: PathBuf,
+        topology: Option<PathBuf>,
         /// 1:1 salt molarity in mol/l
         #[arg(short = 'M', long, default_value = "0.1")]
         molarity: f64,
@@ -286,6 +325,18 @@ enum Commands {
         /// Defaults to --cutoff if not set. Set to SR potential range for best accuracy.
         #[arg(long)]
         sr_cutoff: Option<f64>,
+        /// pH for coarse-graining (only used for PDB/CIF input)
+        #[arg(long, default_value = "7.0")]
+        ph: f64,
+        /// Force field model for coarse-graining (only used for PDB/CIF input)
+        #[arg(long, default_value = "calvados3")]
+        model: String,
+        /// Coarse-graining policy: "single" or "multi" (only used for PDB/CIF input)
+        #[arg(long, default_value = "single")]
+        cg: CgPolicy,
+        /// Hydrophobic scaling, e.g. "lambda:1.2" or "epsilon:0.8" (only used for PDB/CIF input)
+        #[arg(long)]
+        scale_hydrophobic: Option<String>,
     },
 
     /// Estimate rotational diffusion from a saved 6D energy table
@@ -339,16 +390,21 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         backend: backend_type,
         grid,
         sr_cutoff,
+        ph,
+        model,
+        cg,
+        scale_hydrophobic,
     } = cmd
     else {
         bail!("Unknown command");
     };
     assert!(rmin < rmax);
 
-    let mut topology = Topology::from_file_partial(top_file)?;
-    topology.finalize_atoms()?;
-    topology.finalize_molecules()?;
-    faunus::topology::set_missing_epsilon(topology.atomkinds_mut(), 2.479);
+    let cg_opts = cg_options_from_args(*ph, model, cg, scale_hydrophobic);
+    let loaded_a = loader::load_molecule(mol1, top_file.as_deref(), &cg_opts)?;
+    let loaded_b = loader::load_molecule(mol2, top_file.as_deref(), &cg_opts)?;
+    let top_path = &loaded_a.topology_path;
+    let topology = loaded_a.topology;
 
     // Either use fixed dielectric constant or calculate it from the medium
     let medium = fixed_dielectric.map_or_else(
@@ -362,10 +418,10 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         },
     );
 
-    let nonbonded = NonbondedMatrix::from_file(top_file, &topology, Some(medium.clone()))?;
+    let nonbonded = NonbondedMatrix::from_file(top_path, &topology, Some(medium.clone()))?;
 
-    let ref_a = Structure::from_xyz(mol1, topology.atomkinds())?;
-    let ref_b = Structure::from_xyz(mol2, topology.atomkinds())?;
+    let ref_a = loaded_a.structure;
+    let ref_b = loaded_b.structure;
 
     info!("{medium}");
     info!(
@@ -488,23 +544,27 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
         temperature,
         output,
         pmf_file,
+        ph,
+        model,
+        cg,
+        scale_hydrophobic,
     } = cmd
     else {
         bail!("Unknown command");
     };
     anyhow::ensure!(rmin < rmax, "rmin ({rmin}) must be less than rmax ({rmax})");
 
-    let mut topology = Topology::from_file_partial(top_file)?;
-    topology.finalize_atoms()?;
-    topology.finalize_molecules()?;
-    faunus::topology::set_missing_epsilon(topology.atomkinds_mut(), 2.479);
+    let cg_opts = cg_options_from_args(*ph, model, cg, scale_hydrophobic);
+    let loaded = loader::load_molecule(mol1, top_file.as_deref(), &cg_opts)?;
+    let top_path = &loaded.topology_path;
+    let topology = loaded.topology;
 
     let medium = Medium::salt_water(*temperature, Salt::SodiumChloride, *molarity);
-    let nonbonded = NonbondedMatrix::from_file(top_file, &topology, Some(medium.clone()))?;
+    let nonbonded = NonbondedMatrix::from_file(top_path, &topology, Some(medium.clone()))?;
 
     let pair_matrix = energy::PairMatrix::new(nonbonded, topology.atomkinds(), &medium);
 
-    let ref_a = Structure::from_xyz(mol1, topology.atomkinds())?;
+    let ref_a = loaded.structure;
     let test_atom_id = topology
         .atomkinds()
         .find_name(atom)
