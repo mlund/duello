@@ -163,7 +163,7 @@ duello scan \
     --molarity 0.05 \
     --temperature 298.15 \
     --backend auto \
-    --grid "type=powerlaw2,size=500,shift=true"
+    --grid "type=powerlaw2,size=200,shift=true"
 ```
 
 ### Key Options
@@ -357,7 +357,7 @@ The `--grid` flag controls spline interpolation of short-range potentials (GPU/S
 | Key          | Values               | Default     | Description                                   |
 |--------------|----------------------|-------------|-----------------------------------------------|
 | `type`       | `powerlaw2`, `invr2` | `powerlaw2` | Grid spacing (`invr2` avoids sqrt in lookup)  |
-| `size`       | integer              | `500`       | Number of grid points                         |
+| `size`       | integer              | `200`       | Number of grid points                         |
 | `shift`      | `true`, `false`      | `true`      | Shift energy to zero at cutoff                |
 | `energy_cap` | float or `none`      | `none`      | Cap repulsive wall (kJ/mol) for f32 precision |
 

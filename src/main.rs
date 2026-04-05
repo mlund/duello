@@ -96,7 +96,7 @@ impl Default for GridOptions {
     fn default() -> Self {
         Self {
             grid_type: SplineGrid::Powerlaw2,
-            size: 500,
+            size: 200,
             shift: true,
             energy_cap: None,
         }
@@ -323,7 +323,7 @@ enum Commands {
         /// Grid interpolation: type=powerlaw2|invr2,size=N,shift=bool
         #[arg(
             long,
-            default_value = "type=powerlaw2,size=500,shift=true,energy_cap=none"
+            default_value = "type=powerlaw2,size=200,shift=true,energy_cap=none"
         )]
         grid: GridOptions,
         /// Short-range spline cutoff for GPU/SIMD split path (angstroms).
