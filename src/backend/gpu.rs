@@ -111,7 +111,8 @@ impl GpuBackend {
     /// Check if a GPU is available for compute (not available on WASM — use async path).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn is_available() -> bool {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
 
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -129,7 +130,8 @@ impl GpuBackend {
         splined_matrix: &SplinedPotentials,
         coulomb: &CoulombParams,
     ) -> anyhow::Result<Self> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
@@ -138,18 +140,24 @@ impl GpuBackend {
 
         log::info!("Using GPU adapter: {:?}", adapter.get_info().name);
 
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("Duello GPU"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
                 memory_hints: wgpu::MemoryHints::Performance,
                 trace: wgpu::Trace::Off,
                 experimental_features: wgpu::ExperimentalFeatures::default(),
-            },
-        ))?;
+            }))?;
 
-        Self::setup(Arc::new(device), Arc::new(queue), ref_a, ref_b, splined_matrix, coulomb)
+        Self::setup(
+            Arc::new(device),
+            Arc::new(queue),
+            ref_a,
+            ref_b,
+            splined_matrix,
+            coulomb,
+        )
     }
 
     /// Create a new GPU backend asynchronously (required for WASM).
@@ -159,7 +167,8 @@ impl GpuBackend {
         splined_matrix: &SplinedPotentials,
         coulomb: &CoulombParams,
     ) -> anyhow::Result<Self> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -171,19 +180,24 @@ impl GpuBackend {
         log::info!("Using GPU adapter: {:?}", adapter.get_info().name);
 
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("Duello GPU"),
-                    required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
-                    memory_hints: wgpu::MemoryHints::Performance,
-                    trace: wgpu::Trace::Off,
-                    experimental_features: wgpu::ExperimentalFeatures::default(),
-                },
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("Duello GPU"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::Off,
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+            })
             .await?;
 
-        Self::setup(Arc::new(device), Arc::new(queue), ref_a, ref_b, splined_matrix, coulomb)
+        Self::setup(
+            Arc::new(device),
+            Arc::new(queue),
+            ref_a,
+            ref_b,
+            splined_matrix,
+            coulomb,
+        )
     }
 
     /// Shared setup: create pipeline and buffers from an already-obtained device+queue.
@@ -204,9 +218,14 @@ impl GpuBackend {
             GridType::PowerLaw2 => {
                 Self::setup_typed::<PowerLaw2>(device, queue, ref_a, ref_b, splined_matrix, coulomb)
             }
-            GridType::InverseRsq => {
-                Self::setup_typed::<InverseRsq>(device, queue, ref_a, ref_b, splined_matrix, coulomb)
-            }
+            GridType::InverseRsq => Self::setup_typed::<InverseRsq>(
+                device,
+                queue,
+                ref_a,
+                ref_b,
+                splined_matrix,
+                coulomb,
+            ),
             other => {
                 anyhow::bail!("GPU backend requires PowerLaw2 or InverseRsq grid, got {other:?}")
             }
@@ -511,7 +530,12 @@ impl GpuBackend {
         // Synchronous readback
         let slice = staging_buffer.slice(..);
         slice.map_async(wgpu::MapMode::Read, |_| {});
-        self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .unwrap();
 
         Self::read_staging(&staging_buffer)
     }
@@ -531,7 +555,12 @@ impl GpuBackend {
 
         // On native, we need to poll; on WASM, the browser event loop handles it
         #[cfg(not(target_arch = "wasm32"))]
-        self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .unwrap();
 
         receiver.await.unwrap().unwrap();
         Self::read_staging(&staging_buffer)

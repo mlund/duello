@@ -7,13 +7,13 @@ use crate::backend::{EnergyBackend, GpuBackend};
 use crate::energy::{CoulombParams, PairMatrix, SplinedPotentials};
 use crate::icoscan::{compute_scan, compute_scan_async, ScanParams};
 use crate::loader::{load_molecule_from_pdb_bytes, CgOptions, LoadedMoleculeInMemory};
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use crate::report::compute_pmf;
 use crate::VirialCoeff;
 use faunus::energy::NonbondedMatrix;
 use faunus::interatomic::coulomb::{DebyeLength as _, Medium, Salt};
 use faunus::interatomic::twobody::SplineConfig;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 /// Parameters for a web-initiated scan (no file paths).
 pub struct WebScanRequest {
@@ -72,11 +72,8 @@ fn prepare_scan(req: &WebScanRequest) -> anyhow::Result<PreparedScan> {
 
     let medium = Medium::salt_water(req.temperature, Salt::SodiumChloride, req.molarity);
 
-    let nonbonded = NonbondedMatrix::from_str(
-        &mol1.topology_yaml,
-        &mol1.topology,
-        Some(medium.clone()),
-    )?;
+    let nonbonded =
+        NonbondedMatrix::from_str(&mol1.topology_yaml, &mol1.topology, Some(medium.clone()))?;
 
     let pair_matrix = PairMatrix::new(nonbonded, mol1.topology.atomkinds(), &medium);
 
@@ -122,7 +119,9 @@ fn build_scan_params(req: &WebScanRequest, prep: &PreparedScan) -> ScanParams {
 
 fn structure_to_xyz(mol: &LoadedMoleculeInMemory) -> String {
     let mut buf = Vec::new();
-    mol.structure.to_xyz(&mut buf, mol.topology.atomkinds()).ok();
+    mol.structure
+        .to_xyz(&mut buf, mol.topology.atomkinds())
+        .ok();
     String::from_utf8(buf).unwrap_or_default()
 }
 
@@ -139,10 +138,7 @@ fn build_result(prep: &PreparedScan, pmf_result: crate::report::PmfResult) -> We
             prep.mol1.structure.net_charge(),
             prep.mol2.structure.net_charge(),
         ),
-        cg_xyz: (
-            structure_to_xyz(&prep.mol1),
-            structure_to_xyz(&prep.mol2),
-        ),
+        cg_xyz: (structure_to_xyz(&prep.mol1), structure_to_xyz(&prep.mol2)),
         topology_yaml: prep.mol1.topology_yaml.clone(),
     }
 }

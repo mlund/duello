@@ -78,13 +78,8 @@ pub fn report_pmf(
     }
 
     // Write B2 etc. to a JSON file
-    let mut json_file =
-        File::create(path.with_extension("json")).expect("Cannot open JSON output");
-    writeln!(
-        json_file,
-        "{}",
-        serde_json::to_string(&result.virial)?
-    )?;
+    let mut json_file = File::create(path.with_extension("json")).expect("Cannot open JSON output");
+    writeln!(json_file, "{}", serde_json::to_string(&result.virial)?)?;
 
     info!(
         "Second virial coefficient, 𝐵₂ = {:.2} Å³",

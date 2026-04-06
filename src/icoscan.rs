@@ -73,8 +73,7 @@ pub fn compute_scan<B: EnergyBackend + Sync>(
     let max_n_vertices = 10 * (params.max_n_div + 1).pow(2) + 2;
     let omega_step = (4.0 * PI / max_n_vertices as f64).sqrt();
 
-    let thermal_energy =
-        physical_constants::MOLAR_GAS_CONSTANT * params.temperature * 1e-3; // kJ/mol
+    let thermal_energy = physical_constants::MOLAR_GAS_CONSTANT * params.temperature * 1e-3; // kJ/mol
     let beta = 1.0 / thermal_energy;
 
     let mut builder = AdaptiveBuilder::new(
@@ -175,13 +174,17 @@ pub async fn compute_scan_async(
 ) -> anyhow::Result<ScanResult> {
     let max_n_vertices = 10 * (params.max_n_div + 1).pow(2) + 2;
     let omega_step = (4.0 * PI / max_n_vertices as f64).sqrt();
-    let thermal_energy =
-        physical_constants::MOLAR_GAS_CONSTANT * params.temperature * 1e-3;
+    let thermal_energy = physical_constants::MOLAR_GAS_CONSTANT * params.temperature * 1e-3;
     let beta = 1.0 / thermal_energy;
 
     let mut builder = AdaptiveBuilder::new(
-        params.rmin, params.rmax, params.dr, omega_step,
-        params.max_n_div, params.gradient_threshold, beta,
+        params.rmin,
+        params.rmax,
+        params.dr,
+        omega_step,
+        params.max_n_div,
+        params.gradient_threshold,
+        beta,
     );
 
     let n_r = builder.n_r();
@@ -233,7 +236,11 @@ pub async fn compute_scan_async(
     let table = builder.build();
     log_resolution_summary(&table);
 
-    Ok(ScanResult { samples, distances, table })
+    Ok(ScanResult {
+        samples,
+        distances,
+        table,
+    })
 }
 
 /// Build all poses for one R-bin across all omega and vertex pairs.
@@ -262,7 +269,12 @@ fn build_slab_poses(
 }
 
 /// Accumulate partition function sample from slab data using Voronoi quadrature weights.
-fn accumulate_r_sample(slab_data: &[Vec<f64>], weights: &[f64], n_v: usize, temperature: f64) -> Sample {
+fn accumulate_r_sample(
+    slab_data: &[Vec<f64>],
+    weights: &[f64],
+    n_v: usize,
+    temperature: f64,
+) -> Sample {
     let mut r_sample = Sample::default();
     for data in slab_data {
         for vi in 0..n_v {
@@ -277,7 +289,10 @@ fn accumulate_r_sample(slab_data: &[Vec<f64>], weights: &[f64], n_v: usize, temp
 
 /// Split flat energies into per-omega slab chunks.
 fn energies_to_slabs(energies: &[f64], n_v: usize) -> Vec<Vec<f64>> {
-    energies.chunks_exact(n_v * n_v).map(|c| c.to_vec()).collect()
+    energies
+        .chunks_exact(n_v * n_v)
+        .map(|c| c.to_vec())
+        .collect()
 }
 
 /// GPU: batch all (omega, vi, vj) for this R into one dispatch.
@@ -331,20 +346,23 @@ fn compute_slab_serial<B: EnergyBackend + Sync>(
 
 /// CLI wrapper: runs compute_scan + file I/O + reporting.
 #[cfg(feature = "cli")]
-pub fn do_icoscan<B: EnergyBackend + Sync>(
-    config: &ScanConfig,
-    backend: &B,
-) -> anyhow::Result<()> {
+pub fn do_icoscan<B: EnergyBackend + Sync>(config: &ScanConfig, backend: &B) -> anyhow::Result<()> {
     let start_time = std::time::Instant::now();
     let mut result = compute_scan(&config.params, backend)?;
 
     let elapsed = start_time.elapsed();
-    info!("Finished computing energies in {:.2}s", elapsed.as_secs_f64());
+    info!(
+        "Finished computing energies in {:.2}s",
+        elapsed.as_secs_f64()
+    );
 
     if let Some(path) = &config.save_table {
         log::info!("Saving adaptive 6D table to {}", path.display());
-        let free_energies: Vec<f64> =
-            result.samples.iter().map(|(_, s)| s.free_energy()).collect();
+        let free_energies: Vec<f64> = result
+            .samples
+            .iter()
+            .map(|(_, s)| s.free_energy())
+            .collect();
         let electric_prefactor =
             faunus::interatomic::ELECTRIC_PREFACTOR / config.params.permittivity;
         let tail_terms = fit_tail_correction(
@@ -371,10 +389,7 @@ pub fn do_icoscan<B: EnergyBackend + Sync>(
         result.table.save(path)?;
     }
 
-    let masses = (
-        backend.ref_a().total_mass(),
-        backend.ref_b().total_mass(),
-    );
+    let masses = (backend.ref_a().total_mass(), backend.ref_b().total_mass());
     crate::report::report_pmf(&result.samples, &config.pmf_file, Some(masses))?;
     Ok(())
 }

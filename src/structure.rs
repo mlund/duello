@@ -39,10 +39,7 @@ pub struct Structure {
 
 impl Structure {
     /// Build a structure from parsed XYZ lines, centering at origin.
-    fn from_xyz_lines(
-        nxyz: Vec<(String, Vector3)>,
-        atomkinds: &[AtomKind],
-    ) -> Result<Self> {
+    fn from_xyz_lines(nxyz: Vec<(String, Vector3)>, atomkinds: &[AtomKind]) -> Result<Self> {
         let atom_ids = nxyz
             .iter()
             .map(|(name, _)| {
