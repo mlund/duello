@@ -17,6 +17,9 @@
     <a href="https://github.com/mlund/duello/actions/workflows/rust.yml">
         <img src="https://github.com/mlund/duello/actions/workflows/rust.yml/badge.svg">
     </a>
+    <a href="https://mlund.github.io/duello-web/">
+        <img src="https://img.shields.io/badge/Run_in_Browser!-WebGPU-orange?style=for-the-badge&logo=webassembly" alt="Run in Browser">
+    </a>
 </p>
 
 -----
