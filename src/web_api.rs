@@ -3,9 +3,13 @@
 //! Hides faunus internals so that external crates (duello-web) don't need
 //! to depend on faunus types directly.
 
-use crate::backend::{EnergyBackend, GpuBackend};
+use crate::backend::GpuBackend;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::backend::EnergyBackend;
 use crate::energy::{CoulombParams, PairMatrix, SplinedPotentials};
-use crate::icoscan::{compute_scan, compute_scan_async, ScanParams};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::icoscan::compute_scan;
+use crate::icoscan::{compute_scan_async, ScanParams};
 use crate::loader::{load_molecule_from_pdb_bytes, CgOptions, LoadedMoleculeInMemory};
 use crate::report::compute_pmf;
 use crate::VirialCoeff;
@@ -143,6 +147,7 @@ fn build_result(prep: &PreparedScan, pmf_result: crate::report::PmfResult) -> We
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn finish_scan(
     req: &WebScanRequest,
     prep: &PreparedScan,
