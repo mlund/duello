@@ -14,33 +14,56 @@
 
 use crate::Vector3;
 use crate::{Sample, VirialCoeff};
-use anyhow::{bail, Context};
-use nu_ansi_term::Color::{Red, Yellow};
-use rgb::RGB8;
-use std::{fs::File, io::Write, path::PathBuf};
-use textplots::{Chart, ColorPlot, Shape};
 
-/// Write PMF and mean energy as a function of mass center separation to file
-pub fn report_pmf(
-    samples: &[(Vector3, Sample)],
-    path: &PathBuf,
-    masses: Option<(f64, f64)>,
-) -> anyhow::Result<()> {
-    // File with F(R) and U(R)
-    let mut pmf_file = File::create(path).context("Cannot create pmf file")?;
+/// Computed PMF results for programmatic consumption.
+pub struct PmfResult {
+    pub pmf_data: Vec<(f32, f32)>,
+    pub mean_energy_data: Vec<(f32, f32)>,
+    pub virial: VirialCoeff,
+}
+
+/// Compute PMF/virial from samples without writing files.
+pub fn compute_pmf(samples: &[(Vector3, Sample)]) -> anyhow::Result<PmfResult> {
     let mut pmf_data = Vec::<(f32, f32)>::new();
     let mut mean_energy_data = Vec::<(f32, f32)>::new();
-    writeln!(pmf_file, "# R/Å F/kT U/kT C/R <exp(-u/kT)-1>")?;
-    samples.iter().for_each(|(r, sample)| {
+    for (r, sample) in samples {
         let mean_energy = sample.mean_energy() / sample.thermal_energy();
         let free_energy = sample.free_energy() / sample.thermal_energy();
-        let heat_capacity = sample.heat_capacity();
-
         if mean_energy.is_finite() && free_energy.is_finite() {
             pmf_data.push((r.norm() as f32, free_energy as f32));
             mean_energy_data.push((r.norm() as f32, mean_energy as f32));
         }
+    }
+    let virial = VirialCoeff::from_pmf(pmf_data.iter().cloned(), None)?;
+    Ok(PmfResult {
+        pmf_data,
+        mean_energy_data,
+        virial,
+    })
+}
 
+/// Write PMF and mean energy as a function of mass center separation to file
+#[cfg(feature = "cli")]
+pub fn report_pmf(
+    samples: &[(Vector3, Sample)],
+    path: &std::path::PathBuf,
+    masses: Option<(f64, f64)>,
+) -> anyhow::Result<()> {
+    use anyhow::{bail, Context};
+    use nu_ansi_term::Color::{Red, Yellow};
+    use rgb::RGB8;
+    use std::{fs::File, io::Write};
+    use textplots::{Chart, ColorPlot, Shape};
+
+    let result = compute_pmf(samples)?;
+
+    // File with F(R) and U(R)
+    let mut pmf_file = File::create(path).context("Cannot create pmf file")?;
+    writeln!(pmf_file, "# R/Å F/kT U/kT C/R <exp(-u/kT)-1>")?;
+    for (r, sample) in samples {
+        let mean_energy = sample.mean_energy() / sample.thermal_energy();
+        let free_energy = sample.free_energy() / sample.thermal_energy();
+        let heat_capacity = sample.heat_capacity();
         writeln!(
             pmf_file,
             "{:.2} {:.4} {:.4e} {:.4e} {:.4e}",
@@ -52,36 +75,39 @@ pub fn report_pmf(
         )
         .or_else(|e| bail!("Error writing to file: {}", e))
         .ok();
-    });
+    }
 
-    let virial = VirialCoeff::from_pmf(pmf_data.iter().cloned(), None)?;
-
-    // Let's also write B2 etc. to a YAML file
-    let mut json_file = File::create(path.with_extension("json")).expect("Cannot open JSON output");
-    writeln!(json_file, "{}", serde_json::to_string(&virial)?)?;
+    // Write B2 etc. to a JSON file
+    let mut json_file =
+        File::create(path.with_extension("json")).expect("Cannot open JSON output");
+    writeln!(
+        json_file,
+        "{}",
+        serde_json::to_string(&result.virial)?
+    )?;
 
     info!(
         "Second virial coefficient, 𝐵₂ = {:.2} Å³",
-        f64::from(virial.clone())
+        f64::from(result.virial.clone())
     );
     if let Some((mw1, mw2)) = masses {
         info!(
             "                              = {:.2e} mol⋅ml/g²",
-            virial.mol_ml_per_gram2(mw1, mw2)
+            result.virial.mol_ml_per_gram2(mw1, mw2)
         );
     }
 
     info!(
         "Reduced second virial coefficient, 𝐵₂ / 𝐵₂hs = {:.2} using σ = {:.2} Å",
-        virial.reduced(),
-        virial.sigma()
+        result.virial.reduced(),
+        result.virial.sigma()
     );
 
-    if let Some(kd) = virial.dissociation_const() {
+    if let Some(kd) = result.virial.dissociation_const() {
         info!(
             "Dissociation constant, 𝐾𝑑 = {:.2e} mol/l using σ = {:.2} Å",
             kd,
-            virial.sigma()
+            result.virial.sigma()
         );
     }
 
@@ -93,11 +119,11 @@ pub fn report_pmf(
     if log::max_level() >= log::Level::Info {
         const YELLOW: RGB8 = RGB8::new(255, 255, 0);
         const RED: RGB8 = RGB8::new(255, 0, 0);
-        let rmin = mean_energy_data.first().unwrap().0;
-        let rmax = mean_energy_data.last().unwrap().0;
+        let rmin = result.mean_energy_data.first().unwrap().0;
+        let rmax = result.mean_energy_data.last().unwrap().0;
         Chart::new(100, 50, rmin, rmax)
-            .linecolorplot(&Shape::Lines(&mean_energy_data), RED)
-            .linecolorplot(&Shape::Lines(&pmf_data), YELLOW)
+            .linecolorplot(&Shape::Lines(&result.mean_energy_data), RED)
+            .linecolorplot(&Shape::Lines(&result.pmf_data), YELLOW)
             .nice();
     };
     Ok(())

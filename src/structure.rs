@@ -38,15 +38,11 @@ pub struct Structure {
 }
 
 impl Structure {
-    /// Constructs a new structure from an XYZ file, centering the structure at the origin
-    pub fn from_xyz(path: &PathBuf, atomkinds: &[AtomKind]) -> Result<Self> {
-        let nxyz: Vec<(String, Vector3)> = std::fs::read_to_string(path)
-            .context(format!("Could not read XYZ file {}", path.display()))?
-            .lines()
-            .skip(2) // skip header
-            .map(from_xyz_line)
-            .try_collect()?;
-
+    /// Build a structure from parsed XYZ lines, centering at origin.
+    fn from_xyz_lines(
+        nxyz: Vec<(String, Vector3)>,
+        atomkinds: &[AtomKind],
+    ) -> Result<Self> {
         let atom_ids = nxyz
             .iter()
             .map(|(name, _)| {
@@ -94,9 +90,28 @@ impl Structure {
             atom_ids,
         };
         let center = structure.mass_center();
-        structure.translate(&-center); // translate to 0,0,0
+        structure.translate(&-center);
+        Ok(structure)
+    }
+
+    /// Constructs a new structure from an XYZ file, centering the structure at the origin
+    pub fn from_xyz(path: &PathBuf, atomkinds: &[AtomKind]) -> Result<Self> {
+        let content = std::fs::read_to_string(path)
+            .context(format!("Could not read XYZ file {}", path.display()))?;
+        let structure = Self::from_xyz_str(&content, atomkinds)?;
         debug!("Read {}: {}", path.display(), structure);
         Ok(structure)
+    }
+
+    /// Constructs a new structure from XYZ-format text, centering at origin.
+    pub fn from_xyz_str(xyz: &str, atomkinds: &[AtomKind]) -> Result<Self> {
+        let nxyz: Vec<(String, Vector3)> = xyz
+            .lines()
+            .skip(2)
+            .filter(|l| !l.trim().is_empty())
+            .map(from_xyz_line)
+            .try_collect()?;
+        Self::from_xyz_lines(nxyz, atomkinds)
     }
 
     /// Write to XYZ file

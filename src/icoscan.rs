@@ -14,24 +14,23 @@
 
 use crate::{
     backend::{EnergyBackend, PoseParams},
-    report::report_pmf,
     structure::Structure,
     Sample, Vector3,
 };
-use icotable::{AdaptiveBuilder, TableMetadata, TailCorrectionTerm};
-use indicatif::ProgressIterator;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use std::{f64::consts::PI, path::PathBuf};
+use icotable::{AdaptiveBuilder, Table6DAdaptive};
+use std::f64::consts::PI;
 
-/// Configuration for a 6D icoscan
-pub struct ScanConfig {
+#[cfg(feature = "cli")]
+use icotable::{TableMetadata, TailCorrectionTerm};
+#[cfg(feature = "cli")]
+use std::path::PathBuf;
+
+/// Configuration for a 6D icoscan (I/O-free parameters only)
+pub struct ScanParams {
     pub rmin: f64,
     pub rmax: f64,
     pub dr: f64,
     pub temperature: f64,
-    pub pmf_file: PathBuf,
-    /// Save binary 6D table for Faunus lookup (.gz suffix enables gzip compression)
-    pub save_table: Option<PathBuf>,
     /// Net charges of the two molecules in elementary charges.
     pub charges: [f64; 2],
     /// Dipole moment magnitudes in e·Å.
@@ -48,11 +47,361 @@ pub struct ScanConfig {
     pub homo_dimer: bool,
 }
 
+/// CLI-specific scan configuration extending ScanParams with file paths.
+#[cfg(feature = "cli")]
+pub struct ScanConfig {
+    pub params: ScanParams,
+    pub pmf_file: PathBuf,
+    /// Save binary 6D table for Faunus lookup (.gz suffix enables gzip compression)
+    pub save_table: Option<PathBuf>,
+}
+
+/// Results from a completed scan (no I/O).
+pub struct ScanResult {
+    pub samples: Vec<(Vector3, Sample)>,
+    pub distances: Vec<f64>,
+    pub table: Table6DAdaptive<f32>,
+}
+
+/// Run the 6D scan computation, returning raw results without I/O.
+pub fn compute_scan<B: EnergyBackend + Sync>(
+    params: &ScanParams,
+    backend: &B,
+) -> anyhow::Result<ScanResult> {
+    // Derive dihedral angle bin width from the finest icosphere mesh so that
+    // the ω resolution matches the angular vertex spacing.
+    let max_n_vertices = 10 * (params.max_n_div + 1).pow(2) + 2;
+    let omega_step = (4.0 * PI / max_n_vertices as f64).sqrt();
+
+    let thermal_energy =
+        physical_constants::MOLAR_GAS_CONSTANT * params.temperature * 1e-3; // kJ/mol
+    let beta = 1.0 / thermal_energy;
+
+    let mut builder = AdaptiveBuilder::new(
+        params.rmin,
+        params.rmax,
+        params.dr,
+        omega_step,
+        params.max_n_div,
+        params.gradient_threshold,
+        beta,
+    );
+
+    let n_r = builder.n_r();
+    let n_omega = builder.n_omega();
+    info!(
+        "Adaptive 6D table: {} R-bins x {} omega-bins, max {} vertices (n_div={})",
+        n_r, n_omega, max_n_vertices, params.max_n_div,
+    );
+
+    let mut partition_samples: Vec<Sample> = Vec::with_capacity(n_r);
+
+    #[cfg(feature = "cli")]
+    let r_iter = {
+        use indicatif::ProgressIterator;
+        (0..n_r).progress_count(n_r as u64)
+    };
+    #[cfg(not(feature = "cli"))]
+    let r_iter = 0..n_r;
+
+    for ri in r_iter {
+        let r = builder.r_value(ri);
+        let level = builder.current_level();
+        let n_v = builder.current_n_vertices();
+        let verts = builder.vertex_directions(level);
+
+        let slab_data: Vec<Vec<f64>> = if backend.prefers_batch() {
+            compute_slab_batch(backend, &builder, n_omega, n_v, r, verts)
+        } else {
+            compute_slab_serial(backend, &builder, n_omega, n_v, r, verts)
+        };
+
+        let weights = builder.vertex_weights(level);
+        let r_sample = accumulate_r_sample(&slab_data, weights, n_v, params.temperature);
+
+        for (oi, data) in slab_data.iter().enumerate() {
+            builder.set_slab(ri, oi, data);
+        }
+        let n_div_before = builder.current_n_div();
+        let max_grad = builder.finish_r_slice(ri);
+        let n_div_after = builder.current_n_div();
+
+        if n_div_after < n_div_before {
+            let new_n_v = builder.current_n_vertices();
+            log::debug!(
+                "R={:.1} Å: resolution reduced n_div {} → {} ({} vertices)",
+                r,
+                n_div_before,
+                n_div_after,
+                new_n_v
+            );
+        }
+        log::debug!(
+            "r={:.1} (n_div={}, max_grad={:.2e}): free_energy={:.4e}",
+            r,
+            n_div_after,
+            max_grad,
+            r_sample.free_energy()
+        );
+        partition_samples.push(r_sample);
+    }
+
+    let distances: Vec<f64> = (0..n_r).map(|ri| builder.r_value(ri)).collect();
+    let samples: Vec<(Vector3, Sample)> = distances
+        .iter()
+        .zip(partition_samples)
+        .map(|(r, s)| (Vector3::new(0.0, 0.0, *r), s))
+        .collect();
+
+    let table = builder.build();
+    log_resolution_summary(&table);
+
+    Ok(ScanResult {
+        samples,
+        distances,
+        table,
+    })
+}
+
+/// Async version of compute_scan for WASM where GPU readback must be async.
+///
+/// The optional `progress` callback is called with `(current_r, total_r)` after each R-bin.
+/// If `cancel` is set to true, the scan aborts early with an error.
+pub async fn compute_scan_async(
+    params: &ScanParams,
+    backend: &crate::backend::GpuBackend,
+    progress: Option<&dyn Fn(usize, usize)>,
+    cancel: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> anyhow::Result<ScanResult> {
+    let max_n_vertices = 10 * (params.max_n_div + 1).pow(2) + 2;
+    let omega_step = (4.0 * PI / max_n_vertices as f64).sqrt();
+    let thermal_energy =
+        physical_constants::MOLAR_GAS_CONSTANT * params.temperature * 1e-3;
+    let beta = 1.0 / thermal_energy;
+
+    let mut builder = AdaptiveBuilder::new(
+        params.rmin, params.rmax, params.dr, omega_step,
+        params.max_n_div, params.gradient_threshold, beta,
+    );
+
+    let n_r = builder.n_r();
+    let n_omega = builder.n_omega();
+    info!(
+        "Adaptive 6D table: {} R-bins x {} omega-bins, max {} vertices (n_div={})",
+        n_r, n_omega, max_n_vertices, params.max_n_div,
+    );
+
+    let mut partition_samples: Vec<Sample> = Vec::with_capacity(n_r);
+
+    for ri in 0..n_r {
+        let r = builder.r_value(ri);
+        let level = builder.current_level();
+        let n_v = builder.current_n_vertices();
+        let verts = builder.vertex_directions(level);
+
+        let poses = build_slab_poses(&builder, n_omega, n_v, r, verts);
+        let energies = backend.compute_energies_async(&poses).await;
+        let slab_data = energies_to_slabs(&energies, n_v);
+
+        let weights = builder.vertex_weights(level);
+        let r_sample = accumulate_r_sample(&slab_data, weights, n_v, params.temperature);
+
+        for (oi, data) in slab_data.iter().enumerate() {
+            builder.set_slab(ri, oi, data);
+        }
+        builder.finish_r_slice(ri);
+        partition_samples.push(r_sample);
+
+        if let Some(cb) = &progress {
+            cb(ri + 1, n_r);
+        }
+
+        if let Some(flag) = &cancel {
+            if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                anyhow::bail!("Scan cancelled");
+            }
+        }
+    }
+
+    let distances: Vec<f64> = (0..n_r).map(|ri| builder.r_value(ri)).collect();
+    let samples: Vec<(Vector3, Sample)> = distances
+        .iter()
+        .zip(partition_samples)
+        .map(|(r, s)| (Vector3::new(0.0, 0.0, *r), s))
+        .collect();
+
+    let table = builder.build();
+    log_resolution_summary(&table);
+
+    Ok(ScanResult { samples, distances, table })
+}
+
+/// Build all poses for one R-bin across all omega and vertex pairs.
+fn build_slab_poses(
+    builder: &AdaptiveBuilder,
+    n_omega: usize,
+    n_v: usize,
+    r: f64,
+    verts: &[[f64; 3]],
+) -> Vec<PoseParams> {
+    let mut poses = Vec::with_capacity(n_omega * n_v * n_v);
+    for oi in 0..n_omega {
+        let omega = builder.omega_value(oi);
+        for vi in 0..n_v {
+            for vj in 0..n_v {
+                poses.push(PoseParams {
+                    r,
+                    omega,
+                    vertex_i: Vector3::from(verts[vi]),
+                    vertex_j: Vector3::from(verts[vj]),
+                });
+            }
+        }
+    }
+    poses
+}
+
+/// Accumulate partition function sample from slab data using Voronoi quadrature weights.
+fn accumulate_r_sample(slab_data: &[Vec<f64>], weights: &[f64], n_v: usize, temperature: f64) -> Sample {
+    let mut r_sample = Sample::default();
+    for data in slab_data {
+        for vi in 0..n_v {
+            for vj in 0..n_v {
+                let degeneracy = weights[vi] * weights[vj];
+                r_sample += Sample::new(data[vi * n_v + vj], temperature, degeneracy);
+            }
+        }
+    }
+    r_sample
+}
+
+/// Split flat energies into per-omega slab chunks.
+fn energies_to_slabs(energies: &[f64], n_v: usize) -> Vec<Vec<f64>> {
+    energies.chunks_exact(n_v * n_v).map(|c| c.to_vec()).collect()
+}
+
+/// GPU: batch all (omega, vi, vj) for this R into one dispatch.
+fn compute_slab_batch<B: EnergyBackend>(
+    backend: &B,
+    builder: &AdaptiveBuilder,
+    n_omega: usize,
+    n_v: usize,
+    r: f64,
+    verts: &[[f64; 3]],
+) -> Vec<Vec<f64>> {
+    let poses = build_slab_poses(builder, n_omega, n_v, r, verts);
+    energies_to_slabs(&backend.compute_energies(&poses), n_v)
+}
+
+/// CPU: parallelize over omega slabs (serial fallback without rayon).
+fn compute_slab_serial<B: EnergyBackend + Sync>(
+    backend: &B,
+    builder: &AdaptiveBuilder,
+    n_omega: usize,
+    n_v: usize,
+    r: f64,
+    verts: &[[f64; 3]],
+) -> Vec<Vec<f64>> {
+    let compute_one = |oi: usize| -> Vec<f64> {
+        let omega = builder.omega_value(oi);
+        let mut data = vec![0.0; n_v * n_v];
+        for vi in 0..n_v {
+            for vj in 0..n_v {
+                data[vi * n_v + vj] = backend.compute_energy(&PoseParams {
+                    r,
+                    omega,
+                    vertex_i: Vector3::from(verts[vi]),
+                    vertex_j: Vector3::from(verts[vj]),
+                });
+            }
+        }
+        data
+    };
+
+    #[cfg(feature = "cli")]
+    {
+        use rayon::iter::{IntoParallelIterator, ParallelIterator};
+        (0..n_omega).into_par_iter().map(compute_one).collect()
+    }
+    #[cfg(not(feature = "cli"))]
+    {
+        (0..n_omega).map(compute_one).collect()
+    }
+}
+
+/// CLI wrapper: runs compute_scan + file I/O + reporting.
+#[cfg(feature = "cli")]
+pub fn do_icoscan<B: EnergyBackend + Sync>(
+    config: &ScanConfig,
+    backend: &B,
+) -> anyhow::Result<()> {
+    let start_time = std::time::Instant::now();
+    let mut result = compute_scan(&config.params, backend)?;
+
+    let elapsed = start_time.elapsed();
+    info!("Finished computing energies in {:.2}s", elapsed.as_secs_f64());
+
+    if let Some(path) = &config.save_table {
+        log::info!("Saving adaptive 6D table to {}", path.display());
+        let free_energies: Vec<f64> =
+            result.samples.iter().map(|(_, s)| s.free_energy()).collect();
+        let electric_prefactor =
+            faunus::interatomic::ELECTRIC_PREFACTOR / config.params.permittivity;
+        let tail_terms = fit_tail_correction(
+            &result.distances,
+            &free_energies,
+            config.params.charges,
+            config.params.dipole_moments,
+            config.params.kappa,
+            electric_prefactor,
+        );
+        let point_group = if config.params.homo_dimer {
+            icotable::PointGroup::Exchange
+        } else {
+            icotable::PointGroup::Asymmetric
+        };
+        result.table.metadata = Some(TableMetadata {
+            tail_terms,
+            charges: Some(config.params.charges),
+            dipole_moments: Some(config.params.dipole_moments),
+            temperature: Some(config.params.temperature),
+            electric_prefactor: Some(electric_prefactor),
+            point_group,
+        });
+        result.table.save(path)?;
+    }
+
+    let masses = (
+        backend.ref_a().total_mass(),
+        backend.ref_b().total_mass(),
+    );
+    crate::report::report_pmf(&result.samples, &config.pmf_file, Some(masses))?;
+    Ok(())
+}
+
+/// Orient two reference structures to a given 6D point.
+///
+/// Structure A is kept at origin; structure B is rotated and translated.
+pub(crate) fn orient_structures(
+    r: f64,
+    omega: f64,
+    vertex_i: &Vector3,
+    vertex_j: &Vector3,
+    ref_a: &Structure,
+    ref_b: &Structure,
+) -> (Structure, Structure) {
+    let (_, q_b, separation) = icotable::orient(r, omega, vertex_i, vertex_j);
+    let mut mol_b = ref_b.clone();
+    mol_b.transform(|pos| q_b.transform_vector(&pos) + separation);
+    (ref_a.clone(), mol_b)
+}
+
 /// Build tail correction from the angularly averaged free energy at outer radial bins.
 ///
 /// The ion-ion (Yukawa) coefficient is the charge product `z₁·z₂`; the Coulomb
-/// prefactor `e²/(4πε₀εᵣ)` is stored separately in [`TableMetadata::electric_prefactor`].
+/// prefactor `e²/(4��ε₀εᵣ)` is stored separately in [`TableMetadata::electric_prefactor`].
 /// Higher-order terms are fitted from the residual using log-space linear regression.
+#[cfg(feature = "cli")]
 fn fit_tail_correction(
     distances: &[f64],
     free_energies: &[f64],
@@ -114,6 +463,7 @@ fn fit_tail_correction(
 ///
 /// Linearizes `ln|u(R)·R^power| = ln|C| - κ·R` and fits slope/intercept.
 /// Only uses bins with the majority sign to avoid fitting across zero crossings.
+#[cfg(feature = "cli")]
 fn fit_screened_term(
     distances: &[f64],
     energies: &[f64],
@@ -181,197 +531,6 @@ fn fit_screened_term(
         kappa,
         power,
     })
-}
-
-/// Orient two reference structures to a given 6D point.
-///
-/// Structure A is kept at origin; structure B is rotated and translated.
-pub(crate) fn orient_structures(
-    r: f64,
-    omega: f64,
-    vertex_i: &Vector3,
-    vertex_j: &Vector3,
-    ref_a: &Structure,
-    ref_b: &Structure,
-) -> (Structure, Structure) {
-    let (_, q_b, separation) = icotable::orient(r, omega, vertex_i, vertex_j);
-    let mut mol_b = ref_b.clone();
-    mol_b.transform(|pos| q_b.transform_vector(&pos) + separation);
-    (ref_a.clone(), mol_b)
-}
-
-pub fn do_icoscan<B: EnergyBackend + Sync>(config: &ScanConfig, backend: &B) -> anyhow::Result<()> {
-    let ref_a = backend.ref_a();
-    let ref_b = backend.ref_b();
-
-    // Derive dihedral angle bin width from the finest icosphere mesh so that
-    // the ω resolution matches the angular vertex spacing. Using integer bin
-    // count (via AdaptiveBuilder) avoids the old arange() off-by-one that
-    // could place a sample at ω ≈ 2π, duplicating the ω = 0 bin.
-    let max_n_vertices = 10 * (config.max_n_div + 1).pow(2) + 2;
-    let omega_step = (4.0 * PI / max_n_vertices as f64).sqrt();
-
-    let thermal_energy = physical_constants::MOLAR_GAS_CONSTANT * config.temperature * 1e-3; // kJ/mol
-    let beta = 1.0 / thermal_energy;
-
-    let mut builder = AdaptiveBuilder::new(
-        config.rmin,
-        config.rmax,
-        config.dr,
-        omega_step,
-        config.max_n_div,
-        config.gradient_threshold,
-        beta,
-    );
-
-    let n_r = builder.n_r();
-    let n_omega = builder.n_omega();
-    info!(
-        "Adaptive 6D table: {} R-bins x {} omega-bins, max {} vertices (n_div={})",
-        n_r, n_omega, max_n_vertices, config.max_n_div,
-    );
-
-    let start_time = std::time::Instant::now();
-    let mut partition_samples: Vec<Sample> = Vec::with_capacity(n_r);
-
-    for ri in (0..n_r).progress_count(n_r as u64) {
-        let r = builder.r_value(ri);
-        let level = builder.current_level();
-        let n_v = builder.current_n_vertices();
-        let verts = builder.vertex_directions(level).to_vec();
-
-        // Compute all omega slabs for this R
-        let slab_data: Vec<Vec<f64>> = if backend.prefers_batch() {
-            // GPU: batch all (omega, vi, vj) for this R into one dispatch
-            let mut poses = Vec::with_capacity(n_omega * n_v * n_v);
-            for oi in 0..n_omega {
-                let omega = builder.omega_value(oi);
-                for vi in 0..n_v {
-                    for vj in 0..n_v {
-                        poses.push(PoseParams {
-                            r,
-                            omega,
-                            vertex_i: Vector3::from(verts[vi]),
-                            vertex_j: Vector3::from(verts[vj]),
-                        });
-                    }
-                }
-            }
-            let energies = backend.compute_energies(&poses);
-            energies
-                .chunks_exact(n_v * n_v)
-                .map(|c| c.to_vec())
-                .collect()
-        } else {
-            // CPU: parallelize over omega slabs
-            (0..n_omega)
-                .into_par_iter()
-                .map(|oi| {
-                    let omega = builder.omega_value(oi);
-                    let mut data = vec![0.0; n_v * n_v];
-                    for vi in 0..n_v {
-                        for vj in 0..n_v {
-                            data[vi * n_v + vj] = backend.compute_energy(&PoseParams {
-                                r,
-                                omega,
-                                vertex_i: Vector3::from(verts[vi]),
-                                vertex_j: Vector3::from(verts[vj]),
-                            });
-                        }
-                    }
-                    data
-                })
-                .collect()
-        };
-
-        // Accumulate partition function with Voronoi quadrature weights
-        // that correct for unequal solid angles at pentagonal vs hexagonal
-        // icosphere vertices (matters for B₂).
-        let weights = builder.vertex_weights(level);
-        let mut r_sample = Sample::default();
-        for data in &slab_data {
-            for vi in 0..n_v {
-                for vj in 0..n_v {
-                    let degeneracy = weights[vi] * weights[vj];
-                    r_sample += Sample::new(data[vi * n_v + vj], config.temperature, degeneracy);
-                }
-            }
-        }
-        // Feed slabs to builder (borrows mutably, so separate from weights borrow)
-        for (oi, data) in slab_data.iter().enumerate() {
-            builder.set_slab(ri, oi, data);
-        }
-        let n_div_before = builder.current_n_div();
-        let max_grad = builder.finish_r_slice(ri);
-        let n_div_after = builder.current_n_div();
-
-        if n_div_after < n_div_before {
-            let new_n_v = builder.current_n_vertices();
-            log::debug!(
-                "R={:.1} Å: resolution reduced n_div {} → {} ({} vertices)",
-                r,
-                n_div_before,
-                n_div_after,
-                new_n_v
-            );
-        }
-        log::debug!(
-            "r={:.1} (n_div={}, max_grad={:.2e}): free_energy={:.4e}",
-            r,
-            n_div_after,
-            max_grad,
-            r_sample.free_energy()
-        );
-        partition_samples.push(r_sample);
-    }
-
-    let elapsed = start_time.elapsed();
-    info!(
-        "Finished computing energies in {:.2}s",
-        elapsed.as_secs_f64(),
-    );
-
-    let distances: Vec<f64> = (0..n_r).map(|ri| builder.r_value(ri)).collect();
-    let samples: Vec<(Vector3, Sample)> = distances
-        .iter()
-        .zip(partition_samples)
-        .map(|(r, s)| (Vector3::new(0.0, 0.0, *r), s))
-        .collect();
-
-    // Build and log per-R resolution summary
-    let mut table = builder.build();
-    log_resolution_summary(&table);
-    if let Some(path) = &config.save_table {
-        log::info!("Saving adaptive 6D table to {}", path.display());
-        let free_energies: Vec<f64> = samples.iter().map(|(_, s)| s.free_energy()).collect();
-        let electric_prefactor = faunus::interatomic::ELECTRIC_PREFACTOR / config.permittivity;
-        let tail_terms = fit_tail_correction(
-            &distances,
-            &free_energies,
-            config.charges,
-            config.dipole_moments,
-            config.kappa,
-            electric_prefactor,
-        );
-        let point_group = if config.homo_dimer {
-            icotable::PointGroup::Exchange
-        } else {
-            icotable::PointGroup::Asymmetric
-        };
-        table.metadata = Some(TableMetadata {
-            tail_terms,
-            charges: Some(config.charges),
-            dipole_moments: Some(config.dipole_moments),
-            temperature: Some(config.temperature),
-            electric_prefactor: Some(electric_prefactor),
-            point_group,
-        });
-        table.save(path)?;
-    }
-
-    let masses = (ref_a.total_mass(), ref_b.total_mass());
-    report_pmf(&samples, &config.pmf_file, Some(masses))?;
-    Ok(())
 }
 
 /// Log a per-R summary of slab resolution tiers.

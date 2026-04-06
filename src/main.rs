@@ -474,19 +474,21 @@ fn do_scan(cmd: &Commands) -> Result<()> {
     }
 
     let scan_config = icoscan::ScanConfig {
-        rmin: *rmin,
-        rmax: *rmax,
-        dr: *dr,
-        temperature: *temperature,
+        params: icoscan::ScanParams {
+            rmin: *rmin,
+            rmax: *rmax,
+            dr: *dr,
+            temperature: *temperature,
+            charges: [ref_a.net_charge(), ref_b.net_charge()],
+            dipole_moments: [ref_a.dipole_moment().norm(), ref_b.dipole_moment().norm()],
+            kappa: medium.debye_length().map(|dl| 1.0 / dl),
+            permittivity: medium.permittivity(),
+            max_n_div: *max_ndiv,
+            gradient_threshold: *gradient_threshold,
+            homo_dimer,
+        },
         pmf_file: pmf_file.clone(),
         save_table: savetable.clone(),
-        charges: [ref_a.net_charge(), ref_b.net_charge()],
-        dipole_moments: [ref_a.dipole_moment().norm(), ref_b.dipole_moment().norm()],
-        kappa: medium.debye_length().map(|dl| 1.0 / dl),
-        permittivity: medium.permittivity(),
-        max_n_div: *max_ndiv,
-        gradient_threshold: *gradient_threshold,
-        homo_dimer,
     };
 
     // energy_cap only applies to SR-only splines (GPU/SIMD split path).

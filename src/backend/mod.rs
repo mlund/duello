@@ -45,7 +45,7 @@ pub struct PoseParams {
 /// Implementations can use different computational strategies:
 /// - `GpuBackend`: Uses wgpu compute shaders
 /// - `SimdBackend`: Uses SIMD vectorization (AVX2 on x86_64, NEON on aarch64)
-pub trait EnergyBackend: Send + Sync {
+pub trait EnergyBackend {
     /// Compute energy for a single pose.
     ///
     /// Returns the interaction energy in kJ/mol between the two molecules

@@ -11,28 +11,32 @@ license = "Apache-2.0"
 categories = ["science"]
 keywords = ["pairwise_interaction", "bioinformatics", "virial_coefficient", "dissociation_constant"]
 
+[features]
+default = ["cli"]
+cli = ["rayon", "indicatif", "clap", "pretty_env_logger", "textplots", "nu-ansi-term"]
+
 [dependencies]
 anyhow = "1.0"
 approx = "0.5"
-clap = { version = "4", features = ["derive"], default-features = false }
+clap = { version = "4", features = ["derive"], default-features = false, optional = true }
 itertools = {version = "0.14"}
 itertools-num = {version = "0.1", default-features = false}
 nalgebra = {version = "0.34.1", default-features = false}
-rayon = "1.10"
+rayon = { version = "1.10", optional = true }
 faunus = { git = "https://github.com/mlund/faunus-rs.git", default-features = false }
 cgkitten = { version = "0.2", default-features = false }
 serde_yml = "0.0.12"
 serde = { version = "1.0", features = ["derive"], default-features = false }
 semver = { version = "1.0", features = ["serde"], default-features = false }
-pretty_env_logger = {version = "0.5", default-features = false}
+pretty_env_logger = { version = "0.5", default-features = false, optional = true }
 log = "0.4"
 average = "0.16"
 iter_num_tools = "0.7"
-indicatif = {version = "0.18", features = ["rayon"], default-features = false }
+indicatif = { version = "0.18", features = ["rayon"], default-features = false, optional = true }
 flate2 = {version = "1.0", default-features = false}
-textplots = "0.8"
+textplots = { version = "0.8", optional = true }
 rgb = "0.8"
-nu-ansi-term = "0.50"
+nu-ansi-term = { version = "0.50", optional = true }
 icotable = { git = "https://github.com/mlund/icotable.git" }
 num-traits = "0.2"
 rand = {version = "0.8", default-features = false}
@@ -42,10 +46,15 @@ serde_json = {version = "1.0.137", default-features = false}
 molly = "0.5"
 glam = "0.30.10"
 wide = "0.7"
-wgpu = "23"
+wgpu = "29"
+futures-channel = "0.3"
 pollster = "0.4"
 bytemuck = { version = "1.21", features = ["derive"] }
 nalgebra-sparse = "0.11"
+
+[[bin]]
+name = "duello"
+required-features = ["cli"]
 
 [dev-dependencies]
 lazy_static = "1.5"

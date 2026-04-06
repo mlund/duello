@@ -38,6 +38,7 @@ fn needs_polarization(alpha1: f64, charge1: f64, alpha2: f64, charge2: f64) -> b
 /// Splining the combined SR+Coulomb potential causes polynomial ringing when the
 /// SR hard cutoff (~20Å) falls inside the spline grid. Evaluating Coulomb/Yukawa
 /// analytically as `prefactor * exp(-kappa * r) / r` avoids this entirely.
+#[derive(Clone)]
 pub struct CoulombParams {
     /// Per-pair prefactors in kJ/mol·Å, indexed as `[id_a * n_types + id_b]`.
     /// Each entry = `ELECTRIC_PREFACTOR * z_i * z_j / ε_r`.

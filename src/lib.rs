@@ -13,6 +13,7 @@
 // limitations under the license.
 
 pub mod backend;
+#[cfg(feature = "cli")]
 pub mod diffusion;
 pub mod energy;
 pub mod icoscan;
@@ -21,6 +22,7 @@ pub mod report;
 mod sample;
 pub mod structure;
 mod virial;
+pub mod web_api;
 
 pub use sample::Sample;
 pub use virial::VirialCoeff;
