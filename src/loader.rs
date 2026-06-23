@@ -149,6 +149,7 @@ fn load_from_structure(mol_path: &Path, cg_opts: &CgOptions) -> Result<LoadedMol
 }
 
 /// Result of in-memory molecule loading (no file paths).
+#[derive(Clone)]
 pub struct LoadedMoleculeInMemory {
     pub structure: Structure,
     pub topology: Topology,
