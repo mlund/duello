@@ -417,18 +417,21 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         info!("Homo-dimer detected (same input files); reusing single coarse-graining");
     }
 
-    // Reuse A's structure for B in a homodimer so both bodies share one titration
-    // outcome. With --cg multi the titration is stochastic, so a second independent
-    // coarse-graining can disagree on atom-type counts and overflow the pair table
-    // (gh #35). This also halves the coarse-graining work.
-    let ref_b = if homo_dimer {
-        loaded_a.structure.clone()
+    // Resolve molecule B and the atom-kind namespace shared by both bodies (gh #35): a
+    // homodimer reuses A's single coarse-graining; a hetero-dimer is coarse-grained
+    // independently, so its ids are remapped into a table combined from both molecules.
+    let loaded_b = if homo_dimer {
+        None
     } else {
-        loader::load_molecule(mol2, top_file.as_deref(), &cg_opts)?.structure
+        Some(loader::load_molecule(mol2, top_file.as_deref(), &cg_opts)?)
     };
+    let (ref_b, topology) = loader::prepare_pair(
+        &loaded_a.topology,
+        &loaded_a.structure,
+        loaded_b.as_ref().map(|b| (&b.topology, &b.structure)),
+    );
 
     let top_path = &loaded_a.topology_path;
-    let topology = loaded_a.topology;
 
     // Either use fixed dielectric constant or calculate it from the medium
     let medium = fixed_dielectric.map_or_else(
