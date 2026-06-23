@@ -71,8 +71,18 @@ fn prepare_scan(req: &WebScanRequest) -> anyhow::Result<PreparedScan> {
 
     log::info!("Coarse-graining molecule 1...");
     let mol1 = load_molecule_from_pdb_bytes(&req.mol1_pdb, &cg_opts)?;
-    log::info!("Coarse-graining molecule 2...");
-    let mol2 = load_molecule_from_pdb_bytes(&req.mol2_pdb, &cg_opts)?;
+
+    // Reuse molecule 1 for a homodimer so both bodies share one titration outcome.
+    // With multi-bead CG the titration is stochastic, so a second independent
+    // coarse-graining can disagree on atom-type counts and overflow the pair table
+    // (gh #35).
+    let mol2 = if req.homo_dimer {
+        log::info!("Homo-dimer: reusing molecule 1 coarse-graining for molecule 2");
+        mol1.clone()
+    } else {
+        log::info!("Coarse-graining molecule 2...");
+        load_molecule_from_pdb_bytes(&req.mol2_pdb, &cg_opts)?
+    };
 
     let medium = Medium::salt_water(req.temperature, Salt::SodiumChloride, req.molarity);
 

@@ -411,7 +411,22 @@ fn do_scan(cmd: &Commands) -> Result<()> {
 
     let cg_opts = cg_options_from_args(*ph, model, cg, scale_hydrophobic, chain);
     let loaded_a = loader::load_molecule(mol1, top_file.as_deref(), &cg_opts)?;
-    let loaded_b = loader::load_molecule(mol2, top_file.as_deref(), &cg_opts)?;
+
+    let homo_dimer = mol1 == mol2;
+    if homo_dimer {
+        info!("Homo-dimer detected (same input files); reusing single coarse-graining");
+    }
+
+    // Reuse A's structure for B in a homodimer so both bodies share one titration
+    // outcome. With --cg multi the titration is stochastic, so a second independent
+    // coarse-graining can disagree on atom-type counts and overflow the pair table
+    // (gh #35). This also halves the coarse-graining work.
+    let ref_b = if homo_dimer {
+        loaded_a.structure.clone()
+    } else {
+        loader::load_molecule(mol2, top_file.as_deref(), &cg_opts)?.structure
+    };
+
     let top_path = &loaded_a.topology_path;
     let topology = loaded_a.topology;
 
@@ -430,7 +445,6 @@ fn do_scan(cmd: &Commands) -> Result<()> {
     let nonbonded = NonbondedMatrix::from_file(top_path, &topology, Some(medium.clone()))?;
 
     let ref_a = loaded_a.structure;
-    let ref_b = loaded_b.structure;
 
     info!("{medium}");
     info!(
@@ -467,11 +481,6 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         }
         other => *other,
     };
-
-    let homo_dimer = mol1 == mol2;
-    if homo_dimer {
-        info!("Homo-dimer detected (same input files)");
-    }
 
     let scan_config = icoscan::ScanConfig {
         params: icoscan::ScanParams {
