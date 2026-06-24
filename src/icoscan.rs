@@ -64,20 +64,17 @@ pub struct ScanResult {
     pub table: Table6DAdaptive<f32>,
 }
 
-/// Run the 6D scan computation, returning raw results without I/O.
-pub fn compute_scan<B: EnergyBackend + Sync>(
-    params: &ScanParams,
-    backend: &B,
-) -> anyhow::Result<ScanResult> {
+/// Build the adaptive 6D table builder for `params` and log its resolution.
+/// Shared by the sync ([`compute_scan`]) and async ([`compute_scan_async`])
+/// entry points so the scheme-aware ω/vertex derivation stays single-sourced.
+fn make_6d_builder(params: &ScanParams) -> AdaptiveBuilder {
     // Derive dihedral angle bin width from the finest icosphere mesh so that
     // the ω resolution matches the angular vertex spacing.
     let max_n_vertices = params.subdivision.n_vertices(params.max_n_div);
     let omega_step = params.subdivision.angular_resolution(params.max_n_div);
+    let beta = 1.0 / (physical_constants::MOLAR_GAS_CONSTANT * params.temperature * 1e-3); // 1/(kJ/mol)
 
-    let thermal_energy = physical_constants::MOLAR_GAS_CONSTANT * params.temperature * 1e-3; // kJ/mol
-    let beta = 1.0 / thermal_energy;
-
-    let mut builder = AdaptiveBuilder::with_subdivision(
+    let builder = AdaptiveBuilder::with_subdivision(
         params.subdivision,
         params.rmin,
         params.rmax,
@@ -87,13 +84,25 @@ pub fn compute_scan<B: EnergyBackend + Sync>(
         params.gradient_threshold,
         beta,
     );
-
-    let n_r = builder.n_r();
-    let n_omega = builder.n_omega();
     info!(
         "Adaptive 6D table ({:?}): {} R-bins x {} omega-bins, max {} vertices (n_div={})",
-        params.subdivision, n_r, n_omega, max_n_vertices, params.max_n_div,
+        params.subdivision,
+        builder.n_r(),
+        builder.n_omega(),
+        max_n_vertices,
+        params.max_n_div,
     );
+    builder
+}
+
+/// Run the 6D scan computation, returning raw results without I/O.
+pub fn compute_scan<B: EnergyBackend + Sync>(
+    params: &ScanParams,
+    backend: &B,
+) -> anyhow::Result<ScanResult> {
+    let mut builder = make_6d_builder(params);
+    let n_r = builder.n_r();
+    let n_omega = builder.n_omega();
 
     let mut partition_samples: Vec<Sample> = Vec::with_capacity(n_r);
 
@@ -174,28 +183,9 @@ pub async fn compute_scan_async(
     progress: Option<&dyn Fn(usize, usize)>,
     cancel: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> anyhow::Result<ScanResult> {
-    let max_n_vertices = params.subdivision.n_vertices(params.max_n_div);
-    let omega_step = params.subdivision.angular_resolution(params.max_n_div);
-    let thermal_energy = physical_constants::MOLAR_GAS_CONSTANT * params.temperature * 1e-3;
-    let beta = 1.0 / thermal_energy;
-
-    let mut builder = AdaptiveBuilder::with_subdivision(
-        params.subdivision,
-        params.rmin,
-        params.rmax,
-        params.dr,
-        omega_step,
-        params.max_n_div,
-        params.gradient_threshold,
-        beta,
-    );
-
+    let mut builder = make_6d_builder(params);
     let n_r = builder.n_r();
     let n_omega = builder.n_omega();
-    info!(
-        "Adaptive 6D table ({:?}): {} R-bins x {} omega-bins, max {} vertices (n_div={})",
-        params.subdivision, n_r, n_omega, max_n_vertices, params.max_n_div,
-    );
 
     let mut partition_samples: Vec<Sample> = Vec::with_capacity(n_r);
 
