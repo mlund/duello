@@ -127,6 +127,7 @@ fn build_scan_params(req: &WebScanRequest, prep: &PreparedScan) -> ScanParams {
         permittivity: prep.medium.permittivity(),
         max_n_div: req.max_ndiv,
         gradient_threshold: req.gradient_threshold,
+        subdivision: icotable::Subdivision::default(),
         homo_dimer: req.homo_dimer,
     }
 }

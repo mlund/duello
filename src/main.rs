@@ -161,6 +161,25 @@ pub enum Backend {
     Simd,
 }
 
+/// Angular subdivision/lookup scheme for the icosphere meshes.
+#[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
+pub enum LocatorArg {
+    /// Geodesic icosphere (near-uniform vertices), located by spatial search.
+    #[default]
+    Geodesic,
+    /// Regular planar lattice, located in closed form (no search).
+    Lattice,
+}
+
+impl From<LocatorArg> for icotable::Subdivision {
+    fn from(arg: LocatorArg) -> Self {
+        match arg {
+            LocatorArg::Geodesic => icotable::Subdivision::Geodesic,
+            LocatorArg::Lattice => icotable::Subdivision::Lattice,
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
@@ -229,6 +248,9 @@ enum Commands {
         /// Boltzmann-weight gradient threshold for adaptive resolution (1/rad)
         #[arg(long, default_value = "0.5")]
         gradient_threshold: f64,
+        /// Angular lookup scheme: geodesic (search) or lattice (closed-form)
+        #[arg(long, value_enum, default_value = "geodesic")]
+        locator: LocatorArg,
         /// Minimum mass center distance
         #[arg(long)]
         rmin: f64,
@@ -317,6 +339,9 @@ enum Commands {
         /// Boltzmann-weight gradient threshold for adaptive resolution (1/rad)
         #[arg(long, default_value = "0.5")]
         gradient_threshold: f64,
+        /// Angular lookup scheme: geodesic (search) or lattice (closed-form)
+        #[arg(long, value_enum, default_value = "geodesic")]
+        locator: LocatorArg,
         /// Compute backend
         #[arg(long, value_enum, default_value = "auto")]
         backend: Backend,
@@ -395,6 +420,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         savetable,
         max_ndiv,
         gradient_threshold,
+        locator,
         backend: backend_type,
         grid,
         sr_cutoff,
@@ -494,6 +520,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
             permittivity: medium.permittivity(),
             max_n_div: *max_ndiv,
             gradient_threshold: *gradient_threshold,
+            subdivision: (*locator).into(),
             homo_dimer,
         },
         pmf_file: pmf_file.clone(),
@@ -555,6 +582,7 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
         atom,
         max_ndiv,
         gradient_threshold,
+        locator,
         rmin,
         rmax,
         dr,
@@ -601,13 +629,21 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
     let thermal_energy = physical_constants::MOLAR_GAS_CONSTANT * temperature * 1e-3;
     let beta = 1.0 / thermal_energy;
 
-    let mut builder =
-        Adaptive3DBuilder::new(*rmin, *rmax, *dr, *max_ndiv, *gradient_threshold, beta);
+    let subdivision: icotable::Subdivision = (*locator).into();
+    let mut builder = Adaptive3DBuilder::with_subdivision(
+        subdivision,
+        *rmin,
+        *rmax,
+        *dr,
+        *max_ndiv,
+        *gradient_threshold,
+        beta,
+    );
 
     let n_r = builder.n_r();
-    let max_vertices = 10 * (*max_ndiv + 1).pow(2) + 2;
+    let max_vertices = subdivision.n_vertices(*max_ndiv);
     info!(
-        "Adaptive 3D: {} R-bins, max {} vertices (n_div={})",
+        "Adaptive 3D ({subdivision:?}): {} R-bins, max {} vertices (n_div={})",
         n_r, max_vertices, max_ndiv
     );
     info!("COM range: [{rmin:.1}, {rmax:.1}) in {dr:.1} Å steps");
