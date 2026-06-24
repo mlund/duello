@@ -25,7 +25,7 @@
 //!    symmetrized generator, computed via sparse Lanczos iteration.
 
 use anyhow::Result;
-use icotable::adaptive::MeshLevel;
+use icotable::AngularMesh;
 use indicatif::ParallelProgressIterator;
 use nalgebra::{DMatrix, DVector, SymmetricEigen};
 use nalgebra_sparse::{CooMatrix, CscMatrix};
@@ -83,15 +83,15 @@ fn for_each_neighbor(
     vi: usize,
     vj: usize,
     oi: usize,
-    level: &MeshLevel,
+    level: &impl AngularMesh,
     n_v: usize,
     n_omega: usize,
     mut f: impl FnMut(usize),
 ) {
-    for &ni in &level.neighbors[vi] {
+    for &ni in level.neighbors(vi) {
         f(state_index(ni as usize, vj, oi, n_v, n_omega));
     }
-    for &nj in &level.neighbors[vj] {
+    for &nj in level.neighbors(vj) {
         f(state_index(vi, nj as usize, oi, n_v, n_omega));
     }
     let oi_prev = if oi == 0 { n_omega - 1 } else { oi - 1 };
@@ -108,7 +108,7 @@ fn for_each_neighbor(
 fn coordinate_projection(
     eigvec: &[f64],
     active: &ActiveStates,
-    level: &MeshLevel,
+    level: &impl AngularMesh,
 ) -> (f64, f64, f64) {
     let n_v = active.n_v;
     let n_omega = active.n_omega;
@@ -122,14 +122,14 @@ fn coordinate_projection(
     for (ci, &(vi, vj, oi)) in active.coords.iter().enumerate() {
         let psi_i = eigvec[ci];
 
-        for &ni in &level.neighbors[vi] {
+        for &ni in level.neighbors(vi) {
             let cj = active.compact[state_index(ni as usize, vj, oi, n_v, n_omega)];
             if cj != usize::MAX {
                 var_a += (psi_i - eigvec[cj]).powi(2);
                 edges_a += 1;
             }
         }
-        for &nj in &level.neighbors[vj] {
+        for &nj in level.neighbors(vj) {
             let cj = active.compact[state_index(vi, nj as usize, oi, n_v, n_omega)];
             if cj != usize::MAX {
                 var_b += (psi_i - eigvec[cj]).powi(2);
@@ -243,10 +243,10 @@ impl ActiveStates {
 /// Build a sparse CscMatrix generator over the compact active state space.
 fn build_generator(
     active: &ActiveStates,
-    level: &MeshLevel,
+    level: &impl AngularMesh,
     potential: Option<(&[f64], f64)>,
 ) -> CscMatrix<f64> {
-    let n_v = level.n_vertices;
+    let n_v = level.len();
     let n_omega = active.n_omega;
     let n = active.n_active;
 
@@ -296,8 +296,8 @@ const ZERO_THRESHOLD: f64 = 1e-6;
 /// Count connected components via BFS on the active state neighbor graph.
 ///
 /// Each disconnected component contributes one zero eigenvalue to the null space.
-/// Works directly on ActiveStates + MeshLevel without building a sparse matrix.
-fn count_components(active: &ActiveStates, level: &MeshLevel) -> usize {
+/// Works directly on ActiveStates + AngularMesh without building a sparse matrix.
+fn count_components(active: &ActiveStates, level: &impl AngularMesh) -> usize {
     let n = active.n_active;
     let mut visited = vec![false; n];
     let mut n_components = 0;
@@ -342,7 +342,7 @@ fn eigenmode_from_eigvec(
     eigenvalue: f64,
     eigvec: &[f64],
     active: &ActiveStates,
-    level: &MeshLevel,
+    level: &impl AngularMesh,
 ) -> EigenMode {
     let (fa, fb, fw) = coordinate_projection(eigvec, active, level);
     EigenMode {
@@ -358,7 +358,7 @@ fn dense_eigenmodes(
     matrix: &CscMatrix<f64>,
     active: &ActiveStates,
     k: usize,
-    level: &MeshLevel,
+    level: &impl AngularMesh,
 ) -> Vec<EigenMode> {
     let n = active.n_active;
     if n < 3 {
@@ -482,7 +482,7 @@ fn sparse_eigenmodes(
     matrix: &CscMatrix<f64>,
     active: &ActiveStates,
     k: usize,
-    level: &MeshLevel,
+    level: &impl AngularMesh,
     n_components: usize,
 ) -> Vec<EigenMode> {
     let n = active.n_active;
@@ -522,7 +522,7 @@ fn sparse_eigenmodes(
 /// that are sums: λ_{k,l,m} = λ_k^A + λ_l^B + λ_m^ω.
 /// We compute the icosphere and ring eigenvalues separately (small problems),
 /// then combine the smallest non-trivial sums.
-fn free_eigenmodes_analytical(level: &MeshLevel, n_omega: usize, k: usize) -> Vec<EigenMode> {
+fn free_eigenmodes_analytical(level: &impl AngularMesh, n_omega: usize, k: usize) -> Vec<EigenMode> {
     // Icosphere graph Laplacian eigenvalues (n_v × n_v dense — at most 162×162)
     let ico_evals = icosphere_eigenvalues(level);
 
@@ -563,13 +563,13 @@ fn free_eigenmodes_analytical(level: &MeshLevel, n_omega: usize, k: usize) -> Ve
 }
 
 /// Compute eigenvalues of the icosphere graph Laplacian (small dense problem).
-fn icosphere_eigenvalues(level: &MeshLevel) -> Vec<f64> {
-    let n = level.n_vertices;
+fn icosphere_eigenvalues(level: &impl AngularMesh) -> Vec<f64> {
+    let n = level.len();
     let mut lap = DMatrix::zeros(n, n);
     for i in 0..n {
-        let deg = level.neighbors[i].len();
-        lap[(i, i)] = deg as f64;
-        for &j in &level.neighbors[i] {
+        let nbrs = level.neighbors(i);
+        lap[(i, i)] = nbrs.len() as f64;
+        for &j in nbrs {
             lap[(i, j as usize)] = -1.0;
         }
     }
@@ -757,7 +757,7 @@ fn diffusion_at_r(
         .energies_at_r(ri)
         .ok_or_else(|| anyhow::anyhow!("R-slice {ri} is fully repulsive or out of range"))?;
 
-    let n_v = level.n_vertices;
+    let n_v = level.len();
     let n_total = n_v * n_v * n_omega;
 
     if homo_dimer {
@@ -774,7 +774,7 @@ fn diffusion_at_r(
     let dr_normalized = dr_zwanzig.max(dr_mol_a * dr_mol_b * dr_omega);
 
     let eigenmodes_free = free_evals
-        .get(&level.n_vertices)
+        .get(&level.len())
         .cloned()
         .unwrap_or_default();
 
@@ -851,7 +851,7 @@ pub fn diffusion_scan(
         .levels
         .iter()
         .map(|level| {
-            let n_v = level.n_vertices;
+            let n_v = level.len();
             let n_omega = table.n_omega;
             let modes = free_eigenmodes_analytical(level, n_omega, NUM_EIGENMODES);
             info!(
@@ -898,7 +898,7 @@ pub fn export_generator_matrices(
         .levels
         .iter()
         .map(|level| {
-            let n_v = level.n_vertices;
+            let n_v = level.len();
             let n_omega = table.n_omega;
             let modes = free_eigenmodes_analytical(level, n_omega, NUM_EIGENMODES);
             (n_v, modes)
@@ -907,17 +907,18 @@ pub fn export_generator_matrices(
 
     // Export icosphere neighbor lists (one file per distinct mesh level)
     for level in &table.levels {
-        let path = dir.join(format!("icosphere_nv{}.csv", level.n_vertices));
+        let n_v = level.len();
+        let path = dir.join(format!("icosphere_nv{n_v}.csv"));
         if !path.exists() {
             let mut f = std::fs::File::create(&path)?;
             writeln!(f, "vertex,neighbors")?;
-            for (i, nbrs) in level.neighbors.iter().enumerate() {
-                let nbr_str: Vec<String> = nbrs.iter().map(|n| n.to_string()).collect();
+            for i in 0..n_v {
+                let nbr_str: Vec<String> =
+                    level.neighbors(i).iter().map(|n| n.to_string()).collect();
                 writeln!(f, "{},{}", i, nbr_str.join(" "))?;
             }
             info!(
-                "Exported icosphere adjacency (n_v={}) to {}",
-                level.n_vertices,
+                "Exported icosphere adjacency (n_v={n_v}) to {}",
                 path.display()
             );
         }
@@ -936,7 +937,7 @@ pub fn export_generator_matrices(
         let Some((mut energies, level)) = table.energies_at_r(ri) else {
             continue;
         };
-        let n_v = level.n_vertices;
+        let n_v = level.len();
         let n_total = n_v * n_v * n_omega;
 
         if homo_dimer {
