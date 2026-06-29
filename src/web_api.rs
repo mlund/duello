@@ -3,15 +3,18 @@
 //! Hides faunus internals so that external crates (duello-web) don't need
 //! to depend on faunus types directly.
 
-use crate::backend::GpuBackend;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::backend::EnergyBackend;
+use crate::backend::GpuBackend;
 use crate::energy::{CoulombParams, PairMatrix, SplinedPotentials};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::icoscan::compute_scan;
 use crate::icoscan::{compute_scan_async, ScanParams};
-use crate::loader::{load_molecule_from_pdb_bytes, CgOptions, LoadedMoleculeInMemory};
+use crate::loader::{
+    load_molecule_from_pdb_bytes, prepare_pair, CgOptions, LoadedMoleculeInMemory,
+};
 use crate::report::compute_pmf;
+use crate::structure::Structure;
 use crate::VirialCoeff;
 use faunus::energy::NonbondedMatrix;
 use faunus::interatomic::coulomb::{DebyeLength as _, Medium, Salt};
@@ -58,6 +61,8 @@ struct PreparedScan {
     coulomb: CoulombParams,
     mol1: LoadedMoleculeInMemory,
     mol2: LoadedMoleculeInMemory,
+    /// Molecule 2 with atom-kind ids remapped into the backend pair-table namespace.
+    backend_ref_b: Structure,
     medium: Medium,
 }
 
@@ -75,7 +80,7 @@ fn prepare_scan(req: &WebScanRequest) -> anyhow::Result<PreparedScan> {
     // Reuse molecule 1 for a homodimer so both bodies share one titration outcome.
     // With multi-bead CG the titration is stochastic, so a second independent
     // coarse-graining can disagree on atom-type counts and overflow the pair table
-    // (gh #35).
+    // (gh #39).
     let mol2 = if req.homo_dimer {
         log::info!("Homo-dimer: reusing molecule 1 coarse-graining for molecule 2");
         mol1.clone()
@@ -84,12 +89,18 @@ fn prepare_scan(req: &WebScanRequest) -> anyhow::Result<PreparedScan> {
         load_molecule_from_pdb_bytes(&req.mol2_pdb, &cg_opts)?
     };
 
+    // Build the energy table over a namespace shared by both molecules (gh #39).
+    // Hetero-dimers are coarse-grained independently, so molecule 2's ids must be
+    // remapped into the combined table used by the backend.
+    let molecule_b = (!req.homo_dimer).then_some((&mol2.topology, &mol2.structure));
+    let (backend_ref_b, topology) = prepare_pair(&mol1.topology, &mol1.structure, molecule_b);
+
     let medium = Medium::salt_water(req.temperature, Salt::SodiumChloride, req.molarity);
 
     let nonbonded =
-        NonbondedMatrix::from_str(&mol1.topology_yaml, &mol1.topology, Some(medium.clone()))?;
+        NonbondedMatrix::from_str(&mol1.topology_yaml, &topology, Some(medium.clone()))?;
 
-    let pair_matrix = PairMatrix::new(nonbonded, mol1.topology.atomkinds(), &medium);
+    let pair_matrix = PairMatrix::new(nonbonded, topology.atomkinds(), &medium);
 
     let spline_config = SplineConfig {
         n_points: req.grid_size,
@@ -105,6 +116,7 @@ fn prepare_scan(req: &WebScanRequest) -> anyhow::Result<PreparedScan> {
         coulomb,
         mol1,
         mol2,
+        backend_ref_b,
         medium,
     })
 }
@@ -185,7 +197,7 @@ pub async fn run_scan_async(
     log::info!("Initializing GPU backend...");
     let backend = GpuBackend::new_async(
         prep.mol1.structure.clone(),
-        prep.mol2.structure.clone(),
+        prep.backend_ref_b.clone(),
         &prep.sr_splines,
         &prep.coulomb,
     )
@@ -210,7 +222,7 @@ pub fn run_scan(req: WebScanRequest) -> anyhow::Result<WebScanResult> {
     log::info!("Initializing GPU backend...");
     let backend = GpuBackend::new(
         prep.mol1.structure.clone(),
-        prep.mol2.structure.clone(),
+        prep.backend_ref_b.clone(),
         &prep.sr_splines,
         &prep.coulomb,
     )?;

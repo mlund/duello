@@ -91,6 +91,11 @@ impl Structure {
         Ok(structure)
     }
 
+    /// Remap atom-kind ids through `map` after combining two molecule namespaces.
+    pub fn remap_atom_ids(&mut self, map: &[usize]) {
+        self.atom_ids.iter_mut().for_each(|id| *id = map[*id]);
+    }
+
     /// Constructs a new structure from an XYZ file, centering the structure at the origin
     pub fn from_xyz(path: &PathBuf, atomkinds: &[AtomKind]) -> Result<Self> {
         let content = std::fs::read_to_string(path)

@@ -14,7 +14,7 @@
 
 use crate::structure::Structure;
 use anyhow::{Context, Result};
-use faunus::topology::{self, Topology};
+use faunus::topology::{self, AtomKind, Topology};
 use std::io::{BufReader, Cursor};
 use std::path::{Path, PathBuf};
 
@@ -203,4 +203,129 @@ pub fn load_molecule_from_pdb_bytes(
         topology,
         topology_yaml,
     })
+}
+
+/// Resolve molecule B's backend structure and the atom-kind namespace shared by both
+/// bodies of a scan.
+///
+/// `molecule_b = None` is a homodimer: reuse A's structure and topology from a
+/// single coarse-graining. Otherwise the two molecules may have been coarse-grained
+/// into separate id spaces, so their topologies are combined and B's structure ids
+/// are remapped into the shared table (gh #39).
+pub fn prepare_pair(
+    topology_a: &Topology,
+    structure_a: &Structure,
+    molecule_b: Option<(&Topology, &Structure)>,
+) -> (Structure, Topology) {
+    let Some((topology_b, structure_b)) = molecule_b else {
+        return (structure_a.clone(), topology_a.clone());
+    };
+    let (merged, b_remap) = combine_topologies(topology_a, topology_b);
+    let mut structure_b = structure_b.clone();
+    structure_b.remap_atom_ids(&b_remap);
+    (structure_b, merged)
+}
+
+/// Merge molecule B's atom kinds into A's, returning the combined topology and a
+/// map from B's old atom-kind id to its id in the merged table.
+///
+/// Kinds with identical names and interaction parameters share an id, keeping the
+/// `n_types^2` pair table small. Distinct names are preserved because topology
+/// YAML may contain name-specific pair overrides.
+fn combine_topologies(topology_a: &Topology, topology_b: &Topology) -> (Topology, Vec<usize>) {
+    let mut merged = topology_a.clone();
+    let mut b_remap = Vec::with_capacity(topology_b.atomkinds().len());
+
+    for kind_b in topology_b.atomkinds() {
+        let merged_id = merged
+            .atomkinds()
+            .iter()
+            .position(|kind| same_interaction(kind, kind_b))
+            .unwrap_or_else(|| {
+                let id = merged.atomkinds().len();
+                merged.add_atomkind(kind_b.clone());
+                id
+            });
+        b_remap.push(merged_id);
+    }
+
+    // Re-index the combined table without `finalize_atoms`, which rejects duplicate
+    // names that can legitimately arise from independent titration outcomes.
+    for (id, kind) in merged.atomkinds_mut().iter_mut().enumerate() {
+        kind.set_id(id);
+    }
+
+    (merged, b_remap)
+}
+
+/// True if two atom kinds are interchangeable for scan energy evaluation.
+fn same_interaction(a: &AtomKind, b: &AtomKind) -> bool {
+    let opt_bits = |x: Option<f64>| x.map(f64::to_bits);
+    a.name() == b.name()
+        && a.charge().to_bits() == b.charge().to_bits()
+        && a.mass().to_bits() == b.mass().to_bits()
+        && opt_bits(a.sigma()) == opt_bits(b.sigma())
+        && opt_bits(a.epsilon()) == opt_bits(b.epsilon())
+        && opt_bits(a.lambda()) == opt_bits(b.lambda())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn finalized(yaml: &str) -> Topology {
+        let mut top = Topology::from_str_partial(yaml).unwrap();
+        top.finalize_atoms().unwrap();
+        top
+    }
+
+    #[test]
+    fn combine_topologies_dedups_shared_and_appends_distinct() {
+        let top_a = finalized(
+            "atoms:\n  - {name: GLY, mass: 57.0, charge: 0.0, sigma: 4.5, eps: 0.83}\n  \
+             - {name: O1, mass: 0.0, charge: -0.9, sigma: 2.0, eps: 0.83}\n",
+        );
+        let top_b = finalized(
+            "atoms:\n  - {name: GLY, mass: 57.0, charge: 0.0, sigma: 4.5, eps: 0.83}\n  \
+             - {name: O1, mass: 0.0, charge: -0.4, sigma: 2.0, eps: 0.83}\n",
+        );
+
+        let (merged, b_remap) = combine_topologies(&top_a, &top_b);
+
+        assert_eq!(merged.atomkinds().len(), 3);
+        for (i, kind) in merged.atomkinds().iter().enumerate() {
+            assert_eq!(kind.id(), i);
+        }
+        assert_eq!(b_remap, vec![0, 2]);
+        assert_eq!(
+            merged.atomkinds()[2].charge().to_bits(),
+            (-0.4f64).to_bits()
+        );
+    }
+
+    #[test]
+    fn combine_identical_topologies_is_a_noop() {
+        let top = finalized(
+            "atoms:\n  - {name: GLY, mass: 57.0, charge: 0.0, sigma: 4.5, eps: 0.83}\n  \
+             - {name: ASP, mass: 115.0, charge: -1.0, sigma: 5.6, eps: 0.83}\n",
+        );
+        let (merged, b_remap) = combine_topologies(&top, &top);
+        assert_eq!(merged.atomkinds().len(), 2);
+        assert_eq!(b_remap, vec![0, 1]);
+    }
+
+    #[test]
+    fn combine_topologies_preserves_distinct_names_with_same_parameters() {
+        let top_a =
+            finalized("atoms:\n  - {name: A, mass: 10.0, charge: 0.0, sigma: 2.0, eps: 0.5}\n");
+        let top_b =
+            finalized("atoms:\n  - {name: B, mass: 10.0, charge: 0.0, sigma: 2.0, eps: 0.5}\n");
+
+        let (merged, b_remap) = combine_topologies(&top_a, &top_b);
+
+        assert_eq!(merged.atomkinds().len(), 2);
+        assert_eq!(merged.atomkinds()[0].name(), "A");
+        assert_eq!(merged.atomkinds()[1].name(), "B");
+        assert_eq!(b_remap, vec![1]);
+    }
 }
