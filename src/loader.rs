@@ -229,9 +229,9 @@ pub fn prepare_pair(
 /// Merge molecule B's atom kinds into A's, returning the combined topology and a
 /// map from B's old atom-kind id to its id in the merged table.
 ///
-/// Kinds with identical names and interaction parameters share an id, keeping the
-/// `n_types^2` pair table small. Distinct names are preserved because topology
-/// YAML may contain name-specific pair overrides.
+/// Kinds with identical names, interaction parameters, and custom atom properties share
+/// an id, keeping the `n_types^2` pair table small. Distinct names are preserved because
+/// topology YAML may contain name-specific pair overrides.
 fn combine_topologies(topology_a: &Topology, topology_b: &Topology) -> (Topology, Vec<usize>) {
     let mut merged = topology_a.clone();
     let mut b_remap = Vec::with_capacity(topology_b.atomkinds().len());
@@ -267,6 +267,7 @@ fn same_interaction(a: &AtomKind, b: &AtomKind) -> bool {
         && opt_bits(a.sigma()) == opt_bits(b.sigma())
         && opt_bits(a.epsilon()) == opt_bits(b.epsilon())
         && opt_bits(a.lambda()) == opt_bits(b.lambda())
+        && a.custom() == b.custom()
 }
 
 #[cfg(test)]
@@ -326,6 +327,23 @@ mod tests {
         assert_eq!(merged.atomkinds().len(), 2);
         assert_eq!(merged.atomkinds()[0].name(), "A");
         assert_eq!(merged.atomkinds()[1].name(), "B");
+        assert_eq!(b_remap, vec![1]);
+    }
+
+    #[test]
+    fn combine_topologies_preserves_distinct_custom_properties() {
+        let top_a = finalized(
+            "atoms:\n  - {name: A, mass: 10.0, charge: 1.0, sigma: 2.0, eps: 0.5, custom: {alpha: 0.0}}\n",
+        );
+        let top_b = finalized(
+            "atoms:\n  - {name: A, mass: 10.0, charge: 1.0, sigma: 2.0, eps: 0.5, custom: {alpha: 1.0}}\n",
+        );
+
+        let (merged, b_remap) = combine_topologies(&top_a, &top_b);
+
+        assert_eq!(merged.atomkinds().len(), 2);
+        assert_eq!(merged.atomkinds()[0].custom(), top_a.atomkinds()[0].custom());
+        assert_eq!(merged.atomkinds()[1].custom(), top_b.atomkinds()[0].custom());
         assert_eq!(b_remap, vec![1]);
     }
 }
