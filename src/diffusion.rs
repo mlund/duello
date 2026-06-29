@@ -1294,7 +1294,6 @@ mod tests {
         let level = MeshLevel::new(0);
         let n_v = level.n_vertices;
         let n_omega = 8;
-        let n_states = n_v * n_v * n_omega;
 
         let free_active = ActiveStates::new(None, n_v, n_omega);
         let free_gen = build_generator(&free_active, &level, None);
