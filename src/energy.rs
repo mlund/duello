@@ -117,7 +117,7 @@ impl SplinedPotentials {
     /// via [`IsotropicTwobodyEnergy`].
     fn from_nonbonded(nonbonded: &NonbondedMatrix, cutoff: f64, config: SplineConfig) -> Self {
         let source = nonbonded.get_potentials();
-        let n_types = source.shape()[0];
+        let n_types = source.order();
         let mut potentials = Vec::with_capacity(n_types * n_types);
         for i in 0..n_types {
             for j in 0..n_types {
