@@ -88,7 +88,7 @@ pub fn load_molecule(
 fn load_from_xyz(mol_path: &Path, top_path: &Path) -> Result<LoadedMolecule> {
     let mut topology = Topology::from_file_partial(top_path)?;
     topology.finalize_atoms()?;
-    topology.finalize_molecules()?;
+    topology.finalize_molecules(top_path)?;
     topology::set_missing_epsilon(topology.atomkinds_mut(), 2.479);
 
     let structure = Structure::from_xyz(&mol_path.to_path_buf(), topology.atomkinds())?;
@@ -193,7 +193,9 @@ pub fn load_molecule_from_pdb_bytes(
 
     let mut topology = Topology::from_str_partial(&topology_yaml)?;
     topology.finalize_atoms()?;
-    topology.finalize_molecules()?;
+    // The topology is generated in memory and never references a structure file,
+    // so there is no input file to resolve relative paths against.
+    topology.finalize_molecules(Path::new("."))?;
     topology::set_missing_epsilon(topology.atomkinds_mut(), 2.479);
 
     let structure = Structure::from_xyz_str(&xyz_str, topology.atomkinds())?;
