@@ -15,7 +15,7 @@
 use crate::{
     backend::{EnergyBackend, PoseParams},
     structure::Structure,
-    Sample, Vector3,
+    Sample, UnitQuaternion, Vector3,
 };
 use icotable::{AdaptiveBuilder, Subdivision, Table6DAdaptive};
 
@@ -55,6 +55,10 @@ pub struct ScanConfig {
     pub pmf_file: PathBuf,
     /// Save binary 6D table for Faunus lookup (.gz suffix enables gzip compression)
     pub save_table: Option<PathBuf>,
+    /// Write every pose to an XTC trajectory with an energy CSV sidecar.
+    pub trajectory: Option<PathBuf>,
+    /// Atom names for the trajectory's topology file; XTC stores none.
+    pub atom_kinds: Vec<faunus::topology::AtomKind>,
 }
 
 /// Results from a completed scan (no I/O).
@@ -64,14 +68,35 @@ pub struct ScanResult {
     pub table: Table6DAdaptive<f32>,
 }
 
+/// Identifies one row of a trajectory's energy sidecar.
+#[derive(Debug, Clone, Copy)]
+pub struct Pose {
+    pub r: f64,
+    pub omega: f64,
+    pub vi: usize,
+    pub vj: usize,
+    /// Subdivision level the vertex indices refer to. Adaptive coarsening varies
+    /// it with R, so `vi` alone does not identify a direction.
+    pub n_div: usize,
+    /// True when the slab is stored isotropically, i.e. this energy is shared by
+    /// every vertex pair at this (R, ω).
+    pub isotropic: bool,
+}
+
+/// Dihedral angle bin width for `params`.
+///
+/// Derived from the finest icosphere mesh so that the ω resolution matches the
+/// angular vertex spacing. The generated table keeps only the resulting bin
+/// count, so after-analysis has to rederive the step from here.
+pub(crate) fn omega_step(params: &ScanParams) -> f64 {
+    params.subdivision.angular_resolution(params.max_n_div)
+}
+
 /// Build the adaptive 6D table builder for `params` and log its resolution.
 /// Shared by the sync ([`compute_scan`]) and async ([`compute_scan_async`])
 /// entry points so the scheme-aware ω/vertex derivation stays single-sourced.
 fn make_6d_builder(params: &ScanParams) -> AdaptiveBuilder {
-    // Derive dihedral angle bin width from the finest icosphere mesh so that
-    // the ω resolution matches the angular vertex spacing.
     let max_n_vertices = params.subdivision.n_vertices(params.max_n_div);
-    let omega_step = params.subdivision.angular_resolution(params.max_n_div);
     let beta = 1.0 / (physical_constants::MOLAR_GAS_CONSTANT * params.temperature * 1e-3); // 1/(kJ/mol)
 
     let builder = AdaptiveBuilder::with_subdivision(
@@ -79,7 +104,7 @@ fn make_6d_builder(params: &ScanParams) -> AdaptiveBuilder {
         params.rmin,
         params.rmax,
         params.dr,
-        omega_step,
+        omega_step(params),
         params.max_n_div,
         params.gradient_threshold,
         beta,
@@ -261,6 +286,24 @@ fn build_slab_poses(
     poses
 }
 
+/// Coordinates of both molecules in ångström, A at the origin and B placed by
+/// `q_b`/`separation` as returned by [`icotable::orient`].
+///
+/// Avoids cloning either structure, which matters at millions of poses.
+pub(crate) fn oriented_positions<'a>(
+    q_b: UnitQuaternion,
+    separation: Vector3,
+    ref_a: &'a Structure,
+    ref_b: &'a Structure,
+) -> impl Iterator<Item = Vector3> + 'a {
+    ref_a.pos.iter().copied().chain(
+        ref_b
+            .pos
+            .iter()
+            .map(move |&p| q_b.transform_vector(&p) + separation),
+    )
+}
+
 /// Accumulate partition function sample from slab data using Voronoi quadrature weights.
 fn accumulate_r_sample(
     slab_data: &[Vec<f64>],
@@ -384,7 +427,42 @@ pub fn do_icoscan<B: EnergyBackend + Sync>(config: &ScanConfig, backend: &B) -> 
 
     let masses = (backend.ref_a().total_mass(), backend.ref_b().total_mass());
     crate::report::report_pmf(&result.samples, &config.pmf_file, Some(masses))?;
+
+    // After the PMF: the trajectory can run to tens of GB, and losing the
+    // primary result to a full disk would waste the whole scan.
+    if let Some(path) = &config.trajectory {
+        write_trajectory(path, &result.table, config, backend)?;
+    }
     Ok(())
+}
+
+/// Write the pose trajectory and its two sidecars.
+///
+/// The gzip stream is finished even if writing fails; an unfinished one leaves
+/// the energy sidecar unreadable.
+#[cfg(feature = "cli")]
+fn write_trajectory<B: EnergyBackend>(
+    path: &std::path::Path,
+    table: &Table6DAdaptive<f32>,
+    config: &ScanConfig,
+    backend: &B,
+) -> anyhow::Result<()> {
+    use crate::trajectory::{write_table_poses, write_topology, TrajectoryPaths};
+    let paths = TrajectoryPaths::derive(path);
+    let omega_step = omega_step(&config.params);
+    let (ref_a, ref_b) = (backend.ref_a(), backend.ref_b());
+
+    write_topology(
+        &paths,
+        table,
+        omega_step,
+        ref_a,
+        ref_b,
+        &config.atom_kinds,
+    )?;
+    let mut writer = crate::trajectory::FileTrajectoryWriter::create(&paths)?;
+    let written = write_table_poses(&mut writer, table, omega_step, ref_a, ref_b);
+    written.and(writer.finish())
 }
 
 /// Orient two reference structures to a given 6D point.
@@ -601,4 +679,44 @@ fn log_resolution_summary(table: &icotable::Table6DAdaptive<f32>) {
         "Total slabs: {} (repulsive: {}, scalar: {}, nearest: {}, interp: {})",
         total, tot[0], tot[1], tot[2], tot[3]
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    fn params(max_n_div: usize) -> ScanParams {
+        ScanParams {
+            rmin: 20.0,
+            rmax: 30.0,
+            dr: 0.5,
+            temperature: 298.15,
+            charges: [0.0, 0.0],
+            dipole_moments: [0.0, 0.0],
+            kappa: None,
+            permittivity: 80.0,
+            max_n_div,
+            gradient_threshold: 0.5,
+            subdivision: Subdivision::Geodesic,
+            homo_dimer: false,
+        }
+    }
+
+    /// The table stores ω only as a bin count, so a trajectory written after the
+    /// scan must rederive the step and land on the grid the scan actually used.
+    #[test]
+    fn rederived_omega_matches_builder() {
+        for max_n_div in 0..=3 {
+            let params = params(max_n_div);
+            let builder = make_6d_builder(&params);
+            for oi in 0..builder.n_omega() {
+                assert_relative_eq!(
+                    oi as f64 * omega_step(&params),
+                    builder.omega_value(oi),
+                    epsilon = 1e-12
+                );
+            }
+        }
+    }
 }

@@ -722,7 +722,7 @@ dependencies = [
  "itertools-num",
  "lazy_static",
  "log",
- "molly",
+ "molly 0.7.0",
  "nalgebra 0.34.2",
  "nalgebra-sparse",
  "nu-ansi-term",
@@ -858,7 +858,7 @@ dependencies = [
  "itertools 0.10.5",
  "log",
  "minijinja",
- "molly",
+ "molly 0.5.1",
  "nalgebra 0.34.2",
  "paste",
  "physical_constants",
@@ -1478,7 +1478,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1734,6 +1734,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "molly"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75dccedc345e14623ecc79262729c65fb6a7262751e1ad7e4230664475c7957b"
+
+[[package]]
 name = "naga"
 version = "29.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1852,7 +1858,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3263,7 +3269,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

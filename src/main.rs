@@ -333,6 +333,10 @@ enum Commands {
         /// Save binary 6D table for Faunus lookup (.gz suffix enables gzip compression)
         #[arg(long)]
         savetable: Option<PathBuf>,
+        /// Export every table pose to an XTC trajectory, with energies and pose
+        /// indices in a companion .energy.csv.gz and atom names in a .xyz
+        #[arg(long)]
+        xtcfile: Option<PathBuf>,
         /// Max icosphere subdivision level (0=12, 1=42, 2=92, 3=162 vertices)
         #[arg(long, default_value = "3")]
         max_ndiv: usize,
@@ -418,6 +422,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         fixed_dielectric,
         pmf_file,
         savetable,
+        xtcfile,
         max_ndiv,
         gradient_threshold,
         locator,
@@ -528,7 +533,10 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         },
         pmf_file: pmf_file.clone(),
         save_table: savetable.clone(),
+        trajectory: xtcfile.clone(),
+        atom_kinds: topology.atomkinds().to_vec(),
     };
+
 
     // energy_cap only applies to SR-only splines (GPU/SIMD split path).
     // The combined spline (CPU) includes Coulomb which diverges as 1/r,

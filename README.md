@@ -38,6 +38,7 @@
 - [Overview](#overview)
 - [Commands](#commands)
   - [`duello scan` -- Two-Body Scan](#duello-scan----two-body-scan)
+    - [Trajectory Output](#trajectory-output)
   - [`duello atom-scan` -- Atom Scan](#duello-atom-scan----atom-scan)
   - [`duello diffusion` -- Rotational Diffusion](#duello-diffusion----rotational-diffusion)
 - [Input Formats](#input-formats)
@@ -187,6 +188,7 @@ duello scan \
 | `--grid`                 | (see below)   | Spline grid settings (see [Spline Grid](#spline-grid)) |
 | `--pmf`                  | pmf.dat       | Output PMF file                                       |
 | `--savetable`            | --            | Save 6D binary table (`.bin.gz` for compression)      |
+| `--xtcfile`              | --            | Export all table poses as an XTC trajectory (see [Trajectory Output](#trajectory-output)) |
 | `--fixed-dielectric`     | --            | Override dielectric constant                          |
 
 **PDB/CIF-only options:**
@@ -198,6 +200,30 @@ duello scan \
 | `--cg`                   | single        | Coarse-graining policy: `single` or `multi`           |
 | `--scale-hydrophobic`    | --            | Hydrophobic scaling, e.g. `lambda:1.2` or `epsilon:0.8` |
 | `--chain`                | (all)         | Keep only these chain IDs (repeatable: `--chain A --chain B`) |
+
+### Trajectory Output
+
+`--xtcfile traj.xtc` writes every pose stored in the 6D table, for inspection in VMD, PyMOL or MDAnalysis:
+
+| File                  | Contents                                                                       |
+|-----------------------|--------------------------------------------------------------------------------|
+| `traj.xtc`            | One frame per pose: molecule A at the origin, B rotated and translated          |
+| `traj.energy.csv.gz`  | `frame,r_angstrom,omega_rad,n_div,vi,vj,resolution,energy_kjmol`                |
+| `traj.xyz`            | Atom names, which XTC does not store -- load it first, then the trajectory      |
+
+The `frame` column is the XTC frame index, so a frame in a viewer resolves to exactly one pose and one
+energy. Key on `step` rather than `time`: time is a 32-bit float and stops being unique past ~16.8M frames.
+
+Energies are the ones *stored in the table*, i.e. the same coarse-grained values the PMF and _B2_ are
+derived from (see [Adaptive Resolution](#adaptive-resolution)). Hence:
+
+- `resolution=scalar` marks an isotropic slab, whose single energy is repeated across every vertex pair at that (_R_, ω).
+- Radial bins whose slabs are all scalar or repulsive store no orientations and so produce no frames. The count is logged.
+- `vi`/`vj` identify a direction only together with `n_div`, because adaptive coarsening changes the mesh level with _R_.
+
+> **Size.** Output is uncapped. The benchmark settings `--rmin 26 --rmax 60 --dr 0.5 --max-ndiv 3` give
+> roughly 41 million frames, on the order of 100 GB. The frame count and estimated size are logged
+> before writing begins, so a run can be aborted early.
 
 ## `duello atom-scan` -- Atom Scan
 

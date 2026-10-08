@@ -21,6 +21,8 @@ pub mod loader;
 pub mod report;
 mod sample;
 pub mod structure;
+#[cfg(feature = "cli")]
+pub mod trajectory;
 mod virial;
 pub mod web_api;
 
