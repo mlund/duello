@@ -522,7 +522,11 @@ fn sparse_eigenmodes(
 /// that are sums: λ_{k,l,m} = λ_k^A + λ_l^B + λ_m^ω.
 /// We compute the icosphere and ring eigenvalues separately (small problems),
 /// then combine the smallest non-trivial sums.
-fn free_eigenmodes_analytical(level: &impl AngularMesh, n_omega: usize, k: usize) -> Vec<EigenMode> {
+fn free_eigenmodes_analytical(
+    level: &impl AngularMesh,
+    n_omega: usize,
+    k: usize,
+) -> Vec<EigenMode> {
     // Icosphere graph Laplacian eigenvalues (n_v × n_v dense — at most 162×162)
     let ico_evals = icosphere_eigenvalues(level);
 
@@ -773,10 +777,7 @@ fn diffusion_at_r(
     // The product of marginals is a better estimate in the bounding-sphere overlap region.
     let dr_normalized = dr_zwanzig.max(dr_mol_a * dr_mol_b * dr_omega);
 
-    let eigenmodes_free = free_evals
-        .get(&level.len())
-        .cloned()
-        .unwrap_or_default();
+    let eigenmodes_free = free_evals.get(&level.len()).cloned().unwrap_or_default();
 
     // BFS on the neighbor graph is O(n_active) and avoids building the
     // full CscMatrix, which is only needed when eigenmodes are computed.
