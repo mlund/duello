@@ -12,22 +12,19 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
+use cgkitten::CgOutput;
 use clap::{Parser, Subcommand};
 use duello::{
     backend::{self, GpuBackend, SimdBackend},
-    energy, icoscan,
-    loader::{self, CgOptions},
-    report,
+    energy, icoscan, report,
     structure::{pqr_write_atom, Structure},
+    system::{CgOptions, PairSpec, PairSystem, Source},
     Adaptive3DBuilder, IcoTable2D, Sample, SphericalCoord, UnitQuaternion, Vector3,
 };
 use faunus::interatomic::coulomb::{pairwise::Plain, permittivity, DebyeLength, Medium, Salt};
 use faunus::interatomic::twobody::{GridTrim, GridType, SplineConfig};
-use faunus::{
-    energy::NonbondedMatrix,
-    topology::{FindByName, Topology},
-};
+use faunus::topology::{FindByName, Topology};
 use std::process::ExitCode;
 use std::{f64::consts::PI, fs::File, io::Write, ops::Neg, path::PathBuf};
 extern crate pretty_env_logger;
@@ -293,6 +290,9 @@ enum Commands {
         /// Include only these chain IDs (only for PDB/CIF input). Repeat for multiple: --chain A --chain B
         #[arg(long)]
         chain: Vec<String>,
+        /// Validate the input and stop before scanning (dry run; writes no files)
+        #[arg(long)]
+        check: bool,
     },
 
     /// Scan angles and tabulate energy between two rigid bodies
@@ -374,6 +374,9 @@ enum Commands {
         /// Include only these chain IDs (only for PDB/CIF input). Repeat for multiple: --chain A --chain B
         #[arg(long)]
         chain: Vec<String>,
+        /// Validate the input and stop before scanning (dry run; writes no files)
+        #[arg(long)]
+        check: bool,
     },
 
     /// Estimate rotational diffusion from a saved 6D energy table
@@ -407,6 +410,27 @@ enum Commands {
     },
 }
 
+/// Mirrors faunus `--check`, so scripts can validate inputs cheaply.
+fn input_ok() -> Result<()> {
+    info!("✓ input valid (dry run — no scan performed)");
+    Ok(())
+}
+
+/// Keep coarse-grained input as `{stem}.xyz` + `{stem}_topology.yaml` so the run
+/// can be reproduced from XYZ.
+fn save_generated(inputs: &[&PathBuf], generated: &[Option<CgOutput>]) -> Result<()> {
+    for (input, cg) in inputs.iter().zip(generated) {
+        let Some(cg) = cg else { continue };
+        let stem = input.file_stem().context("input file has no stem")?;
+        let stem = stem.to_string_lossy();
+        let (xyz, top) = (format!("{stem}.xyz"), format!("{stem}_topology.yaml"));
+        std::fs::write(&xyz, &cg.xyz)?;
+        std::fs::write(&top, &cg.topology)?;
+        info!("Coarse-grained {} → {xyz} + {top}", input.display());
+    }
+    Ok(())
+}
+
 /// Calculate energy of all two-body poses
 fn do_scan(cmd: &Commands) -> Result<()> {
     let Commands::Scan {
@@ -434,35 +458,17 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         cg,
         scale_hydrophobic,
         chain,
+        check,
     } = cmd
     else {
         bail!("Unknown command");
     };
     assert!(rmin < rmax);
 
-    let cg_opts = cg_options_from_args(*ph, model, cg, scale_hydrophobic, chain);
-    let loaded_a = loader::load_molecule(mol1, top_file.as_deref(), &cg_opts)?;
-
     let homo_dimer = mol1 == mol2;
     if homo_dimer {
         info!("Homo-dimer detected (same input files); reusing single coarse-graining");
     }
-
-    // Resolve molecule B and the atom-kind namespace shared by both bodies (gh #39):
-    // a homodimer reuses A's single coarse-graining; a hetero-dimer is coarse-grained
-    // independently, so B's ids are remapped into a combined table.
-    let loaded_b = if homo_dimer {
-        None
-    } else {
-        Some(loader::load_molecule(mol2, top_file.as_deref(), &cg_opts)?)
-    };
-    let (ref_b, topology) = loader::prepare_pair(
-        &loaded_a.topology,
-        &loaded_a.structure,
-        loaded_b.as_ref().map(|b| (&b.topology, &b.structure)),
-    );
-
-    let top_path = &loaded_a.topology_path;
 
     // Either use fixed dielectric constant or calculate it from the medium
     let medium = fixed_dielectric.map_or_else(
@@ -476,9 +482,23 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         },
     );
 
-    let nonbonded = NonbondedMatrix::from_file(top_path, &topology, Some(medium.clone()))?;
-
-    let ref_a = loaded_a.structure;
+    let PairSystem {
+        ref_a,
+        ref_b,
+        topology,
+        pair_matrix,
+        generated,
+    } = PairSystem::load(PairSpec {
+        a: Source::File(mol1),
+        b: (!homo_dimer).then_some(Source::File(mol2)),
+        top: top_file.as_deref(),
+        cg: cg_options_from_args(*ph, model, cg, scale_hydrophobic, chain),
+        medium: &medium,
+    })?;
+    if *check {
+        return input_ok();
+    }
+    save_generated(&[mol1, mol2], &generated)?;
 
     info!("{medium}");
     info!(
@@ -537,7 +557,6 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         atom_kinds: topology.atomkinds().to_vec(),
     };
 
-
     // energy_cap only applies to SR-only splines (GPU/SIMD split path).
     // The combined spline (CPU) includes Coulomb which diverges as 1/r,
     // so capping it would corrupt the potential.
@@ -552,8 +571,6 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         grid_type: grid.grid_type.into(),
         ..Default::default()
     };
-
-    let pair_matrix = energy::PairMatrix::new(nonbonded, topology.atomkinds(), &medium);
 
     match backend_type {
         Backend::Auto => unreachable!(), // Already resolved above
@@ -608,28 +625,37 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
         cg,
         scale_hydrophobic,
         chain,
+        check,
     } = cmd
     else {
         bail!("Unknown command");
     };
     anyhow::ensure!(rmin < rmax, "rmin ({rmin}) must be less than rmax ({rmax})");
 
-    let cg_opts = cg_options_from_args(*ph, model, cg, scale_hydrophobic, chain);
-    let loaded = loader::load_molecule(mol1, top_file.as_deref(), &cg_opts)?;
-    let top_path = &loaded.topology_path;
-    let topology = loaded.topology;
-
     let medium = Medium::salt_water(*temperature, Salt::SodiumChloride, *molarity);
-    let nonbonded = NonbondedMatrix::from_file(top_path, &topology, Some(medium.clone()))?;
+    let PairSystem {
+        ref_a,
+        topology,
+        pair_matrix,
+        generated,
+        ..
+    } = PairSystem::load(PairSpec {
+        a: Source::File(mol1),
+        b: None,
+        top: top_file.as_deref(),
+        cg: cg_options_from_args(*ph, model, cg, scale_hydrophobic, chain),
+        medium: &medium,
+    })?;
 
-    let pair_matrix = energy::PairMatrix::new(nonbonded, topology.atomkinds(), &medium);
-
-    let ref_a = loaded.structure;
     let test_atom_id = topology
         .atomkinds()
         .find_name(atom)
         .ok_or_else(|| anyhow::anyhow!("Unknown atom type: {atom}"))?
         .id();
+    if *check {
+        return input_ok();
+    }
+    save_generated(&[mol1], &generated)?;
 
     info!("{medium}");
     info!("Rigid body net-charge: {:.2}e", ref_a.net_charge());
@@ -1041,7 +1067,7 @@ fn do_main() -> Result<()> {
 
 fn main() -> ExitCode {
     if let Err(err) = do_main() {
-        eprintln!("Error: {}", &err);
+        eprintln!("Error: {err}");
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS

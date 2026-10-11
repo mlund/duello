@@ -1,35 +1,38 @@
 //! End-to-end check that `scan --xtcfile` emits a readable trajectory whose
 //! frames are coupled one-to-one with the energy CSV rows.
 
-use std::io::Read;
-use std::path::PathBuf;
-use std::process::Command;
+mod common;
 
-fn examples() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/cppm")
-}
+use common::{duello, example, workdir};
+use std::io::Read;
 
 #[test]
 fn scan_writes_coupled_trajectory_and_energies() {
-    // Unique per run: a shared path makes concurrent test runs clobber each other.
-    let dir = std::env::temp_dir().join(format!("duello_xtcfile_{}", std::process::id()));
-    std::fs::remove_dir_all(&dir).ok();
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = workdir("xtcfile");
     let xtc = dir.join("traj.xtc");
     let csv = dir.join("traj.energy.csv.gz");
 
-    let mol = examples().join("cppm-p00.xyz");
-    let out = Command::new(env!("CARGO_BIN_EXE_duello"))
-        .current_dir(&dir)
+    let mol = example("cppm/cppm-p00.xyz");
+    let out = duello(&dir)
         .args(["scan", "-1"])
         .arg(&mol)
         .arg("-2")
         .arg(&mol)
         .args(["--top"])
-        .arg(examples().join("topology.yaml"))
+        .arg(example("cppm/topology.yaml"))
         .args([
-            "--rmin", "38", "--rmax", "42", "--dr", "2", "--max-ndiv", "0", "--cutoff", "2000",
-            "--molarity", "0.05",
+            "--rmin",
+            "38",
+            "--rmax",
+            "42",
+            "--dr",
+            "2",
+            "--max-ndiv",
+            "0",
+            "--cutoff",
+            "2000",
+            "--molarity",
+            "0.05",
         ])
         .arg("--xtcfile")
         .arg(&xtc)

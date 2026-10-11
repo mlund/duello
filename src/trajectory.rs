@@ -51,7 +51,10 @@ impl TrajectoryPaths {
     /// Suffixes are appended rather than replacing the extension, so that no
     /// argument can derive onto itself and have one file overwrite another.
     pub fn derive(xtc: &Path) -> Self {
-        let stem = if xtc.extension().is_some_and(|e| e.eq_ignore_ascii_case("xtc")) {
+        let stem = if xtc
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("xtc"))
+        {
             xtc.with_extension("")
         } else {
             xtc.to_path_buf()
@@ -254,7 +257,13 @@ fn first_stored_orientation(
         let n_omega = table.n_omega;
         let found = (0..level.len() * level.len() * n_omega)
             .find(|&k| energies[k].is_finite())
-            .map(|k| (k / n_omega / level.len(), k / n_omega % level.len(), k % n_omega));
+            .map(|k| {
+                (
+                    k / n_omega / level.len(),
+                    k / n_omega % level.len(),
+                    k % n_omega,
+                )
+            });
         if let Some((vi, vj, oi)) = found {
             let (_, q_b, separation) = icotable::orient(
                 r_value(table, ri),
@@ -309,8 +318,7 @@ impl SliceContext<'_> {
             for vj in 0..n_v {
                 // q_b(ω) = q_b(0)·q₂(ω), since q₂(0) is the identity -- so the
                 // four square roots inside `orient` are paid once per pair.
-                let (_, q_b, separation) =
-                    icotable::orient(r, 0.0, &dir_i, &level.direction(vj));
+                let (_, q_b, separation) = icotable::orient(r, 0.0, &dir_i, &level.direction(vj));
                 let row = &energies[(vi * n_v + vj) * n_omega..][..n_omega];
                 for (oi, &energy) in row.iter().enumerate() {
                     if !energy.is_finite() {
@@ -341,7 +349,12 @@ fn r_value(table: &Table6DAdaptive<f32>, ri: usize) -> f64 {
 
 /// Cube side enclosing the widest pose, in ångström.
 fn box_side(table: &Table6DAdaptive<f32>, ref_a: &Structure, ref_b: &Structure) -> f64 {
-    let radius = |s: &Structure| s.pos.iter().map(nalgebra::Vector3::norm).fold(0.0, f64::max);
+    let radius = |s: &Structure| {
+        s.pos
+            .iter()
+            .map(nalgebra::Vector3::norm)
+            .fold(0.0, f64::max)
+    };
     table.rmax + 2.0 * (radius(ref_a) + radius(ref_b))
 }
 
@@ -393,7 +406,14 @@ mod tests {
         let subdivision = Subdivision::Geodesic;
         let omega_step = subdivision.angular_resolution(0);
         let mut builder = AdaptiveBuilder::with_subdivision(
-            subdivision, 10.0, 12.0, 1.0, omega_step, 0, 1e-12, 1.0,
+            subdivision,
+            10.0,
+            12.0,
+            1.0,
+            omega_step,
+            0,
+            1e-12,
+            1.0,
         );
         let n_v = builder.current_n_vertices();
         for ri in 0..builder.n_r() {
@@ -476,7 +496,10 @@ mod tests {
             let omega = oi as f64 * 0.3;
             let (_, q_b, separation) = icotable::orient(31.0, omega, &dir_i, &dir_j);
             let hoisted = q_b0 * UnitQuaternion::from_axis_angle(&Vector3::z_axis(), omega);
-            let (direct, rebuilt) = (q_b.transform_vector(&probe), hoisted.transform_vector(&probe));
+            let (direct, rebuilt) = (
+                q_b.transform_vector(&probe),
+                hoisted.transform_vector(&probe),
+            );
             for k in 0..3 {
                 assert_relative_eq!(direct[k], rebuilt[k], epsilon = 1e-12);
                 // Separation depends on r and dir_i only, hence hoisted too.

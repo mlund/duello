@@ -452,14 +452,7 @@ fn write_trajectory<B: EnergyBackend>(
     let omega_step = omega_step(&config.params);
     let (ref_a, ref_b) = (backend.ref_a(), backend.ref_b());
 
-    write_topology(
-        &paths,
-        table,
-        omega_step,
-        ref_a,
-        ref_b,
-        &config.atom_kinds,
-    )?;
+    write_topology(&paths, table, omega_step, ref_a, ref_b, &config.atom_kinds)?;
     let mut writer = crate::trajectory::FileTrajectoryWriter::create(&paths)?;
     let written = write_table_poses(&mut writer, table, omega_step, ref_a, ref_b);
     written.and(writer.finish())

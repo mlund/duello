@@ -16,7 +16,7 @@ atoms:
     epsilon: 0.5
 system:
   energy:
-    nonbonded:
+    - !Nonbonded
       # Note that a Coulomb term is automatically added, so don't specify one here!
       default:
         - !WCA {mixing: LB}

@@ -6,19 +6,17 @@
 #[cfg(not(target_arch = "wasm32"))]
 use crate::backend::EnergyBackend;
 use crate::backend::GpuBackend;
-use crate::energy::{CoulombParams, PairMatrix, SplinedPotentials};
+use crate::energy::SplinedPotentials;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::icoscan::compute_scan;
 use crate::icoscan::{compute_scan_async, ScanParams};
-use crate::loader::{
-    load_molecule_from_pdb_bytes, prepare_pair, CgOptions, LoadedMoleculeInMemory,
-};
 use crate::report::compute_pmf;
 use crate::structure::Structure;
+use crate::system::{CgOptions, PairSpec, PairSystem, Source};
 use crate::VirialCoeff;
-use faunus::energy::NonbondedMatrix;
 use faunus::interatomic::coulomb::{DebyeLength as _, Medium, Salt};
 use faunus::interatomic::twobody::SplineConfig;
+use faunus::topology::Topology;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -58,49 +56,28 @@ pub struct WebScanResult {
 
 struct PreparedScan {
     sr_splines: SplinedPotentials,
-    coulomb: CoulombParams,
-    mol1: LoadedMoleculeInMemory,
-    mol2: LoadedMoleculeInMemory,
-    /// Molecule 2 with atom-kind ids remapped into the backend pair-table namespace.
-    backend_ref_b: Structure,
+    system: PairSystem,
     medium: Medium,
 }
 
 fn prepare_scan(req: &WebScanRequest) -> anyhow::Result<PreparedScan> {
-    let cg_opts = CgOptions {
-        ph: req.ph,
-        model: req.model.clone(),
-        single_bead: req.single_bead,
-        ..Default::default()
-    };
-
-    log::info!("Coarse-graining molecule 1...");
-    let mol1 = load_molecule_from_pdb_bytes(&req.mol1_pdb, &cg_opts)?;
-
-    // Reuse molecule 1 for a homodimer so both bodies share one titration outcome.
-    // With multi-bead CG the titration is stochastic, so a second independent
-    // coarse-graining can disagree on atom-type counts and overflow the pair table
-    // (gh #39).
-    let mol2 = if req.homo_dimer {
+    if req.homo_dimer {
         log::info!("Homo-dimer: reusing molecule 1 coarse-graining for molecule 2");
-        mol1.clone()
-    } else {
-        log::info!("Coarse-graining molecule 2...");
-        load_molecule_from_pdb_bytes(&req.mol2_pdb, &cg_opts)?
-    };
-
-    // Build the energy table over a namespace shared by both molecules (gh #39).
-    // Hetero-dimers are coarse-grained independently, so molecule 2's ids must be
-    // remapped into the combined table used by the backend.
-    let molecule_b = (!req.homo_dimer).then_some((&mol2.topology, &mol2.structure));
-    let (backend_ref_b, topology) = prepare_pair(&mol1.topology, &mol1.structure, molecule_b);
-
+    }
+    log::info!("Coarse-graining...");
     let medium = Medium::salt_water(req.temperature, Salt::SodiumChloride, req.molarity);
-
-    let nonbonded =
-        NonbondedMatrix::from_str(&mol1.topology_yaml, &topology, Some(medium.clone()))?;
-
-    let pair_matrix = PairMatrix::new(nonbonded, topology.atomkinds(), &medium);
+    let system = PairSystem::load(PairSpec {
+        a: Source::PdbBytes(&req.mol1_pdb),
+        b: (!req.homo_dimer).then_some(Source::PdbBytes(&req.mol2_pdb)),
+        top: None,
+        cg: CgOptions {
+            ph: req.ph,
+            model: req.model.clone(),
+            single_bead: req.single_bead,
+            ..Default::default()
+        },
+        medium: &medium,
+    })?;
 
     let spline_config = SplineConfig {
         n_points: req.grid_size,
@@ -108,15 +85,13 @@ fn prepare_scan(req: &WebScanRequest) -> anyhow::Result<PreparedScan> {
         grid_type: faunus::interatomic::twobody::GridType::PowerLaw2,
         ..Default::default()
     };
-    let sr_splines = pair_matrix.create_sr_splines(req.cutoff, spline_config);
-    let coulomb = pair_matrix.coulomb_params().clone();
+    let sr_splines = system
+        .pair_matrix
+        .create_sr_splines(req.cutoff, spline_config);
 
     Ok(PreparedScan {
         sr_splines,
-        coulomb,
-        mol1,
-        mol2,
-        backend_ref_b,
+        system,
         medium,
     })
 }
@@ -128,12 +103,12 @@ fn build_scan_params(req: &WebScanRequest, prep: &PreparedScan) -> ScanParams {
         dr: req.dr,
         temperature: req.temperature,
         charges: [
-            prep.mol1.structure.net_charge(),
-            prep.mol2.structure.net_charge(),
+            prep.system.ref_a.net_charge(),
+            prep.system.ref_b.net_charge(),
         ],
         dipole_moments: [
-            prep.mol1.structure.dipole_moment().norm(),
-            prep.mol2.structure.dipole_moment().norm(),
+            prep.system.ref_a.dipole_moment().norm(),
+            prep.system.ref_b.dipole_moment().norm(),
         ],
         kappa: prep.medium.debye_length().map(|dl| 1.0 / dl),
         permittivity: prep.medium.permittivity(),
@@ -144,11 +119,9 @@ fn build_scan_params(req: &WebScanRequest, prep: &PreparedScan) -> ScanParams {
     }
 }
 
-fn structure_to_xyz(mol: &LoadedMoleculeInMemory) -> String {
+fn structure_to_xyz(structure: &Structure, topology: &Topology) -> String {
     let mut buf = Vec::new();
-    mol.structure
-        .to_xyz(&mut buf, mol.topology.atomkinds())
-        .ok();
+    structure.to_xyz(&mut buf, topology.atomkinds()).ok();
     String::from_utf8(buf).unwrap_or_default()
 }
 
@@ -158,15 +131,21 @@ fn build_result(prep: &PreparedScan, pmf_result: crate::report::PmfResult) -> We
         mean_energy_data: pmf_result.mean_energy_data,
         virial: pmf_result.virial,
         molar_masses: (
-            prep.mol1.structure.masses.iter().sum(),
-            prep.mol2.structure.masses.iter().sum(),
+            prep.system.ref_a.masses.iter().sum(),
+            prep.system.ref_b.masses.iter().sum(),
         ),
         net_charges: (
-            prep.mol1.structure.net_charge(),
-            prep.mol2.structure.net_charge(),
+            prep.system.ref_a.net_charge(),
+            prep.system.ref_b.net_charge(),
         ),
-        cg_xyz: (structure_to_xyz(&prep.mol1), structure_to_xyz(&prep.mol2)),
-        topology_yaml: prep.mol1.topology_yaml.clone(),
+        cg_xyz: (
+            structure_to_xyz(&prep.system.ref_a, &prep.system.topology),
+            structure_to_xyz(&prep.system.ref_b, &prep.system.topology),
+        ),
+        topology_yaml: prep.system.generated[0]
+            .as_ref()
+            .map(|cg| cg.topology.clone())
+            .unwrap_or_default(),
     }
 }
 
@@ -196,10 +175,10 @@ pub async fn run_scan_async(
 
     log::info!("Initializing GPU backend...");
     let backend = GpuBackend::new_async(
-        prep.mol1.structure.clone(),
-        prep.backend_ref_b.clone(),
+        prep.system.ref_a.clone(),
+        prep.system.ref_b.clone(),
         &prep.sr_splines,
-        &prep.coulomb,
+        prep.system.pair_matrix.coulomb_params(),
     )
     .await?;
 
@@ -221,11 +200,87 @@ pub fn run_scan(req: WebScanRequest) -> anyhow::Result<WebScanResult> {
 
     log::info!("Initializing GPU backend...");
     let backend = GpuBackend::new(
-        prep.mol1.structure.clone(),
-        prep.backend_ref_b.clone(),
+        prep.system.ref_a.clone(),
+        prep.system.ref_b.clone(),
         &prep.sr_splines,
-        &prep.coulomb,
+        prep.system.pair_matrix.coulomb_params(),
     )?;
 
     finish_scan(&req, &prep, &backend)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fixed-column PDB with backbone + CB per residue; residues are spaced along x.
+    fn pdb(residues: &[&str]) -> Vec<u8> {
+        let atoms = [
+            ("N", -1.2),
+            ("CA", 0.0),
+            ("C", 1.2),
+            ("O", 1.8),
+            ("CB", 0.4),
+        ];
+        let mut out = String::new();
+        let mut serial = 1;
+        for (i, res) in residues.iter().enumerate() {
+            for (name, dx) in atoms {
+                let (x, y) = (3.8 * i as f64 + dx, if name == "CB" { 1.5 } else { 0.0 });
+                let element = &name[..1];
+                out += &format!(
+                    "ATOM  {serial:>5}  {name:<3} {res:>3} A{seq:>4}    {x:>8.3}{y:>8.3}{z:>8.3}  1.00  0.00          {element:>2}\n",
+                    seq = i + 1,
+                    z = 0.0,
+                );
+                serial += 1;
+            }
+        }
+        out.into_bytes()
+    }
+
+    fn request(mol1: &[&str], mol2: &[&str]) -> WebScanRequest {
+        WebScanRequest {
+            mol1_pdb: pdb(mol1),
+            mol2_pdb: pdb(mol2),
+            ph: 7.0,
+            model: "calvados3".into(),
+            single_bead: true,
+            rmin: 20.0,
+            rmax: 24.0,
+            dr: 2.0,
+            molarity: 0.05,
+            temperature: 298.15,
+            max_ndiv: 0,
+            gradient_threshold: 0.5,
+            cutoff: 30.0,
+            grid_size: 200,
+            homo_dimer: mol1 == mol2,
+        }
+    }
+
+    #[test]
+    fn homo_dimer_reuses_molecule_1() {
+        let peptide = ["LEU", "PHE", "LYS", "GLU"];
+        let prep = prepare_scan(&request(&peptide, &peptide)).unwrap();
+        assert_eq!(prep.system.ref_b.atom_ids, prep.system.ref_a.atom_ids);
+        assert_eq!(prep.system.ref_b.pos, prep.system.ref_a.pos);
+    }
+
+    /// Molecule 2 has ALA, absent from molecule 1, so only a remap into the merged
+    /// table makes its bead resolve to the ALA kind (gh #39).
+    #[test]
+    fn hetero_dimer_remaps_into_merged_kinds() {
+        let prep = prepare_scan(&request(&["LEU", "LYS"], &["ALA", "LYS"])).unwrap();
+        let kinds = prep.system.topology.atomkinds();
+        let names: Vec<_> = prep
+            .system
+            .ref_b
+            .atom_ids
+            .iter()
+            .map(|&id| kinds[id].name())
+            .collect();
+        assert!(names.contains(&"ALA"), "{names:?}");
+        assert!(!names.contains(&"LEU"), "{names:?}");
+    }
 }
