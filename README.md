@@ -329,14 +329,14 @@ atoms:
 
 system:
   energy:
-    nonbonded:
+    - !Nonbonded
       # Coulomb/Yukawa is always added automatically -- do NOT specify it here
       default:
         - !AshbaughHatch {mixing: arithmetic, cutoff: 20.0}
 ```
 
 Each atom entry defines charge, mass, Lennard-Jones-like size (sigma) and well depth (epsilon), and model-specific properties.
-The `nonbonded` section specifies the short-range pair potential; different potentials can be assigned to specific atom pairs if needed.
+The `!Nonbonded` term specifies the short-range pair potential; different potentials can be assigned to specific atom pairs if needed.
 
 **Warning:** The electrostatic Coulomb/Yukawa term is always added automatically. Do _not_ include it in the topology.
 

@@ -31,7 +31,7 @@ atoms:
 
 system:
   energy:
-    nonbonded:
+    - !Nonbonded
       # A Coulomb term is automatically added
       default:
         - !AshbaughHatch {mixing: arithmetic, cutoff: 20.0}

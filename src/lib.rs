@@ -17,10 +17,10 @@ pub mod backend;
 pub mod diffusion;
 pub mod energy;
 pub mod icoscan;
-pub mod loader;
 pub mod report;
 mod sample;
 pub mod structure;
+pub mod system;
 #[cfg(feature = "cli")]
 pub mod trajectory;
 mod virial;
