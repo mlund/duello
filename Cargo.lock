@@ -287,9 +287,9 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "cgkitten"
-version = "0.2.0"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "077e15bd3620fddfd5dff14e4d9ccdb1906efc7687e5dc8f07bb9028a8d16593"
+checksum = "9355f0670c245989a17b799d35ede7db6b230df4c34cb62bbed24a02ad201322"
 dependencies = [
  "log",
  "rand",
@@ -414,9 +414,9 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "coulomb"
-version = "0.5.0"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63a6f6ba9c341ccf166e8baa3e4fd39a5804a04709fe7ab1d27b7871bcb4658f"
+checksum = "a8dc64f8062c9626c219724bdfc37c788c983ef38d82a20cf4bc2f2d779912d5"
 dependencies = [
  "mint",
  "nalgebra 0.34.2",
@@ -842,8 +842,8 @@ dependencies = [
 
 [[package]]
 name = "faunus"
-version = "0.2.0"
-source = "git+https://github.com/mlund/faunus-rs.git#b4adc22f544a2a38fb94852da917cd1cd407f513"
+version = "3.0.0-beta.3"
+source = "git+https://github.com/mlund/faunus-rs.git#b30ff93d84a383459c64b44521067ef7f23e476b"
 dependencies = [
  "anyhow",
  "average 0.13.1",
@@ -865,6 +865,7 @@ dependencies = [
  "rand",
  "serde",
  "serde_with",
+ "thiserror",
  "typetag",
  "unordered-pair",
  "validator",
@@ -1442,8 +1443,8 @@ dependencies = [
 
 [[package]]
 name = "interatomic"
-version = "0.6.0"
-source = "git+https://github.com/mlund/interatomic.git#927f282ec11b7a8f32c1b38eb6cff96b2508da8e"
+version = "0.6.1"
+source = "git+https://github.com/mlund/interatomic.git#4685c47f3f103c4001345567599bd736d841d8f8"
 dependencies = [
  "bytemuck",
  "coulomb",
@@ -2971,9 +2972,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "voronota-ltr"
-version = "0.4.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a09831f5c89807767b55fd2aa6252ae3dd56ef84f361671b426ac2e2b954e176"
+checksum = "9d2abb9e3dc6f79099b5adb6df719e1d80022abc1122d24286e9d2871c5fdfc5"
 dependencies = [
  "clap",
  "env_logger 0.11.11",
