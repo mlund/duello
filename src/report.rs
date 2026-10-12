@@ -17,29 +17,41 @@ use crate::{Sample, VirialCoeff};
 
 /// Computed PMF results for programmatic consumption.
 pub struct PmfResult {
-    pub pmf_data: Vec<(f32, f32)>,
-    pub mean_energy_data: Vec<(f32, f32)>,
+    /// Finite points only, in increasing R.
+    pub points: Vec<PmfPoint>,
     pub virial: VirialCoeff,
+}
+
+/// One point of the PMF and mean energy curves, in kT.
+#[derive(Clone, Copy, Debug)]
+pub struct PmfPoint {
+    pub r: f32,
+    pub free_energy: f32,
+    pub mean_energy: f32,
+}
+
+impl PmfPoint {
+    /// Depends only on its own R-bin, so it is final as soon as that bin is scanned.
+    /// `None` where the angular average is not finite, e.g. full overlap.
+    pub fn new(r: f64, sample: &Sample) -> Option<Self> {
+        let mean_energy = sample.mean_energy() / sample.thermal_energy();
+        let free_energy = sample.free_energy() / sample.thermal_energy();
+        (mean_energy.is_finite() && free_energy.is_finite()).then_some(Self {
+            r: r as f32,
+            free_energy: free_energy as f32,
+            mean_energy: mean_energy as f32,
+        })
+    }
 }
 
 /// Compute PMF/virial from samples without writing files.
 pub fn compute_pmf(samples: &[(Vector3, Sample)]) -> anyhow::Result<PmfResult> {
-    let mut pmf_data = Vec::<(f32, f32)>::new();
-    let mut mean_energy_data = Vec::<(f32, f32)>::new();
-    for (r, sample) in samples {
-        let mean_energy = sample.mean_energy() / sample.thermal_energy();
-        let free_energy = sample.free_energy() / sample.thermal_energy();
-        if mean_energy.is_finite() && free_energy.is_finite() {
-            pmf_data.push((r.norm() as f32, free_energy as f32));
-            mean_energy_data.push((r.norm() as f32, mean_energy as f32));
-        }
-    }
-    let virial = VirialCoeff::from_pmf(pmf_data.iter().cloned(), None)?;
-    Ok(PmfResult {
-        pmf_data,
-        mean_energy_data,
-        virial,
-    })
+    let points: Vec<PmfPoint> = samples
+        .iter()
+        .filter_map(|(r, sample)| PmfPoint::new(r.norm(), sample))
+        .collect();
+    let virial = VirialCoeff::from_pmf(points.iter().map(|p| (p.r, p.free_energy)), None)?;
+    Ok(PmfResult { points, virial })
 }
 
 /// Write PMF and mean energy as a function of mass center separation to file
@@ -114,11 +126,16 @@ pub fn report_pmf(
     if log::max_level() >= log::Level::Info {
         const YELLOW: RGB8 = RGB8::new(255, 255, 0);
         const RED: RGB8 = RGB8::new(255, 0, 0);
-        let rmin = result.mean_energy_data.first().unwrap().0;
-        let rmax = result.mean_energy_data.last().unwrap().0;
+        let (pmf, mean_energy): (Vec<_>, Vec<_>) = result
+            .points
+            .iter()
+            .map(|p| ((p.r, p.free_energy), (p.r, p.mean_energy)))
+            .unzip();
+        let rmin = mean_energy.first().unwrap().0;
+        let rmax = mean_energy.last().unwrap().0;
         Chart::new(100, 50, rmin, rmax)
-            .linecolorplot(&Shape::Lines(&result.mean_energy_data), RED)
-            .linecolorplot(&Shape::Lines(&result.pmf_data), YELLOW)
+            .linecolorplot(&Shape::Lines(&mean_energy), RED)
+            .linecolorplot(&Shape::Lines(&pmf), YELLOW)
             .nice();
     };
     Ok(())

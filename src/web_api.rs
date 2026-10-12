@@ -10,15 +10,15 @@ use crate::energy::SplinedPotentials;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::icoscan::compute_scan;
 use crate::icoscan::{compute_scan_async, ScanParams};
+pub use crate::icoscan::{OnProgress, ScanProgress};
 use crate::report::compute_pmf;
+pub use crate::report::PmfPoint;
 use crate::structure::Structure;
 use crate::system::{CgOptions, PairSpec, PairSystem, Source};
 use crate::VirialCoeff;
 use faunus::interatomic::coulomb::{DebyeLength as _, Medium, Salt};
 use faunus::interatomic::twobody::SplineConfig;
 use faunus::topology::Topology;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
 
 /// Parameters for a web-initiated scan (no file paths).
 pub struct WebScanRequest {
@@ -41,8 +41,8 @@ pub struct WebScanRequest {
 
 /// Result of a web scan.
 pub struct WebScanResult {
-    pub pmf_data: Vec<(f32, f32)>,
-    pub mean_energy_data: Vec<(f32, f32)>,
+    /// Same points as streamed through [`ScanProgress`] during the scan.
+    pub points: Vec<PmfPoint>,
     pub virial: VirialCoeff,
     /// Molecular weights in g/mol (mol1, mol2)
     pub molar_masses: (f64, f64),
@@ -127,8 +127,7 @@ fn structure_to_xyz(structure: &Structure, topology: &Topology) -> String {
 
 fn build_result(prep: &PreparedScan, pmf_result: crate::report::PmfResult) -> WebScanResult {
     WebScanResult {
-        pmf_data: pmf_result.pmf_data,
-        mean_energy_data: pmf_result.mean_energy_data,
+        points: pmf_result.points,
         virial: pmf_result.virial,
         molar_masses: (
             prep.system.ref_a.masses.iter().sum(),
@@ -156,22 +155,20 @@ fn finish_scan(
     req: &WebScanRequest,
     prep: &PreparedScan,
     backend: &(impl EnergyBackend + Sync),
+    progress: OnProgress,
 ) -> anyhow::Result<WebScanResult> {
     let scan_params = build_scan_params(req, prep);
 
     log::info!("Running 6D scan...");
-    let scan_result = compute_scan(&scan_params, backend)?;
+    let scan_result = compute_scan(&scan_params, backend, progress)?;
     let pmf_result = compute_pmf(&scan_result.samples)?;
     Ok(build_result(prep, pmf_result))
 }
 
 /// Run the complete scan pipeline asynchronously (required for WASM).
-///
-/// The optional `progress` callback is called with `(current_r, total_r)` after each R-bin.
 pub async fn run_scan_async(
     req: WebScanRequest,
-    progress: Option<&dyn Fn(usize, usize)>,
-    cancel: Option<&Arc<AtomicBool>>,
+    progress: OnProgress<'_>,
 ) -> anyhow::Result<WebScanResult> {
     let prep = prepare_scan(&req)?;
 
@@ -187,7 +184,7 @@ pub async fn run_scan_async(
     let scan_params = build_scan_params(&req, &prep);
 
     log::info!("Running 6D scan (async)...");
-    let scan_result = compute_scan_async(&scan_params, &backend, progress, cancel).await?;
+    let scan_result = compute_scan_async(&scan_params, &backend, progress).await?;
 
     let pmf_result = compute_pmf(&scan_result.samples)?;
     Ok(build_result(&prep, pmf_result))
@@ -197,7 +194,7 @@ pub async fn run_scan_async(
 ///
 /// This is the primary entry point for the native desktop UI.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn run_scan(req: WebScanRequest) -> anyhow::Result<WebScanResult> {
+pub fn run_scan(req: WebScanRequest, progress: OnProgress) -> anyhow::Result<WebScanResult> {
     let prep = prepare_scan(&req)?;
 
     log::info!("Initializing GPU backend...");
@@ -208,7 +205,7 @@ pub fn run_scan(req: WebScanRequest) -> anyhow::Result<WebScanResult> {
         prep.system.pair_matrix.coulomb_params(),
     )?;
 
-    finish_scan(&req, &prep, &backend)
+    finish_scan(&req, &prep, &backend, progress)
 }
 
 #[cfg(test)]

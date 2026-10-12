@@ -14,10 +14,12 @@
 
 use crate::{
     backend::{EnergyBackend, PoseParams},
+    report::PmfPoint,
     structure::Structure,
     Sample, Vector3,
 };
 use icotable::{AdaptiveBuilder, Subdivision, Table6DAdaptive};
+use std::ops::ControlFlow;
 
 #[cfg(feature = "cli")]
 use icotable::{TableMetadata, TailCorrectionTerm};
@@ -59,6 +61,40 @@ pub struct ScanConfig {
     pub trajectory: Option<PathBuf>,
     /// Atom names for the trajectory's topology file; XTC stores none.
     pub atom_kinds: Vec<faunus::topology::AtomKind>,
+}
+
+/// Progress of a running scan, reported after each R-bin.
+pub struct ScanProgress {
+    /// R-bins finished, including this one.
+    pub done: usize,
+    pub total: usize,
+    /// The finished bin's PMF point, already final; `None` if not finite.
+    pub point: Option<PmfPoint>,
+}
+
+/// Called after each R-bin, so callers can show the PMF as it grows. Returning
+/// `Break` cancels the scan, which is the one cancellation path for sync and async.
+pub type OnProgress<'a> = Option<&'a dyn Fn(ScanProgress) -> ControlFlow<()>>;
+
+fn report_bin(
+    on_progress: OnProgress,
+    ri: usize,
+    total: usize,
+    r: f64,
+    sample: &Sample,
+) -> anyhow::Result<()> {
+    let Some(cb) = on_progress else {
+        return Ok(());
+    };
+    let progress = ScanProgress {
+        done: ri + 1,
+        total,
+        point: PmfPoint::new(r, sample),
+    };
+    match cb(progress) {
+        ControlFlow::Continue(()) => Ok(()),
+        ControlFlow::Break(()) => anyhow::bail!("Scan cancelled"),
+    }
 }
 
 /// Results from a completed scan (no I/O).
@@ -124,6 +160,7 @@ fn make_6d_builder(params: &ScanParams) -> AdaptiveBuilder {
 pub fn compute_scan<B: EnergyBackend + Sync>(
     params: &ScanParams,
     backend: &B,
+    on_progress: OnProgress,
 ) -> anyhow::Result<ScanResult> {
     let mut builder = make_6d_builder(params);
     let n_r = builder.n_r();
@@ -178,6 +215,7 @@ pub fn compute_scan<B: EnergyBackend + Sync>(
             max_grad,
             r_sample.free_energy()
         );
+        report_bin(on_progress, ri, n_r, r, &r_sample)?;
         partition_samples.push(r_sample);
     }
 
@@ -200,13 +238,10 @@ pub fn compute_scan<B: EnergyBackend + Sync>(
 
 /// Async version of compute_scan for WASM where GPU readback must be async.
 ///
-/// The optional `progress` callback is called with `(current_r, total_r)` after each R-bin.
-/// If `cancel` is set to true, the scan aborts early with an error.
 pub async fn compute_scan_async(
     params: &ScanParams,
     backend: &crate::backend::GpuBackend,
-    progress: Option<&dyn Fn(usize, usize)>,
-    cancel: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    on_progress: OnProgress<'_>,
 ) -> anyhow::Result<ScanResult> {
     let mut builder = make_6d_builder(params);
     let n_r = builder.n_r();
@@ -231,17 +266,8 @@ pub async fn compute_scan_async(
             builder.set_slab(ri, oi, data);
         }
         builder.finish_r_slice(ri);
+        report_bin(on_progress, ri, n_r, r, &r_sample)?;
         partition_samples.push(r_sample);
-
-        if let Some(cb) = &progress {
-            cb(ri + 1, n_r);
-        }
-
-        if let Some(flag) = &cancel {
-            if flag.load(std::sync::atomic::Ordering::Relaxed) {
-                anyhow::bail!("Scan cancelled");
-            }
-        }
     }
 
     let distances: Vec<f64> = (0..n_r).map(|ri| builder.r_value(ri)).collect();
@@ -385,7 +411,7 @@ fn compute_slab_serial<B: EnergyBackend + Sync>(
 #[cfg(feature = "cli")]
 pub fn do_icoscan<B: EnergyBackend + Sync>(config: &ScanConfig, backend: &B) -> anyhow::Result<()> {
     let start_time = std::time::Instant::now();
-    let mut result = compute_scan(&config.params, backend)?;
+    let mut result = compute_scan(&config.params, backend, None)?;
 
     let elapsed = start_time.elapsed();
     info!(
@@ -712,5 +738,73 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Orientation-dependent and finite, so every bin has a PMF point.
+    struct StubBackend(Structure);
+
+    impl StubBackend {
+        fn new() -> Self {
+            Self(Structure {
+                pos: vec![Vector3::zeros()],
+                masses: vec![1.0],
+                charges: vec![0.0],
+                radii: vec![1.0],
+                atom_ids: vec![0],
+            })
+        }
+    }
+
+    impl EnergyBackend for StubBackend {
+        fn compute_energy(&self, pose: &PoseParams) -> f64 {
+            -500.0 / pose.r * (1.0 + 0.3 * pose.vertex_i.x * pose.vertex_j.y)
+        }
+        fn ref_a(&self) -> &Structure {
+            &self.0
+        }
+        fn ref_b(&self) -> &Structure {
+            &self.0
+        }
+    }
+
+    /// The web app plots streamed points during the scan, then replaces them with the
+    /// final curve; the two must agree.
+    #[test]
+    fn streamed_bins_match_final_pmf() {
+        let backend = StubBackend::new();
+        let streamed = std::cell::RefCell::new(Vec::new());
+        let on_progress = |p: ScanProgress| {
+            streamed.borrow_mut().push((p.done, p.total, p.point));
+            ControlFlow::Continue(())
+        };
+        let result = compute_scan(&params(1), &backend, Some(&on_progress)).unwrap();
+        let pmf = crate::report::compute_pmf(&result.samples).unwrap();
+
+        let streamed = streamed.into_inner();
+        let n = result.samples.len();
+        assert_eq!(streamed.len(), n);
+        for (i, (done, total, _)) in streamed.iter().enumerate() {
+            assert_eq!((*done, *total), (i + 1, n));
+        }
+        let points: Vec<_> = streamed.iter().map(|(_, _, p)| p.unwrap()).collect();
+        let key = |p: &PmfPoint| (p.r, p.free_energy, p.mean_energy);
+        assert_eq!(
+            points.iter().map(key).collect::<Vec<_>>(),
+            pmf.points.iter().map(key).collect::<Vec<_>>()
+        );
+    }
+
+    /// `Break` from the callback stops the scan after that bin.
+    #[test]
+    fn break_cancels_scan() {
+        let backend = StubBackend::new();
+        let calls = std::cell::Cell::new(0);
+        let on_progress = |_: ScanProgress| {
+            calls.set(calls.get() + 1);
+            ControlFlow::Break(())
+        };
+        let result = compute_scan(&params(1), &backend, Some(&on_progress));
+        assert!(result.is_err_and(|e| e.to_string().contains("cancelled")));
+        assert_eq!(calls.get(), 1);
     }
 }
