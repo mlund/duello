@@ -27,6 +27,8 @@ mod virial;
 pub mod web_api;
 
 pub use sample::Sample;
+/// Shown by front-ends so a result can be traced to the library that produced it.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub use virial::VirialCoeff;
 
 #[macro_use]
