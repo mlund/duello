@@ -12,8 +12,8 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
-use anyhow::{bail, Context, Result};
-use cgkitten::CgSystem;
+use anyhow::{anyhow, bail, Context, Result};
+use cgkitten::{residue::PkaOverrides, CgSystem};
 use clap::{Parser, Subcommand};
 use duello::{
     backend::{self, GpuBackend, SimdBackend},
@@ -41,24 +41,69 @@ enum CgPolicy {
     Multi,
 }
 
-fn cg_options_from_args(
+/// Coarse-graining options, shared by the commands that accept PDB/CIF input
+#[derive(clap::Args)]
+#[command(next_help_heading = "Coarse-graining (PDB/CIF input only)")]
+struct CgArgs {
+    /// pH for coarse-graining
+    #[arg(long, default_value = "7.0")]
     ph: f64,
-    model: &str,
-    cg: &CgPolicy,
-    scale_hydrophobic: &Option<String>,
-    chains: &[String],
-) -> CgOptions {
-    let scaling = scale_hydrophobic
-        .as_deref()
-        .map(|s| s.parse().expect("invalid --scale-hydrophobic value"))
-        .unwrap_or_default();
-    CgOptions {
-        ph,
-        model: model.to_string(),
-        single_bead: matches!(cg, CgPolicy::Single),
-        scale_hydrophobic: scaling,
-        chains: chains.to_vec(),
+    /// Force field model for coarse-graining
+    #[arg(long, default_value = "calvados3")]
+    model: String,
+    /// Coarse-graining policy: "single" or "multi"
+    #[arg(long, default_value = "single")]
+    cg: CgPolicy,
+    /// Hydrophobic scaling, e.g. "lambda:1.2" or "epsilon:0.8"
+    #[arg(long)]
+    scale_hydrophobic: Option<String>,
+    /// Include only these chain IDs. Repeat for multiple: --chain A --chain B
+    #[arg(long)]
+    chain: Vec<String>,
+    /// Override a pKa value (side-chain name, NTR or CTR).
+    /// Repeatable: --pka HIS=6.0 --pka CTR=3.1
+    #[arg(long, value_name = "NAME=PKA", value_parser = parse_pka)]
+    pka: Vec<(String, f64)>,
+}
+
+impl CgArgs {
+    fn options(&self) -> Result<CgOptions> {
+        let scale_hydrophobic = self
+            .scale_hydrophobic
+            .as_deref()
+            .map(|s| {
+                s.parse()
+                    .map_err(|e| anyhow!("invalid --scale-hydrophobic value: {e}"))
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let mut pka = PkaOverrides::default();
+        for (name, value) in &self.pka {
+            pka.insert(name, *value).map_err(anyhow::Error::msg)?;
+        }
+        Ok(CgOptions {
+            ph: self.ph,
+            model: self.model.clone(),
+            single_bead: matches!(self.cg, CgPolicy::Single),
+            scale_hydrophobic,
+            chains: self.chain.clone(),
+            pka,
+        })
     }
+}
+
+/// Parse NAME=PKA, checking the name here so clap reports it with usage help.
+/// Repeated names can only be caught once all values are collected, in `CgArgs::options`.
+fn parse_pka(arg: &str) -> Result<(String, f64), String> {
+    let (name, value) = arg
+        .split_once('=')
+        .ok_or_else(|| format!("expected NAME=PKA, got '{arg}'"))?;
+    let value = value
+        .trim()
+        .parse()
+        .map_err(|_| format!("invalid pKa value '{value}'"))?;
+    PkaOverrides::default().insert(name, value)?;
+    Ok((name.to_string(), value))
 }
 
 /// Spline grid type selection
@@ -276,21 +321,8 @@ enum Commands {
         /// Output file for PMF
         #[arg(long = "pmf", default_value = "pmf.dat")]
         pmf_file: PathBuf,
-        /// pH for coarse-graining (only used for PDB/CIF input)
-        #[arg(long, default_value = "7.0")]
-        ph: f64,
-        /// Force field model for coarse-graining (only used for PDB/CIF input)
-        #[arg(long, default_value = "calvados3")]
-        model: String,
-        /// Coarse-graining policy: "single" or "multi" (only used for PDB/CIF input)
-        #[arg(long, default_value = "single")]
-        cg: CgPolicy,
-        /// Hydrophobic scaling, e.g. "lambda:1.2" or "epsilon:0.8" (only used for PDB/CIF input)
-        #[arg(long)]
-        scale_hydrophobic: Option<String>,
-        /// Include only these chain IDs (only for PDB/CIF input). Repeat for multiple: --chain A --chain B
-        #[arg(long)]
-        chain: Vec<String>,
+        #[command(flatten)]
+        cg: CgArgs,
         /// Validate the input and stop before scanning (dry run; writes no files)
         #[arg(long)]
         check: bool,
@@ -360,21 +392,8 @@ enum Commands {
         /// Defaults to --cutoff if not set. Set to SR potential range for best accuracy.
         #[arg(long)]
         sr_cutoff: Option<f64>,
-        /// pH for coarse-graining (only used for PDB/CIF input)
-        #[arg(long, default_value = "7.0")]
-        ph: f64,
-        /// Force field model for coarse-graining (only used for PDB/CIF input)
-        #[arg(long, default_value = "calvados3")]
-        model: String,
-        /// Coarse-graining policy: "single" or "multi" (only used for PDB/CIF input)
-        #[arg(long, default_value = "single")]
-        cg: CgPolicy,
-        /// Hydrophobic scaling, e.g. "lambda:1.2" or "epsilon:0.8" (only used for PDB/CIF input)
-        #[arg(long)]
-        scale_hydrophobic: Option<String>,
-        /// Include only these chain IDs (only for PDB/CIF input). Repeat for multiple: --chain A --chain B
-        #[arg(long)]
-        chain: Vec<String>,
+        #[command(flatten)]
+        cg: CgArgs,
         /// Validate the input and stop before scanning (dry run; writes no files)
         #[arg(long)]
         check: bool,
@@ -465,11 +484,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         backend: backend_type,
         grid,
         sr_cutoff,
-        ph,
-        model,
         cg,
-        scale_hydrophobic,
-        chain,
         check,
     } = cmd
     else {
@@ -507,7 +522,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         a: Source::File(mol1),
         b: (!homo_dimer).then_some(Source::File(mol2)),
         top: top_file.as_deref(),
-        cg: cg_options_from_args(*ph, model, cg, scale_hydrophobic, chain),
+        cg: cg.options()?,
         medium: &medium,
     })?;
     if *check {
@@ -635,11 +650,7 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
         temperature,
         output,
         pmf_file,
-        ph,
-        model,
         cg,
-        scale_hydrophobic,
-        chain,
         check,
     } = cmd
     else {
@@ -658,7 +669,7 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
         a: Source::File(mol1),
         b: None,
         top: top_file.as_deref(),
-        cg: cg_options_from_args(*ph, model, cg, scale_hydrophobic, chain),
+        cg: cg.options()?,
         medium: &medium,
     })?;
 
