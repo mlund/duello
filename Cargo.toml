@@ -1,6 +1,6 @@
 [package]
 name = "duello"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 description = "Calculates the osmotic second virial coefficient (B2), and dissociation constant (Kd), for two rigid (macro)molecules, e.g. globular proteins. Done by explicit summation of the partition function in six dimensions (angular space and rigid-body separation). Calvados 3 parameters for use with coarsed grained amino acids are provided, but any pair-wise additivie potential can be used."
 authors = ["Mikael Lund <lyssky@icloud.com>"]
@@ -24,7 +24,7 @@ itertools-num = {version = "0.1", default-features = false}
 nalgebra = {version = "0.34.1", default-features = false}
 rayon = { version = "1.10", optional = true }
 faunus = { git = "https://github.com/mlund/faunus-rs.git", default-features = false }
-cgkitten = { version = "0.2.4", default-features = false }
+cgkitten = { version = "0.3.0", default-features = false }
 yaml_serde = "0.10.4"
 serde = { version = "1.0", features = ["derive"], default-features = false }
 semver = { version = "1.0", features = ["serde"], default-features = false }
