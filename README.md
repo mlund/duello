@@ -200,6 +200,9 @@ duello scan \
 | `--cg`                   | single        | Coarse-graining policy: `single` or `multi`           |
 | `--scale-hydrophobic`    | --            | Hydrophobic scaling, e.g. `lambda:1.2` or `epsilon:0.8` |
 | `--chain`                | (all)         | Keep only these chain IDs (repeatable: `--chain A --chain B`) |
+| `--pka`                  | --            | Override a pKa, `NAME=PKA` for a side chain, `NTR` or `CTR` (repeatable) |
+
+Default pKa values follow [Thurlkill et al. 2006](https://doi.org/10.1110/ps.051840806) (cgkitten ≥ 0.3).
 
 ### Trajectory Output
 

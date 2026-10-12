@@ -154,6 +154,23 @@ fn atom_scan_check_rejects_unknown_atom() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("Unknown atom type: XYZ"));
 }
 
+/// Bad pKa names must fail before any coarse-graining work.
+#[test]
+fn unknown_pka_name_is_rejected() {
+    let dir = workdir("char_pka");
+    let cif = example("calvados3/2CDS.cif");
+    let out = duello(&dir)
+        .args(["scan", "--check", "--pka", "XYZ=4", "-1"])
+        .arg(&cif)
+        .arg("-2")
+        .arg(&cif)
+        .args(["--rmin", "40", "--rmax", "44", "--dr", "2"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unknown titratable group"));
+}
+
 /// Same-named inputs from different directories would overwrite each other's XYZ.
 #[test]
 fn colliding_input_stems_are_rejected() {

@@ -38,6 +38,8 @@ pub struct CgOptions {
     pub scale_hydrophobic: cgkitten::forcefield::HydrophobicScaling,
     /// Chain IDs to keep (empty = all chains).
     pub chains: Vec<String>,
+    /// pKa overrides (default: cgkitten's table).
+    pub pka: cgkitten::residue::PkaOverrides,
 }
 
 impl Default for CgOptions {
@@ -48,6 +50,7 @@ impl Default for CgOptions {
             single_bead: true,
             scale_hydrophobic: cgkitten::forcefield::HydrophobicScaling::NoScale,
             chains: Vec::new(),
+            pka: Default::default(),
         }
     }
 }
@@ -189,6 +192,11 @@ impl Loaded {
             cg.chains.is_empty(),
             "--chain is only supported for PDB/CIF input, not XYZ"
         );
+        // XYZ charges come fixed from the topology, so an override would be silently ignored.
+        anyhow::ensure!(
+            cg.pka.is_empty(),
+            "--pka is only supported for PDB/CIF input, not XYZ"
+        );
         let top = top.context("--top is required when input is an XYZ file")?;
         let topology = finalized(Topology::from_file_partial(top)?, top)?;
         let structures = xyz
@@ -248,9 +256,15 @@ fn coarse_grain(inputs: &[(Cow<[u8]>, bool)], cg: &CgOptions) -> Result<cgkitten
     let readers = inputs
         .iter()
         .map(|(bytes, is_pdb)| (BufReader::new(Cursor::new(bytes.as_ref())), *is_pdb));
+    let calc = cgkitten::ChargeCalc {
+        ph: cg.ph,
+        mc: 10000,
+        pka_overrides: cg.pka.clone(),
+        ..Default::default()
+    };
     cgkitten::coarse_grain_jointly(
         readers,
-        &cgkitten::ChargeCalc::new().ph(cg.ph).mc(10000),
+        &calc,
         &cg.model,
         policy,
         0.02,
@@ -263,7 +277,9 @@ fn coarse_grain(inputs: &[(Cow<[u8]>, bool)], cg: &CgOptions) -> Result<cgkitten
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cgkitten::residue::PkaOverrides;
     use faunus::interatomic::coulomb::Salt;
+    use faunus::topology::FindByName;
 
     fn example(rel: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -293,6 +309,35 @@ mod tests {
                 system.err().unwrap()
             );
         }
+    }
+
+    /// With pKa far below pH, lysines titrate to neutral; default leaves them charged.
+    #[test]
+    fn pka_override_reaches_charges() {
+        let cif = example("calvados3/2CDS.cif");
+        let lys_charge = |pka: PkaOverrides| {
+            let system = PairSystem::load(PairSpec {
+                a: Source::File(&cif),
+                b: None,
+                top: None,
+                cg: CgOptions {
+                    pka,
+                    ..Default::default()
+                },
+                medium: &Medium::salt_water(298.15, Salt::SodiumChloride, 0.1),
+            })
+            .unwrap();
+            system
+                .topology
+                .atomkinds()
+                .find_name("LYS")
+                .unwrap()
+                .charge()
+        };
+        let mut low = PkaOverrides::default();
+        low.insert("LYS", -10.0).unwrap();
+        assert!(lys_charge(PkaOverrides::default()) > 0.9);
+        assert!(lys_charge(low).abs() < 0.01);
     }
 
     /// Mixed input would need two topologies, which can't give cross pairs a potential.
