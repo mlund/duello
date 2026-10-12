@@ -299,7 +299,7 @@ The temperature can differ from the scan temperature since energies are stored i
 
 ## PDB / mmCIF (recommended)
 
-Pass PDB or CIF files directly. Duello coarse-grains them on the fly using [cgkitten](https://github.com/mlund/cgkitten), generating `.xyz` and `_topology.yaml` files alongside the input. Charges are computed using Monte Carlo titration.
+Pass PDB or CIF files directly. Duello coarse-grains them on the fly using [cgkitten](https://github.com/mlund/cgkitten), generating `.xyz` and `_topology.yaml` files alongside the input. Charges are computed using Monte Carlo titration. Two different structures share one generated topology so every bead pair gets a pair potential; for the same reason, XYZ and PDB/CIF input can't be mixed.
 
 If your PDB has missing atoms or residues, pre-process with [pdbfixer](https://github.com/openmm/pdbfixer):
 

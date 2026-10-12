@@ -153,3 +153,23 @@ fn atom_scan_check_rejects_unknown_atom() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("Unknown atom type: XYZ"));
 }
+
+/// Same-named inputs from different directories would overwrite each other's XYZ.
+#[test]
+fn colliding_input_stems_are_rejected() {
+    let dir = workdir("char_stems");
+    for sub in ["a", "b"] {
+        std::fs::create_dir_all(dir.join(sub)).unwrap();
+        std::fs::copy(example("calvados3/2CDS.cif"), dir.join(sub).join("x.cif")).unwrap();
+    }
+    let out = duello(&dir)
+        .args([
+            "scan", "-1", "a/x.cif", "-2", "b/x.cif", "--rmin", "40", "--rmax", "44",
+        ])
+        .args(COARSE)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("share the file name"));
+    assert!(!dir.join("pmf.dat").exists());
+}
