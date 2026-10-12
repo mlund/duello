@@ -15,7 +15,7 @@
 use crate::{
     backend::{EnergyBackend, PoseParams},
     structure::Structure,
-    Sample, UnitQuaternion, Vector3,
+    Sample, Vector3,
 };
 use icotable::{AdaptiveBuilder, Subdivision, Table6DAdaptive};
 
@@ -290,8 +290,9 @@ fn build_slab_poses(
 /// `q_b`/`separation` as returned by [`icotable::orient`].
 ///
 /// Avoids cloning either structure, which matters at millions of poses.
+#[cfg(feature = "cli")]
 pub(crate) fn oriented_positions<'a>(
-    q_b: UnitQuaternion,
+    q_b: crate::UnitQuaternion,
     separation: Vector3,
     ref_a: &'a Structure,
     ref_b: &'a Structure,
