@@ -142,7 +142,9 @@ fn build_result(prep: &PreparedScan, pmf_result: crate::report::PmfResult) -> We
             structure_to_xyz(&prep.system.ref_a, &prep.system.topology),
             structure_to_xyz(&prep.system.ref_b, &prep.system.topology),
         ),
-        topology_yaml: prep.system.generated[0]
+        topology_yaml: prep
+            .system
+            .generated
             .as_ref()
             .map(|cg| cg.topology.clone())
             .unwrap_or_default(),
@@ -267,10 +269,10 @@ mod tests {
         assert_eq!(prep.system.ref_b.pos, prep.system.ref_a.pos);
     }
 
-    /// Molecule 2 has ALA, absent from molecule 1, so only a remap into the merged
-    /// table makes its bead resolve to the ALA kind (gh #39).
+    /// Molecule 2 has ALA, absent from molecule 1; both must index one kind table
+    /// with B's beads resolving to their own kinds (gh #39).
     #[test]
-    fn hetero_dimer_remaps_into_merged_kinds() {
+    fn hetero_dimer_shares_kind_table() {
         let prep = prepare_scan(&request(&["LEU", "LYS"], &["ALA", "LYS"])).unwrap();
         let kinds = prep.system.topology.atomkinds();
         let names: Vec<_> = prep
@@ -282,5 +284,20 @@ mod tests {
             .collect();
         assert!(names.contains(&"ALA"), "{names:?}");
         assert!(!names.contains(&"LEU"), "{names:?}");
+    }
+
+    /// Kim-Hummer lists pairs explicitly, so a kind only B has (ALA) must still meet
+    /// A's kinds in the pair table, or that contact would cost nothing.
+    #[test]
+    fn hetero_dimer_cross_pairs_interact() {
+        use faunus::interatomic::twobody::IsotropicTwobodyEnergy;
+        use faunus::topology::FindByName;
+        let mut req = request(&["LEU", "LYS"], &["ALA", "LYS"]);
+        req.model = "kimhummer".into();
+        let prep = prepare_scan(&req).unwrap();
+        let kinds = prep.system.topology.atomkinds();
+        let id = |name| kinds.find_name(name).unwrap().id();
+        let u = prep.sr_splines.get(id("LEU"), id("ALA"));
+        assert!(u.isotropic_twobody_energy(36.0) != 0.0);
     }
 }

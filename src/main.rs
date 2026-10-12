@@ -13,7 +13,7 @@
 // limitations under the license.
 
 use anyhow::{bail, Context, Result};
-use cgkitten::CgOutput;
+use cgkitten::CgSystem;
 use clap::{Parser, Subcommand};
 use duello::{
     backend::{self, GpuBackend, SimdBackend},
@@ -25,6 +25,7 @@ use duello::{
 use faunus::interatomic::coulomb::{pairwise::Plain, permittivity, DebyeLength, Medium, Salt};
 use faunus::interatomic::twobody::{GridTrim, GridType, SplineConfig};
 use faunus::topology::{FindByName, Topology};
+use itertools::Itertools;
 use std::process::ExitCode;
 use std::{f64::consts::PI, fs::File, io::Write, ops::Neg, path::PathBuf};
 extern crate pretty_env_logger;
@@ -257,7 +258,7 @@ enum Commands {
         /// Mass center distance step
         #[arg(long)]
         dr: f64,
-        /// YAML file with atom definitions (required for XYZ input, generated for PDB/CIF)
+        /// YAML file with atom definitions (required for XYZ input, generated for PDB/CIF; inputs must not mix the two)
         #[arg(short = 'a', long = "top")]
         topology: Option<PathBuf>,
         /// 1:1 salt molarity in mol/l
@@ -312,7 +313,7 @@ enum Commands {
         /// Mass center distance step
         #[arg(long)]
         dr: f64,
-        /// YAML file with atom definitions (required for XYZ input, generated for PDB/CIF)
+        /// YAML file with atom definitions (required for XYZ input, generated for PDB/CIF; inputs must not mix the two)
         #[arg(short = 'a', long = "top")]
         topology: Option<PathBuf>,
         /// 1:1 salt molarity in mol/l
@@ -416,18 +417,29 @@ fn input_ok() -> Result<()> {
     Ok(())
 }
 
-/// Keep coarse-grained input as `{stem}.xyz` + `{stem}_topology.yaml` so the run
-/// can be reproduced from XYZ.
-fn save_generated(inputs: &[&PathBuf], generated: &[Option<CgOutput>]) -> Result<()> {
-    for (input, cg) in inputs.iter().zip(generated) {
-        let Some(cg) = cg else { continue };
-        let stem = input.file_stem().context("input file has no stem")?;
-        let stem = stem.to_string_lossy();
-        let (xyz, top) = (format!("{stem}.xyz"), format!("{stem}_topology.yaml"));
-        std::fs::write(&xyz, &cg.xyz)?;
-        std::fs::write(&top, &cg.topology)?;
-        info!("Coarse-grained {} → {xyz} + {top}", input.display());
+/// Keep coarse-grained input as `{stem}.xyz` per molecule plus one shared
+/// `{stem}_topology.yaml` (named after molecule 1), so the run can be reproduced from XYZ.
+/// `inputs` are the molecules actually loaded, one per generated XYZ.
+fn save_generated(inputs: &[&PathBuf], generated: Option<&CgSystem>) -> Result<()> {
+    let Some(cg) = generated else {
+        return Ok(());
+    };
+    let stems = inputs
+        .iter()
+        .map(|input| input.file_stem().map(|s| s.to_string_lossy()))
+        .collect::<Option<Vec<_>>>()
+        .context("input file has no stem")?;
+    anyhow::ensure!(
+        stems.iter().all_unique(),
+        "inputs share the file name '{}'; rename one so their XYZ output doesn't collide",
+        stems[0]
+    );
+    for (stem, xyz) in stems.iter().zip(&cg.xyz) {
+        std::fs::write(format!("{stem}.xyz"), xyz)?;
     }
+    let top = format!("{}_topology.yaml", stems[0]);
+    std::fs::write(&top, &cg.topology)?;
+    info!("Coarse-grained → {}.xyz + {top}", stems.join(".xyz, "));
     Ok(())
 }
 
@@ -465,7 +477,10 @@ fn do_scan(cmd: &Commands) -> Result<()> {
     };
     assert!(rmin < rmax);
 
-    let homo_dimer = mol1 == mol2;
+    // Canonical paths, so `x.cif` and `./x.cif` count as the same molecule.
+    let canonical = |p: &PathBuf| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+    let homo_dimer = canonical(mol1) == canonical(mol2);
+    let loaded: &[&PathBuf] = if homo_dimer { &[mol1] } else { &[mol1, mol2] };
     if homo_dimer {
         info!("Homo-dimer detected (same input files); reusing single coarse-graining");
     }
@@ -498,7 +513,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
     if *check {
         return input_ok();
     }
-    save_generated(&[mol1, mol2], &generated)?;
+    save_generated(loaded, generated.as_ref())?;
 
     info!("{medium}");
     info!(
@@ -655,7 +670,7 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
     if *check {
         return input_ok();
     }
-    save_generated(&[mol1], &generated)?;
+    save_generated(&[mol1], generated.as_ref())?;
 
     info!("{medium}");
     info!("Rigid body net-charge: {:.2}e", ref_a.net_charge());

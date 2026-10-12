@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ "main" ]
 
+# A new push supersedes a running PR check.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -16,11 +21,9 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+    - uses: Swatinem/rust-cache@v2
     - name: Run clippy
-      run: cargo clippy --no-deps
-    - name: Run clippy on tests
-      run: cargo clippy --tests --no-deps
+      run: cargo clippy --all-targets --no-deps
+    # Unoptimised float code makes the scan tests take minutes instead of seconds.
+    - name: Run tests
+      run: cargo test --release

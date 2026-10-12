@@ -20,7 +20,7 @@ use crate::structure::Structure;
 use anyhow::{Context, Result};
 use faunus::energy::NonbondedMatrix;
 use faunus::interatomic::coulomb::Medium;
-use faunus::topology::{self, AtomKind, Topology};
+use faunus::topology::{self, Topology};
 use std::borrow::Cow;
 use std::io::{BufReader, Cursor};
 use std::path::{Path, PathBuf};
@@ -75,29 +75,26 @@ pub struct PairSpec<'a> {
 /// Two rigid bodies sharing one atom-kind table, plus their pair energy.
 pub struct PairSystem {
     pub ref_a: Structure,
-    /// Molecule B with atom ids in `topology`'s table.
     pub ref_b: Structure,
-    /// A's atom kinds with B's distinct kinds appended.
+    /// Atom kinds of both molecules.
     pub topology: Topology,
     pub pair_matrix: PairMatrix,
-    /// Coarse-graining output for A and B, if any. Nothing is written to disk here;
+    /// Coarse-graining output, if any. Nothing is written to disk here;
     /// persisting it is the caller's choice.
-    pub generated: [Option<cgkitten::CgOutput>; 2],
+    pub generated: Option<cgkitten::CgSystem>,
 }
 
 impl PairSystem {
     pub fn load(spec: PairSpec) -> Result<Self> {
-        let load = |source| Molecule::load(source, spec.top, &spec.cg);
-        let Molecule {
-            structure: ref_a,
+        let sources: Vec<&Source> = std::iter::once(&spec.a).chain(spec.b.as_ref()).collect();
+        let Loaded {
+            structures,
             topology,
             origin,
-        } = load(&spec.a)?;
-        let (ref_b, topology, generated_b) = match &spec.b {
-            None => (ref_a.clone(), topology, None),
-            Some(b) => merge_b(&topology, load(b)?),
-        };
-        // Pair potentials come from A's input; B only contributes atom kinds.
+        } = Loaded::new(&sources, spec.top, &spec.cg)?;
+        let mut structures = structures.into_iter();
+        let ref_a = structures.next().context("no structure loaded")?;
+        let ref_b = structures.next().unwrap_or_else(|| ref_a.clone());
         let nonbonded = origin.nonbonded(&topology, spec.medium)?;
         let pair_matrix = PairMatrix::new(nonbonded, topology.atomkinds(), spec.medium);
         Ok(Self {
@@ -105,17 +102,34 @@ impl PairSystem {
             ref_b,
             topology,
             pair_matrix,
-            generated: [origin.into_generated(), generated_b],
+            generated: origin.into_generated(),
         })
     }
 }
 
-/// Where a molecule's topology came from; decides how its pair potentials are read.
+impl Source<'_> {
+    /// `Some(is_pdb)` for input to coarse-grain, `None` for XYZ.
+    fn atomistic_format(&self) -> Option<bool> {
+        match self {
+            Source::PdbBytes(_) => Some(true),
+            Source::File(path) => coarse_grain_format(path),
+        }
+    }
+
+    fn bytes(&self) -> Result<Cow<'_, [u8]>> {
+        match self {
+            Source::PdbBytes(bytes) => Ok(Cow::Borrowed(bytes)),
+            Source::File(path) => read(path).map(Cow::Owned),
+        }
+    }
+}
+
+/// Where the topology came from; decides how pair potentials are read.
 enum TopologyOrigin {
     /// User file: may `include:` force-field files relative to itself.
     File(PathBuf),
     /// Coarse-grained in memory; self-contained.
-    Generated(cgkitten::CgOutput),
+    Generated(cgkitten::CgSystem),
 }
 
 impl TopologyOrigin {
@@ -127,7 +141,7 @@ impl TopologyOrigin {
         }
     }
 
-    fn into_generated(self) -> Option<cgkitten::CgOutput> {
+    fn into_generated(self) -> Option<cgkitten::CgSystem> {
         match self {
             Self::Generated(cg) => Some(cg),
             Self::File(_) => None,
@@ -135,45 +149,69 @@ impl TopologyOrigin {
     }
 }
 
-struct Molecule {
-    structure: Structure,
+/// Structures in input order, all indexing one topology. A single topology is what
+/// gives every cross pair a potential: one per molecule would cover only its own kinds.
+struct Loaded {
+    structures: Vec<Structure>,
     topology: Topology,
     origin: TopologyOrigin,
 }
 
-impl Molecule {
-    fn load(source: &Source, top: Option<&Path>, cg: &CgOptions) -> Result<Self> {
-        let (bytes, is_pdb) = match source {
-            Source::PdbBytes(bytes) => (Cow::Borrowed(*bytes), true),
-            Source::File(path) => match coarse_grain_format(path) {
-                Some(is_pdb) => (Cow::Owned(read(path)?), is_pdb),
-                None => return Self::from_xyz_file(path, top, cg),
-            },
-        };
-        Self::from_generated(coarse_grain(&bytes, is_pdb, cg)?)
+impl Loaded {
+    /// Checks for mixed input before reading anything.
+    fn new(sources: &[&Source], top: Option<&Path>, cg: &CgOptions) -> Result<Self> {
+        let formats: Vec<_> = sources.iter().map(|s| s.atomistic_format()).collect();
+        if formats.iter().all(Option::is_none) {
+            // PDB bytes always have a format, so every source here is an XYZ file.
+            let paths: Vec<&Path> = sources
+                .iter()
+                .filter_map(|s| match s {
+                    Source::File(path) => Some(*path),
+                    Source::PdbBytes(_) => None,
+                })
+                .collect();
+            return Self::from_xyz_files(&paths, top, cg);
+        }
+        anyhow::ensure!(
+            formats.iter().all(Option::is_some),
+            "cannot mix XYZ and PDB/CIF input: they would not share a topology"
+        );
+        let inputs = sources
+            .iter()
+            .zip(formats.into_iter().flatten())
+            .map(|(source, is_pdb)| Ok((source.bytes()?, is_pdb)))
+            .collect::<Result<Vec<_>>>()?;
+        Self::from_generated(coarse_grain(&inputs, cg)?)
     }
 
-    fn from_xyz_file(xyz: &Path, top: Option<&Path>, cg: &CgOptions) -> Result<Self> {
+    fn from_xyz_files(xyz: &[&Path], top: Option<&Path>, cg: &CgOptions) -> Result<Self> {
         anyhow::ensure!(
             cg.chains.is_empty(),
             "--chain is only supported for PDB/CIF input, not XYZ"
         );
         let top = top.context("--top is required when input is an XYZ file")?;
         let topology = finalized(Topology::from_file_partial(top)?, top)?;
-        let structure = Structure::from_xyz(&xyz.to_path_buf(), topology.atomkinds())?;
+        let structures = xyz
+            .iter()
+            .map(|path| Structure::from_xyz(&path.to_path_buf(), topology.atomkinds()))
+            .collect::<Result<_>>()?;
         Ok(Self {
-            structure,
+            structures,
             topology,
             origin: TopologyOrigin::File(top.to_path_buf()),
         })
     }
 
-    fn from_generated(cg: cgkitten::CgOutput) -> Result<Self> {
+    fn from_generated(cg: cgkitten::CgSystem) -> Result<Self> {
         // Self-contained, so there is no file to resolve relative paths against.
         let topology = finalized(Topology::from_str_partial(&cg.topology)?, Path::new("."))?;
-        let structure = Structure::from_xyz_str(&cg.xyz, topology.atomkinds())?;
+        let structures = cg
+            .xyz
+            .iter()
+            .map(|xyz| Structure::from_xyz_str(xyz, topology.atomkinds()))
+            .collect::<Result<_>>()?;
         Ok(Self {
-            structure,
+            structures,
             topology,
             origin: TopologyOrigin::Generated(cg),
         })
@@ -201,15 +239,17 @@ fn coarse_grain_format(path: &Path) -> Option<bool> {
     }
 }
 
-fn coarse_grain(bytes: &[u8], is_pdb: bool, cg: &CgOptions) -> Result<cgkitten::CgOutput> {
+fn coarse_grain(inputs: &[(Cow<[u8]>, bool)], cg: &CgOptions) -> Result<cgkitten::CgSystem> {
     let policy: &dyn cgkitten::CoarseGrain = if cg.single_bead {
         &cgkitten::SingleBead
     } else {
         &cgkitten::MultiBead
     };
-    cgkitten::coarse_grain_to_strings(
-        BufReader::new(Cursor::new(bytes)),
-        is_pdb,
+    let readers = inputs
+        .iter()
+        .map(|(bytes, is_pdb)| (BufReader::new(Cursor::new(bytes.as_ref())), *is_pdb));
+    cgkitten::coarse_grain_jointly(
+        readers,
         &cgkitten::ChargeCalc::new().ph(cg.ph).mc(10000),
         &cg.model,
         policy,
@@ -218,62 +258,6 @@ fn coarse_grain(bytes: &[u8], is_pdb: bool, cg: &CgOptions) -> Result<cgkitten::
         &cg.chains,
     )
     .map_err(anyhow::Error::msg)
-}
-
-/// B's structure with ids remapped into a table merged from A and B. Needed because
-/// each molecule may have been coarse-grained into its own id space (gh #39).
-fn merge_b(
-    topology_a: &Topology,
-    b: Molecule,
-) -> (Structure, Topology, Option<cgkitten::CgOutput>) {
-    let (merged, b_remap) = combine_topologies(topology_a, &b.topology);
-    let mut structure_b = b.structure;
-    structure_b.remap_atom_ids(&b_remap);
-    (structure_b, merged, b.origin.into_generated())
-}
-
-/// Merge molecule B's atom kinds into A's, returning the combined topology and a
-/// map from B's old atom-kind id to its id in the merged table.
-///
-/// Kinds with identical names, interaction parameters, and custom atom properties share
-/// an id, keeping the `n_types^2` pair table small. Distinct names are preserved because
-/// topology YAML may contain name-specific pair overrides.
-fn combine_topologies(topology_a: &Topology, topology_b: &Topology) -> (Topology, Vec<usize>) {
-    let mut merged = topology_a.clone();
-    let mut b_remap = Vec::with_capacity(topology_b.atomkinds().len());
-
-    for kind_b in topology_b.atomkinds() {
-        let merged_id = merged
-            .atomkinds()
-            .iter()
-            .position(|kind| same_interaction(kind, kind_b))
-            .unwrap_or_else(|| {
-                let id = merged.atomkinds().len();
-                merged.add_atomkind(kind_b.clone());
-                id
-            });
-        b_remap.push(merged_id);
-    }
-
-    // Re-index the combined table without `finalize_atoms`, which rejects duplicate
-    // names that can legitimately arise from independent titration outcomes.
-    for (id, kind) in merged.atomkinds_mut().iter_mut().enumerate() {
-        kind.set_id(id);
-    }
-
-    (merged, b_remap)
-}
-
-/// True if two atom kinds are interchangeable for scan energy evaluation.
-fn same_interaction(a: &AtomKind, b: &AtomKind) -> bool {
-    let opt_bits = |x: Option<f64>| x.map(f64::to_bits);
-    a.name() == b.name()
-        && a.charge().to_bits() == b.charge().to_bits()
-        && a.mass().to_bits() == b.mass().to_bits()
-        && opt_bits(a.sigma()) == opt_bits(b.sigma())
-        && opt_bits(a.epsilon()) == opt_bits(b.epsilon())
-        && opt_bits(a.lambda()) == opt_bits(b.lambda())
-        && a.custom() == b.custom()
 }
 
 #[cfg(test)]
@@ -311,85 +295,17 @@ mod tests {
         }
     }
 
-    // `combine_topologies` keeps internal-seam tests: its dedup rules only show up for
-    // independently titrated molecules, which can't be set up deterministically from outside.
-
-    fn atoms_only(yaml: &str) -> Topology {
-        let mut top = Topology::from_str_partial(yaml).unwrap();
-        top.finalize_atoms().unwrap();
-        top
-    }
-
+    /// Mixed input would need two topologies, which can't give cross pairs a potential.
     #[test]
-    fn combine_topologies_dedups_shared_and_appends_distinct() {
-        let top_a = atoms_only(
-            "atoms:\n  - {name: GLY, mass: 57.0, charge: 0.0, sigma: 4.5, eps: 0.83}\n  \
-             - {name: O1, mass: 0.0, charge: -0.9, sigma: 2.0, eps: 0.83}\n",
-        );
-        let top_b = atoms_only(
-            "atoms:\n  - {name: GLY, mass: 57.0, charge: 0.0, sigma: 4.5, eps: 0.83}\n  \
-             - {name: O1, mass: 0.0, charge: -0.4, sigma: 2.0, eps: 0.83}\n",
-        );
-
-        let (merged, b_remap) = combine_topologies(&top_a, &top_b);
-
-        assert_eq!(merged.atomkinds().len(), 3);
-        for (i, kind) in merged.atomkinds().iter().enumerate() {
-            assert_eq!(kind.id(), i);
-        }
-        assert_eq!(b_remap, vec![0, 2]);
-        assert_eq!(
-            merged.atomkinds()[2].charge().to_bits(),
-            (-0.4f64).to_bits()
-        );
-    }
-
-    #[test]
-    fn combine_identical_topologies_is_a_noop() {
-        let top = atoms_only(
-            "atoms:\n  - {name: GLY, mass: 57.0, charge: 0.0, sigma: 4.5, eps: 0.83}\n  \
-             - {name: ASP, mass: 115.0, charge: -1.0, sigma: 5.6, eps: 0.83}\n",
-        );
-        let (merged, b_remap) = combine_topologies(&top, &top);
-        assert_eq!(merged.atomkinds().len(), 2);
-        assert_eq!(b_remap, vec![0, 1]);
-    }
-
-    #[test]
-    fn combine_topologies_preserves_distinct_names_with_same_parameters() {
-        let top_a =
-            atoms_only("atoms:\n  - {name: A, mass: 10.0, charge: 0.0, sigma: 2.0, eps: 0.5}\n");
-        let top_b =
-            atoms_only("atoms:\n  - {name: B, mass: 10.0, charge: 0.0, sigma: 2.0, eps: 0.5}\n");
-
-        let (merged, b_remap) = combine_topologies(&top_a, &top_b);
-
-        assert_eq!(merged.atomkinds().len(), 2);
-        assert_eq!(merged.atomkinds()[0].name(), "A");
-        assert_eq!(merged.atomkinds()[1].name(), "B");
-        assert_eq!(b_remap, vec![1]);
-    }
-
-    #[test]
-    fn combine_topologies_preserves_distinct_custom_properties() {
-        let top_a = atoms_only(
-            "atoms:\n  - {name: A, mass: 10.0, charge: 1.0, sigma: 2.0, eps: 0.5, custom: {alpha: 0.0}}\n",
-        );
-        let top_b = atoms_only(
-            "atoms:\n  - {name: A, mass: 10.0, charge: 1.0, sigma: 2.0, eps: 0.5, custom: {alpha: 1.0}}\n",
-        );
-
-        let (merged, b_remap) = combine_topologies(&top_a, &top_b);
-
-        assert_eq!(merged.atomkinds().len(), 2);
-        assert_eq!(
-            merged.atomkinds()[0].custom(),
-            top_a.atomkinds()[0].custom()
-        );
-        assert_eq!(
-            merged.atomkinds()[1].custom(),
-            top_b.atomkinds()[0].custom()
-        );
-        assert_eq!(b_remap, vec![1]);
+    fn mixed_xyz_and_atomistic_input_is_rejected() {
+        let (xyz, top) = (example("cppm/cppm-p00.xyz"), example("cppm/topology.yaml"));
+        let result = PairSystem::load(PairSpec {
+            a: Source::File(&xyz),
+            b: Some(Source::PdbBytes(b"")),
+            top: Some(&top),
+            cg: CgOptions::default(),
+            medium: &Medium::salt_water(298.15, Salt::SodiumChloride, 0.1),
+        });
+        assert!(result.is_err_and(|e| e.to_string().contains("cannot mix")));
     }
 }

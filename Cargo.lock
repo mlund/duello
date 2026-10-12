@@ -287,9 +287,9 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "cgkitten"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9355f0670c245989a17b799d35ede7db6b230df4c34cb62bbed24a02ad201322"
+checksum = "c3f06b91b7f1260e016a249b499deade49305974132dbd427c83bb3234b9de33"
 dependencies = [
  "log",
  "rand",
