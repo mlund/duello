@@ -287,9 +287,9 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "cgkitten"
-version = "0.2.4"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3f06b91b7f1260e016a249b499deade49305974132dbd427c83bb3234b9de33"
+checksum = "ce8cea2135cbb7e6580757f2d9d507f19653148c35648b2a25b56ae0a6d445fd"
 dependencies = [
  "log",
  "rand",
@@ -702,7 +702,7 @@ dependencies = [
 
 [[package]]
 name = "duello"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "approx",
