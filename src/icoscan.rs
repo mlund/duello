@@ -142,7 +142,7 @@ pub(crate) fn omega_step(params: &ScanParams) -> f64 {
 /// entry points so the scheme-aware ω/vertex derivation stays single-sourced.
 fn make_6d_builder(params: &ScanParams) -> AdaptiveBuilder {
     let max_n_vertices = params.subdivision.n_vertices(params.max_n_div);
-    let beta = 1.0 / (physical_constants::MOLAR_GAS_CONSTANT * params.temperature * 1e-3); // 1/(kJ/mol)
+    let beta = 1.0 / crate::thermal_energy(params.temperature); // 1/(kJ/mol)
 
     let builder = AdaptiveBuilder::with_subdivision(
         params.subdivision,

@@ -12,7 +12,6 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
-use physical_constants::MOLAR_GAS_CONSTANT;
 use std::iter::Sum;
 use std::ops::{Add, AddAssign, Neg};
 
@@ -41,8 +40,7 @@ impl Sample {
     /// For extreme positive energies (E/kT > 700), the Boltzmann factor is clamped
     /// to avoid underflow. This corresponds to energies > ~1700 kJ/mol at 298 K.
     pub fn new(energy: f64, temperature: f64, degeneracy: f64) -> Self {
-        const KJ_PER_J: f64 = 1e-3;
-        let thermal_energy = MOLAR_GAS_CONSTANT * temperature * KJ_PER_J; // kJ/mol
+        let thermal_energy = crate::thermal_energy(temperature); // kJ/mol
         let beta_u = energy / thermal_energy;
 
         // Clamp extreme positive energies to avoid underflow

@@ -18,6 +18,7 @@ pub mod backend;
 pub mod diffusion;
 pub mod energy;
 pub mod icoscan;
+pub mod nbody;
 pub mod report;
 mod sample;
 pub mod structure;
@@ -31,6 +32,11 @@ pub use sample::Sample;
 /// Shown by front-ends so a result can be traced to the library that produced it.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub use virial::VirialCoeff;
+
+/// kT in kJ/mol, the energy unit of all tables.
+pub fn thermal_energy(temperature: f64) -> f64 {
+    physical_constants::MOLAR_GAS_CONSTANT * temperature * 1e-3
+}
 
 #[macro_use]
 extern crate log;

@@ -762,7 +762,7 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
 
     // β = 1/kT in mol/kJ — needed by the adaptive builder to detect
     // repulsive slabs where all Boltzmann weights are negligible
-    let thermal_energy = physical_constants::MOLAR_GAS_CONSTANT * temperature * 1e-3;
+    let thermal_energy = duello::thermal_energy(*temperature);
     let beta = 1.0 / thermal_energy;
 
     let subdivision: icotable::Subdivision = (*locator).into();
@@ -1017,7 +1017,7 @@ fn do_diffusion(cmd: &Commands) -> Result<()> {
 
     let temp = *temperature;
 
-    let beta = 1.0 / (physical_constants::MOLAR_GAS_CONSTANT * 1e-3 * temp);
+    let beta = 1.0 / duello::thermal_energy(temp);
     info!(
         "T = {temp:.2} K, β = {beta:.4} mol/kJ, R range = {:.1}–{:.1} Å, dr = {:.2} Å",
         table.rmin, table.rmax, table.dr
