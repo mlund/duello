@@ -41,7 +41,7 @@ fn radial_fourier(f: impl Fn(f64) -> f64, a: f64, b: f64, q: f64) -> f64 {
 }
 
 /// Number density of spheres of diameter σ at packing fraction φ.
-fn hard_sphere_density(sigma: f64, phi: f64) -> f64 {
+pub(super) fn hard_sphere_density(sigma: f64, phi: f64) -> f64 {
     6.0 * phi / (PI * sigma.powi(3))
 }
 
@@ -92,7 +92,7 @@ fn structure_factor(
 /// Percus–Yevick S(q) for hard spheres of diameter σ at packing fraction φ:
 /// S = 1/(1 − ρ ĉ(q)), with the analytic PY direct correlation function
 /// c(r) = −λ₁ − 6φλ₂ (r/σ) − ½φλ₁ (r/σ)³ inside the core and zero outside.
-fn percus_yevick(q: f64, sigma: f64, phi: f64) -> f64 {
+pub(super) fn percus_yevick(q: f64, sigma: f64, phi: f64) -> f64 {
     let lambda1 = (1.0 + 2.0 * phi).powi(2) / (1.0 - phi).powi(4);
     let lambda2 = -(1.0 + 0.5 * phi).powi(2) / (1.0 - phi).powi(4);
     let c = |r: f64| {

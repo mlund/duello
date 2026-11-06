@@ -36,6 +36,16 @@ pub struct NBodyArgs {
     /// per frame but give smoother I(q) and S_eff
     #[arg(long, default_value = "16")]
     vectors_per_bin: usize,
+    /// Maximum translation per axis (Å): the starting step, or the step
+    /// throughout with --fixed-steps [default: the run's, 3 Å]
+    #[arg(long)]
+    translation: Option<f64>,
+    /// Maximum rotation angle (rad), as for --translation [default: 0.2]
+    #[arg(long)]
+    rotation: Option<f64>,
+    /// Keep the steps as given instead of tuning them during equilibration
+    #[arg(long)]
+    fixed_steps: bool,
     /// Mass-centre S(q) only; far cheaper per frame, so frames are taken
     /// more often by default
     #[arg(long)]
@@ -93,6 +103,9 @@ fn spec(args: &NBodyArgs) -> RunSpec {
     spec.sweeps_per_frame = args.frame_interval();
     spec.centres_only = args.centres_only;
     spec.vectors_per_bin = args.vectors_per_bin;
+    spec.translation = args.translation.unwrap_or(spec.translation);
+    spec.rotation = args.rotation.unwrap_or(spec.rotation);
+    spec.tune_steps = !args.fixed_steps;
     spec
 }
 
@@ -114,7 +127,7 @@ fn drive(run: &mut NBodyRun, args: &NBodyArgs) -> Result<Progress> {
     loop {
         let progress = run.step(1)?;
         if let (Stage::Production { equilibrated }, false) = (progress.stage, announced) {
-            log_equilibration(equilibrated);
+            log_equilibration(equilibrated, run.stats().steps);
             announced = true;
         }
         if progress.frames >= target {
@@ -123,7 +136,8 @@ fn drive(run: &mut NBodyRun, args: &NBodyArgs) -> Result<Progress> {
     }
 }
 
-fn log_equilibration(equilibrated: bool) {
+fn log_equilibration(equilibrated: bool, (translation, rotation): (f64, f64)) {
+    log::info!("Move steps: {translation:.2} Å, {rotation:.3} rad");
     if equilibrated {
         log::info!("Equilibrated; production started");
     } else {

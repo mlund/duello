@@ -38,6 +38,11 @@ pub struct TrajectoryHeader {
     pub reference: CgBody,
     /// The scan the table came from, including its temperature.
     pub settings: ScanSettings,
+    /// Production move steps (Å, rad); absent in files from before tuning.
+    #[serde(default)]
+    pub translation: Option<f64>,
+    #[serde(default)]
+    pub rotation: Option<f64>,
 }
 
 const MAGIC: &[u8; 12] = b"DUELLO-TRAJ\0";
@@ -308,6 +313,8 @@ mod tests {
                 radii: vec![3.0],
                 kinds: vec!["LYS".into()],
             },
+            translation: None,
+            rotation: None,
             settings: ScanSettings {
                 ph: 7.0,
                 model: "calvados3".into(),

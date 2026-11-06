@@ -11,6 +11,7 @@ mod hsy;
 mod run;
 mod sampler;
 mod scattering;
+mod step_tuner;
 #[cfg(test)]
 mod test_tables;
 pub mod trajectory;
@@ -23,6 +24,7 @@ pub use pripps::RESIDUE_FORM_FACTORS;
 pub use run::{NBodyRun, Progress, RunSpec, RunStats, Stage};
 pub use sampler::{Frame, MoveCounter, MoveStats, Sampler, SamplerSpec};
 pub use scattering::{Device, Scattering, ScatteringCurve};
+pub use step_tuner::StepTuner;
 
 use crate::{UnitQuaternion, Vector3};
 

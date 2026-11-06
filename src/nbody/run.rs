@@ -7,7 +7,7 @@
 use super::trajectory::{TrajectoryHeader, TrajectoryWriter};
 use super::{
     box_length, Criteria, Device, EnergyStats, EnergySummary, Equilibration, Frame, HsyFluid,
-    MoveStats, PairEnergy, Sampler, SamplerSpec, Scattering, ScatteringCurve, Status,
+    MoveStats, PairEnergy, Sampler, SamplerSpec, Scattering, ScatteringCurve, Status, StepTuner,
 };
 use crate::archive::ScanArchive;
 use anyhow::{ensure, Result};
@@ -34,9 +34,13 @@ pub struct RunSpec {
     /// Sweeps between equilibration energy checks.
     pub sweeps_per_check: u64,
     pub criteria: Criteria,
-    /// Maximum translation per axis (Å) and rotation angle (rad).
+    /// Maximum translation per axis (Å) and rotation angle (rad): where
+    /// tuning starts, or the steps used throughout without it.
     pub translation: f64,
     pub rotation: f64,
+    /// Tune both steps during equilibration for the largest displacement
+    /// per attempted move, then freeze them for production.
+    pub tune_steps: bool,
     /// Recording stops beyond this; the run and curve carry on.
     pub max_trajectory_bytes: usize,
     /// Mass-centre S(q) only: frames become cheap enough to take at every
@@ -63,6 +67,7 @@ impl RunSpec {
             },
             translation: 3.0,
             rotation: 0.2,
+            tune_steps: true,
             max_trajectory_bytes: 256 << 20,
             centres_only: false,
         }
@@ -98,6 +103,8 @@ pub struct Progress {
 pub struct RunStats {
     pub moves: MoveStats,
     pub energy: EnergySummary,
+    /// Translation (Å) and rotation (rad) steps now in use.
+    pub steps: (f64, f64),
 }
 
 pub struct NBodyRun {
@@ -125,6 +132,11 @@ pub struct NBodyRun {
     equilibration_sweeps: u64,
     frames: usize,
     energy_per_body: f64,
+    /// Translation and rotation tuners; `None` once frozen or when off.
+    tuners: Option<[StepTuner; 2]>,
+    steps: (f64, f64),
+    /// Energy converged at some check, while the tuners may still search.
+    converged: bool,
 }
 
 impl NBodyRun {
@@ -136,12 +148,20 @@ impl NBodyRun {
         );
         validate(&spec)?;
         let energy = Arc::new(PairEnergy::new(archive.table.clone())?);
+        let l = box_length(spec.n_bodies, spec.molarity);
+        // Larger steps add nothing, so a start beyond them is clamped.
         let sampler_spec = SamplerSpec {
             n_bodies: spec.n_bodies,
-            box_length: box_length(spec.n_bodies, spec.molarity),
-            translation: spec.translation,
-            rotation: spec.rotation,
+            box_length: l,
+            translation: spec.translation.min(l / 2.0),
+            rotation: spec.rotation.min(std::f64::consts::PI),
         };
+        let spec_tuners = spec.tune_steps.then(|| {
+            [
+                StepTuner::new(sampler_spec.translation, l / 2.0),
+                StepTuner::new(sampler_spec.rotation, std::f64::consts::PI),
+            ]
+        });
         let samplers = (0..spec.copies)
             .map(|c| {
                 Sampler::new(
@@ -191,6 +211,9 @@ impl NBodyRun {
             equilibration_sweeps: 0,
             frames: 0,
             energy_per_body: 0.0,
+            tuners: spec_tuners,
+            steps: (sampler_spec.translation, sampler_spec.rotation),
+            converged: false,
         })
     }
 
@@ -248,16 +271,50 @@ impl NBodyRun {
             .map(|f| self.energy.frame_energy(f))
             .collect::<Result<Vec<_>>>()?;
         self.energy_per_body = mean(&energies) / self.spec.n_bodies as f64;
-        match self.equilibration.push(self.sweep, &energies) {
-            Status::Running => {}
-            Status::Converged => self.begin_production(true)?,
-            Status::CapReached => self.begin_production(false)?,
+        let tuned = self.tune_steps()?;
+        let status = self.equilibration.push(self.sweep, &energies);
+        // The verdict sticks while the tuners finish, so a later noisy
+        // window can't relabel a converged run.
+        self.converged |= status == Status::Converged;
+        let capped = status == Status::CapReached || self.sweep >= self.spec.criteria.max_sweeps;
+        if (self.converged && tuned) || capped {
+            self.begin_production(self.converged)?;
         }
         Ok(sweeps)
     }
 
+    /// One tuning window over all copies; true once both tuners settled
+    /// (or tuning is off).
+    fn tune_steps(&mut self) -> Result<bool> {
+        let Some([translate, rotate]) = &mut self.tuners else {
+            return Ok(true);
+        };
+        let mut window = MoveStats::default();
+        for sampler in &mut self.samplers {
+            window.merge(&sampler.take_move_stats());
+        }
+        let steps = (
+            translate.observe(&window.translate),
+            rotate.observe(&window.rotate),
+        );
+        let settled = translate.settled() && rotate.settled();
+        self.apply_steps(steps)?;
+        Ok(settled)
+    }
+
+    fn apply_steps(&mut self, steps: (f64, f64)) -> Result<()> {
+        for sampler in &mut self.samplers {
+            sampler.set_steps(steps.0, steps.1)?;
+        }
+        self.steps = steps;
+        Ok(())
+    }
+
     /// Statistics restart here, so equilibration never enters them.
     fn begin_production(&mut self, equilibrated: bool) -> Result<()> {
+        if let Some([translate, rotate]) = self.tuners.take() {
+            self.apply_steps((translate.best(), rotate.best()))?;
+        }
         for sampler in &mut self.samplers {
             sampler.take_move_stats();
         }
@@ -278,6 +335,8 @@ impl NBodyRun {
             equilibrated,
             reference: self.reference.clone(),
             settings: self.archive_settings.clone(),
+            translation: Some(self.steps.0),
+            rotation: Some(self.steps.1),
         }
     }
 
@@ -349,6 +408,7 @@ impl NBodyRun {
         RunStats {
             moves: self.moves.clone(),
             energy: self.energy.summary(),
+            steps: self.steps,
         }
     }
 
@@ -395,6 +455,8 @@ impl NBodyRun {
                 show(moves.translate.acceptance())
             ),
             format!("rotate acceptance: {}", show(moves.rotate.acceptance())),
+            format!("translation step/Å: {:.4}", stats.steps.0),
+            format!("rotation step/rad: {:.4}", stats.steps.1),
             format!(
                 "translate msd/Å²: {}",
                 show(moves.translate.mean_square_displacement())
@@ -698,6 +760,112 @@ mod tests {
             Some("q/Å⁻¹,I,P,S_eff,S_eff_error,S_com,S_com_error,S_HSY")
         );
         assert_eq!(table.count(), run.curve().q.len());
+    }
+
+    /// Every move is accepted on a zero table, so the largest steps win:
+    /// L/2 = 10 Å (20 Å box) and π.
+    #[test]
+    fn tuning_takes_ideal_fluid_steps_to_their_bounds() {
+        let mut run = NBodyRun::start(&archive(true, &["X"]), spec(), UNIT).unwrap();
+        run_to(&mut run, |s| matches!(s, Stage::Production { .. }));
+        assert_eq!(run.stats().steps, (10.0, std::f64::consts::PI));
+    }
+
+    #[test]
+    fn tuned_steps_stay_frozen_and_are_reported() {
+        let mut run = NBodyRun::start(&archive(true, &["X"]), spec(), UNIT).unwrap();
+        run_to(&mut run, |s| matches!(s, Stage::Production { .. }));
+        let frozen = run.stats().steps;
+        for _ in 0..20 {
+            run.step(10).unwrap();
+        }
+        assert_eq!(run.stats().steps, frozen);
+        let csv = run.report_csv();
+        assert!(csv.contains("# translation step/Å: 10.0000\n"), "{csv}");
+        assert!(csv.contains("# rotation step/rad: 3.1416\n"), "{csv}");
+        let header = frames_in(&run.trajectory_bytes().unwrap()).0;
+        assert_eq!(
+            (header.translation, header.rotation),
+            (Some(frozen.0), Some(frozen.1))
+        );
+    }
+
+    /// Dense hard spheres (σ = 5 Å, the fixture's rmin; φ = 0.3) reject
+    /// large moves, so the tuned translation lies inside its bounds and the
+    /// sampled structure still matches Percus–Yevick.
+    #[test]
+    #[ignore = "slow: run in release with --ignored"]
+    fn tuned_hard_spheres_match_percus_yevick() {
+        use crate::nbody::acceptance::{hard_sphere_density, percus_yevick};
+        let (sigma, phi) = (5.0, 0.3);
+        let density = hard_sphere_density(sigma, phi);
+        let mut spec = RunSpec::new(
+            300,
+            density / (physical_constants::AVOGADRO_CONSTANT * 1e-27),
+        );
+        spec.q_max = 1.45;
+        spec.vectors_per_bin = 500;
+        spec.sweeps_per_frame = 5;
+        spec.criteria.min_sweeps = 300;
+        spec.criteria.max_sweeps = 3000;
+        let half_box = box_length(spec.n_bodies, spec.molarity) / 2.0;
+        let mut run = NBodyRun::start(&archive(true, &["X"]), spec, UNIT).unwrap();
+        run_to(&mut run, |s| matches!(s, Stage::Production { .. }));
+        for _ in 0..300 {
+            run.step(10).unwrap();
+        }
+        let stats = run.stats();
+        assert!(
+            stats.steps.0 > 0.1 && stats.steps.0 < half_box,
+            "{:?}",
+            stats.steps
+        );
+        let acceptance = stats.moves.translate.acceptance().unwrap();
+        assert!((0.1..0.9).contains(&acceptance), "acceptance {acceptance}");
+        let curve = run.curve();
+        let errors = curve.s_com_error.as_ref().unwrap();
+        for ((q, s), e) in curve.q.iter().zip(&curve.s_com).zip(errors) {
+            let expected = percus_yevick(*q, sigma, phi);
+            assert!(
+                (s - expected).abs() < 4.0 * e + 0.05 * expected,
+                "q = {q:.3}: S = {s:.3} ± {e:.3}, PY {expected:.3}"
+            );
+        }
+    }
+
+    /// Two check windows are too few for the tuners to settle; the cap
+    /// must still end equilibration.
+    #[test]
+    fn the_sweep_cap_ends_equilibration_while_tuning() {
+        let mut spec = spec();
+        spec.criteria.min_sweeps = 10;
+        spec.criteria.max_sweeps = 20;
+        let mut run = NBodyRun::start(&archive(true, &["X"]), spec, UNIT).unwrap();
+        for _ in 0..3 {
+            run.step(10).unwrap();
+        }
+        assert!(matches!(run.progress().stage, Stage::Production { .. }));
+    }
+
+    /// A step beyond L/2 is only a start: it is clamped, not an error.
+    #[test]
+    fn starting_steps_beyond_the_box_are_clamped() {
+        let mut spec = spec();
+        spec.translation = 500.0;
+        spec.tune_steps = false;
+        let run = NBodyRun::start(&archive(true, &["X"]), spec, UNIT).unwrap();
+        assert_eq!(run.stats().steps.0, 10.0);
+    }
+
+    #[test]
+    fn fixed_steps_stay_as_given() {
+        let mut spec = spec();
+        spec.tune_steps = false;
+        spec.translation = 2.0;
+        spec.rotation = 0.1;
+        let mut run = NBodyRun::start(&archive(true, &["X"]), spec, UNIT).unwrap();
+        run_to(&mut run, |s| matches!(s, Stage::Production { .. }));
+        assert_eq!(run.stats().steps, (2.0, 0.1));
     }
 
     #[test]

@@ -85,6 +85,21 @@ impl MoveStats {
     }
 }
 
+/// Steps beyond L/2 or π add nothing: the minimum image and the rotation
+/// group wrap them back.
+fn check_steps(translation: f64, rotation: f64, box_length: f64) -> Result<()> {
+    let valid = |step: f64, max: f64| step.is_finite() && (0.0..=max).contains(&step);
+    ensure!(
+        valid(translation, box_length / 2.0) && valid(rotation, std::f64::consts::PI),
+        "move steps must lie in [0, L/2] Å and [0, π] rad; got {translation}, {rotation}"
+    );
+    ensure!(
+        translation > 0.0 || rotation > 0.0,
+        "at least one move type needs a non-zero step"
+    );
+    Ok(())
+}
+
 /// One copy of the system, advanced by sequential Metropolis moves.
 pub struct Sampler {
     /// Shared, so copies and observers don't each load the table.
@@ -107,15 +122,7 @@ impl Sampler {
             spec.box_length,
             energy.min_box_length()
         );
-        let valid = |step: f64| step.is_finite() && step >= 0.0;
-        ensure!(
-            valid(spec.translation) && valid(spec.rotation),
-            "move steps must be finite and non-negative"
-        );
-        ensure!(
-            spec.translation > 0.0 || spec.rotation > 0.0,
-            "at least one move type needs a non-zero step"
-        );
+        check_steps(spec.translation, spec.rotation, spec.box_length)?;
         let mut sampler = Self {
             energy,
             poses: Vec::with_capacity(spec.n_bodies),
@@ -136,6 +143,14 @@ impl Sampler {
             }
             self.sweep += 1;
         }
+    }
+
+    /// For step tuning; the same rules as at construction.
+    pub fn set_steps(&mut self, translation: f64, rotation: f64) -> Result<()> {
+        check_steps(translation, rotation, self.spec.box_length)?;
+        self.spec.translation = translation;
+        self.spec.rotation = rotation;
+        Ok(())
     }
 
     /// Returns the stats since the last call and starts new ones, so a caller
@@ -359,6 +374,41 @@ mod tests {
 
         // Taking the stats resets them, so equilibration can be left out.
         assert_eq!(sampler.take_move_stats().translate.attempts, 0);
+    }
+
+    /// New steps act on the next moves: ⟨Δr²⟩ = d², ⟨Δθ²⟩ = θ²/3.
+    #[test]
+    fn set_steps_changes_the_next_moves() {
+        let mut sampler = ideal(1, 40.0);
+        sampler.set_steps(6.0, 1.2).unwrap();
+        sampler.advance(40_000);
+        let stats = sampler.take_move_stats();
+        approx::assert_relative_eq!(
+            stats.translate.mean_square_displacement().unwrap(),
+            36.0,
+            max_relative = 0.03
+        );
+        approx::assert_relative_eq!(
+            stats.rotate.mean_square_displacement().unwrap(),
+            1.44 / 3.0,
+            max_relative = 0.03
+        );
+    }
+
+    /// Beyond L/2 or π a larger step adds nothing.
+    #[test]
+    fn steps_out_of_range_are_errors() {
+        let mut sampler = ideal(1, 40.0);
+        for (d, theta) in [
+            (-1.0, 0.1),
+            (f64::NAN, 0.1),
+            (20.5, 0.1),
+            (1.0, 3.2),
+            (0.0, 0.0),
+        ] {
+            assert!(sampler.set_steps(d, theta).is_err(), "{d}, {theta}");
+        }
+        assert!(sampler.set_steps(20.0, std::f64::consts::PI).is_ok());
     }
 
     /// Averages over one sampled body after every move.
