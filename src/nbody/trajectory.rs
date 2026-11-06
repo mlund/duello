@@ -463,6 +463,17 @@ mod tests {
         assert!(writer.append(&frame(0, 1400)).is_err());
     }
 
+    /// Unrotated, beads only shift: (1, 0, 0) on a body at (1, 2, 3) is at (2, 2, 3).
+    #[test]
+    fn unrotated_beads_shift_with_the_body() {
+        let pose = Pose {
+            position: Vector3::new(1.0, 2.0, 3.0),
+            orientation: UnitQuaternion::identity(),
+        };
+        let beads = expand(&header(1).reference, &pose);
+        assert_eq!(beads[0], Vector3::new(2.0, 2.0, 3.0));
+    }
+
     /// Bead at r = (1, 0, 0) on a body at (10, 0, 0) turned 90° about z sits
     /// at (10, 1, 0).
     #[test]

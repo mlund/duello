@@ -10,7 +10,7 @@ use super::{
     MoveStats, MsaOverrides, PairCorrelation, PairEnergy, RdfCurve, Sampler, SamplerSpec,
     Scattering, ScatteringCurve, Status, StepTuner,
 };
-use crate::archive::ScanArchive;
+use crate::archive::{CgBody, ScanArchive};
 use anyhow::{ensure, Result};
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -114,7 +114,7 @@ pub struct RunStats {
 pub struct NBodyRun {
     spec: RunSpec,
     archive_settings: crate::archive::ScanSettings,
-    reference: crate::archive::CgBody,
+    reference: CgBody,
     samplers: Vec<Sampler>,
     stage: Stage,
     sweep: u64,
@@ -252,24 +252,45 @@ impl NBodyRun {
         }
     }
 
-    fn advance(&mut self, sweeps: u64) -> Vec<Frame> {
+    fn advance(&mut self, sweeps: u64) {
         self.sweep += sweeps;
-        self.samplers
-            .iter_mut()
-            .enumerate()
-            .map(|(copy, sampler)| {
-                sampler.advance(sweeps);
-                Frame {
-                    copy,
-                    ..sampler.frame()
-                }
-            })
-            .collect()
+        self.samplers.iter_mut().for_each(|s| s.advance(sweeps));
+    }
+
+    /// The latest configuration of every copy, at any stage; for viewers.
+    /// After a failed step stops the run, copies may be sweeps apart.
+    pub fn frames(&self) -> Vec<Frame> {
+        (0..self.samplers.len()).map(|c| self.frame_of(c)).collect()
+    }
+
+    /// One copy's latest configuration; cheaper than `frames` when only one
+    /// is shown.
+    pub fn frame(&self, copy: usize) -> Result<Frame> {
+        ensure!(
+            copy < self.samplers.len(),
+            "copy {copy} out of range: the run has {} copies",
+            self.samplers.len()
+        );
+        Ok(self.frame_of(copy))
+    }
+
+    /// The rigid body every pose places; beads follow via `trajectory::expand`.
+    pub fn reference(&self) -> &CgBody {
+        &self.reference
+    }
+
+    /// Samplers don't know their copy index, so it is set here.
+    fn frame_of(&self, copy: usize) -> Frame {
+        Frame {
+            copy,
+            ..self.samplers[copy].frame()
+        }
     }
 
     fn equilibration_step(&mut self) -> Result<u64> {
         let sweeps = self.spec.sweeps_per_check;
-        let frames = self.advance(sweeps);
+        self.advance(sweeps);
+        let frames = self.frames();
         let energies = frames
             .iter()
             .map(|f| self.energy.frame_energy(f))
@@ -355,10 +376,11 @@ impl NBodyRun {
             .collect();
         let next = to_frame.iter().copied().min().unwrap_or(interval);
         let sweeps = next.min(self.spec.sweeps_per_check);
-        let frames = self.advance(sweeps);
-        let due: Vec<Frame> = frames
-            .into_iter()
-            .filter(|f| to_frame[f.copy] == sweeps)
+        self.advance(sweeps);
+        // Only copies due a frame pay for one.
+        let due: Vec<Frame> = (to_frame.iter().enumerate())
+            .filter(|&(_, &left)| left == sweeps)
+            .map(|(copy, _)| self.frame_of(copy))
             .collect();
         if !due.is_empty() {
             self.observe(&due)?;
@@ -827,6 +849,44 @@ mod tests {
         assert!(rdf.g.iter().any(|&g| g > 0.0));
         run.reset_statistics().unwrap();
         assert_eq!(run.pair_correlation(), RdfCurve::default());
+    }
+
+    /// A viewer needs every copy's current configuration, labelled by copy.
+    #[test]
+    fn frames_give_each_copy_its_configuration() {
+        let mut spec = spec();
+        spec.copies = 3;
+        let run = NBodyRun::start(&archive(true, &["X"]), spec, UNIT).unwrap();
+        let frames = run.frames();
+        let copies: Vec<usize> = frames.iter().map(|f| f.copy).collect();
+        assert_eq!(copies, [0, 1, 2]);
+        assert!(frames.iter().all(|f| f.poses.len() == 10));
+        assert_eq!(run.frame(1).unwrap(), frames[1]);
+        assert!(run.frame(3).is_err());
+    }
+
+    /// Every move is accepted on a zero table, so frames show the motion.
+    #[test]
+    fn frames_follow_the_simulation() {
+        let mut run = NBodyRun::start(&archive(true, &["X"]), spec(), UNIT).unwrap();
+        let before = run.frames();
+        run.step(10).unwrap();
+        let after = run.frames();
+        assert_eq!((before.len(), after.len()), (2, 2));
+        for (b, a) in before.iter().zip(&after) {
+            assert_ne!(b.poses, a.poses, "copy {}", b.copy);
+        }
+    }
+
+    #[test]
+    fn reference_is_the_scanned_body() {
+        let scan = archive(true, &["X", "CYS"]);
+        let run = NBodyRun::start(&scan, spec(), UNIT).unwrap();
+        assert_eq!(run.reference().kinds, ["X", "CYS"]);
+        assert_eq!(
+            run.reference().positions,
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]
+        );
     }
 
     /// A run that never meets the drift test still produces, flagged as such.
