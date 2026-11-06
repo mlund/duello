@@ -4,6 +4,7 @@ mod energy;
 mod energy_stats;
 mod equilibration;
 mod sampler;
+mod scattering;
 #[cfg(test)]
 mod test_tables;
 pub mod trajectory;
@@ -12,6 +13,7 @@ pub use energy::{PairEnergy, PairValue};
 pub use energy_stats::{EnergyStats, EnergySummary};
 pub use equilibration::{Criteria, Equilibration, Status};
 pub use sampler::{Frame, MoveCounter, MoveStats, Sampler, SamplerSpec};
+pub use scattering::{Device, Scattering, ScatteringCurve};
 
 use crate::{UnitQuaternion, Vector3};
 
