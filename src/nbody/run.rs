@@ -7,7 +7,8 @@
 use super::trajectory::{TrajectoryHeader, TrajectoryWriter};
 use super::{
     box_length, Criteria, Device, EnergyStats, EnergySummary, Equilibration, Frame, HsyFluid,
-    MoveStats, PairEnergy, Sampler, SamplerSpec, Scattering, ScatteringCurve, Status, StepTuner,
+    MoveStats, MsaOverrides, PairEnergy, Sampler, SamplerSpec, Scattering, ScatteringCurve, Status,
+    StepTuner,
 };
 use crate::archive::ScanArchive;
 use anyhow::{ensure, Result};
@@ -41,6 +42,8 @@ pub struct RunSpec {
     /// Tune both steps during equilibration for the largest displacement
     /// per attempted move, then freeze them for production.
     pub tune_steps: bool,
+    /// Replaces the reference sphere's derived diameter or screening.
+    pub msa: MsaOverrides,
     /// Recording stops beyond this; the run and curve carry on.
     pub max_trajectory_bytes: usize,
     /// Mass-centre S(q) only: frames become cheap enough to take at every
@@ -68,6 +71,7 @@ impl RunSpec {
             translation: 3.0,
             rotation: 0.2,
             tune_steps: true,
+            msa: MsaOverrides::default(),
             max_trajectory_bytes: 256 << 20,
             centres_only: false,
         }
@@ -122,6 +126,9 @@ pub struct NBodyRun {
     scattering: Scattering,
     /// Charged-sphere S(q) to compare S_eff against.
     reference_fluid: HsyFluid,
+    /// S_HSY on every bin of the fixed q-grid, solved once at start as the
+    /// curve is redrawn every UI frame; empty without a solution.
+    reference_curve: Vec<f64>,
     /// Created when production starts, as the header records how
     /// equilibration ended.
     trajectory: Option<TrajectoryWriter<Vec<u8>>>,
@@ -172,7 +179,7 @@ impl NBodyRun {
             })
             .collect::<Result<_>>()?;
         let reference = archive.bodies[0].clone();
-        let reference_fluid = HsyFluid::for_scan(archive, spec.molarity);
+        let reference_fluid = HsyFluid::for_scan(archive, spec.molarity).overridden(&spec.msa);
         let scattering = if spec.centres_only {
             Scattering::mass_centres(spec.n_bodies, sampler_spec.box_length, spec.q_max)?
         } else {
@@ -187,6 +194,9 @@ impl NBodyRun {
                 Device::Cpu,
             ))?
         };
+        let reference_curve = reference_fluid
+            .structure_factor(scattering.q())
+            .unwrap_or_default();
         Ok(Self {
             equilibration: Equilibration::new(spec.criteria),
             spec,
@@ -198,6 +208,7 @@ impl NBodyRun {
             energy: EnergyStats::new(energy),
             moves: MoveStats::default(),
             scattering,
+            reference_curve,
             reference_fluid,
             trajectory: None,
             recording: true,
@@ -390,12 +401,7 @@ impl NBodyRun {
     }
 
     pub fn curve(&self) -> ScatteringCurve {
-        let mut curve = self.scattering.curve();
-        curve.s_hsy = self
-            .reference_fluid
-            .structure_factor(&curve.q)
-            .unwrap_or_default();
-        curve
+        self.scattering.curve_with(&self.reference_curve)
     }
 
     pub fn stats(&self) -> RunStats {
@@ -502,6 +508,15 @@ fn validate(spec: &RunSpec) -> Result<()> {
         spec.vectors_per_bin > 0,
         "vectors per q-bin must be positive"
     );
+    let MsaOverrides {
+        diameter,
+        debye_length,
+    } = spec.msa;
+    // `> 0` is false for NaN too.
+    ensure!(
+        [diameter, debye_length].iter().flatten().all(|&x| x > 0.0),
+        "MSA diameter and Debye length must be positive"
+    );
     Ok(())
 }
 
@@ -570,6 +585,7 @@ mod tests {
                 cutoff: 30.0,
                 grid_size: 200,
                 homo_dimer,
+                subdivision: Default::default(),
             },
             table: table(move |_, _, _| well),
             bodies: [body.clone(), body],
@@ -613,9 +629,10 @@ mod tests {
         scan.bodies[0].charges = vec![1.0, 0.5];
         let fluid = HsyFluid::for_scan(&scan, 1e-3);
         assert_eq!(fluid.charge, 1.5);
-        // 1 mM protein and the scan's 50 mM salt, per Å³.
+        // 1 mM protein, per Å³.
         approx::assert_relative_eq!(fluid.number_density, 6.0221e-7, max_relative = 1e-4);
-        approx::assert_relative_eq!(fluid.salt_density, 3.0110e-5, max_relative = 1e-4);
+        // The scan's 50 mM salt plus 1.5 counterions per protein, λ_B ≈ 7.1 Å.
+        approx::assert_relative_eq!(fluid.debye_length, 13.5, max_relative = 0.01);
     }
 
     #[test]
@@ -903,6 +920,37 @@ mod tests {
             run.report_csv().contains("# HSY sphere: σ = 1.3 Å"),
             "{}",
             run.report_csv()
+        );
+    }
+
+    #[test]
+    fn non_positive_msa_parameters_are_refused() {
+        for bad in [0.0, -1.0, f64::NAN] {
+            let (mut wide, mut screened) = (spec(), spec());
+            wide.msa.diameter = Some(bad);
+            screened.msa.debye_length = Some(bad);
+            for spec in [wide, screened] {
+                assert!(NBodyRun::start(&archive(true, &["X"]), spec, UNIT).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn chosen_msa_parameters_replace_the_derived_sphere() {
+        let mut spec = spec();
+        spec.msa = MsaOverrides {
+            diameter: Some(5.0),
+            debye_length: Some(3.0),
+        };
+        let mut run = NBodyRun::start(&archive(true, &["X"]), spec, UNIT).unwrap();
+        run_to(&mut run, |s| matches!(s, Stage::Production { .. }));
+        run.step(10).unwrap();
+        // φ = 1.25e-3 Å⁻³ × π 5³/6 = 0.082: hard-sphere S(0) ≈ 0.53, well below 1.
+        assert!(run.curve().s_hsy[0] < 0.9, "{:?}", run.curve().s_hsy);
+        let csv = run.report_csv();
+        assert!(
+            csv.contains("σ = 5.0 Å") && csv.contains("Debye length 3.0 Å"),
+            "{csv}"
         );
     }
 

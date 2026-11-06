@@ -14,7 +14,6 @@ use crate::icoscan::{compute_scan_async, ScanParams, ScanResult};
 pub use crate::icoscan::{OnProgress, ScanProgress};
 pub use crate::report::PmfPoint;
 use crate::system::{CgOptions, PairSpec, PairSystem, Source};
-use crate::Subdivision;
 use faunus::interatomic::coulomb::{DebyeLength as _, Medium, Salt};
 use faunus::interatomic::twobody::SplineConfig;
 
@@ -24,9 +23,6 @@ pub struct WebScanRequest {
     pub mol1_pdb: Vec<u8>,
     pub mol2_pdb: Vec<u8>,
     pub settings: ScanSettings,
-    /// Not in `ScanSettings`: the table records it, so the archive format
-    /// stays as is.
-    pub subdivision: Subdivision,
 }
 
 /// A web scan's result is the exportable archive itself, so what the UI shows
@@ -99,7 +95,7 @@ fn build_scan_params(req: &WebScanRequest, prep: &PreparedScan) -> ScanParams {
         permittivity: prep.medium.permittivity(),
         max_n_div: settings.max_ndiv,
         gradient_threshold: settings.gradient_threshold,
-        subdivision: req.subdivision,
+        subdivision: settings.subdivision,
         homo_dimer: settings.homo_dimer,
     }
 }
@@ -180,6 +176,7 @@ pub fn run_scan(req: WebScanRequest, progress: OnProgress) -> anyhow::Result<Web
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Subdivision;
 
     /// Fixed-column PDB with backbone + CB per residue; residues are spaced along x.
     fn pdb(residues: &[&str]) -> Vec<u8> {
@@ -225,8 +222,8 @@ mod tests {
                 cutoff: 30.0,
                 grid_size: 200,
                 homo_dimer: mol1 == mol2,
+                subdivision: Subdivision::default(),
             },
-            subdivision: Subdivision::default(),
         }
     }
 
@@ -269,11 +266,15 @@ mod tests {
         let peptide = ["LYS", "LYS", "LYS"];
         let mut req = request(&peptide, &peptide);
         req.settings.rmax = 40.0;
-        assert_eq!(cpu_scan(&req).subdivision(), Subdivision::Geodesic);
-        req.subdivision = Subdivision::Lattice;
+        let geodesic = cpu_scan(&req);
+        assert_eq!(geodesic.table.levels[0].subdivision(), Subdivision::Geodesic);
+        req.settings.subdivision = Subdivision::Lattice;
         let archive = cpu_scan(&req);
         let restored = ScanArchive::from_bytes(&archive.to_bytes().unwrap()).unwrap();
-        assert_eq!(restored.subdivision(), Subdivision::Lattice);
+        assert_eq!(restored.settings.subdivision, Subdivision::Lattice);
+        // The table must really be built on the lattice, not just labelled so.
+        let level = &restored.table.levels[0];
+        assert_eq!(level.subdivision(), Subdivision::Lattice);
     }
 
     #[test]

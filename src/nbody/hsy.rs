@@ -20,9 +20,19 @@ pub struct HsyFluid {
     pub number_density: f64,
     /// Net charge per sphere, e.
     pub charge: f64,
-    /// Salt pairs per Å³.
-    pub salt_density: f64,
+    /// κ⁻¹, Å; the MPB-RMSA screens with salt and counterions alike.
+    pub debye_length: f64,
     pub bjerrum_length: f64,
+}
+
+/// User choices that replace the derived sphere parameters; `None` keeps
+/// the default.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MsaOverrides {
+    /// Å
+    pub diameter: Option<f64>,
+    /// Å
+    pub debye_length: Option<f64>,
 }
 
 impl HsyFluid {
@@ -37,13 +47,25 @@ impl HsyFluid {
     ) -> Self {
         let per_cubic_angstrom = AVOGADRO_CONSTANT * 1e-27;
         let volume = molar_mass * PARTIAL_SPECIFIC_VOLUME * 1e24 / AVOGADRO_CONSTANT;
+        let number_density = protein_molarity * per_cubic_angstrom;
+        let bjerrum_length =
+            Medium::salt_water(temperature, Salt::SodiumChloride, salt_molarity).bjerrum_length();
+        // Eq S10's κ: both salt ions plus the |Z| counterions per protein.
+        let ions = 2.0 * salt_molarity * per_cubic_angstrom + number_density * charge.abs();
         Self {
             diameter: (6.0 * volume / PI).cbrt(),
-            number_density: protein_molarity * per_cubic_angstrom,
+            number_density,
             charge,
-            salt_density: salt_molarity * per_cubic_angstrom,
-            bjerrum_length: Medium::salt_water(temperature, Salt::SodiumChloride, salt_molarity)
-                .bjerrum_length(),
+            debye_length: (4.0 * PI * bjerrum_length * ions).sqrt().recip(),
+            bjerrum_length,
+        }
+    }
+
+    pub fn overridden(self, overrides: &MsaOverrides) -> Self {
+        Self {
+            diameter: overrides.diameter.unwrap_or(self.diameter),
+            debye_length: overrides.debye_length.unwrap_or(self.debye_length),
+            ..self
         }
     }
 
@@ -68,11 +90,11 @@ impl HsyFluid {
     /// One line for reports.
     pub fn describe(&self) -> String {
         format!(
-            "HSY sphere: σ = {:.1} Å, φ = {:.4}, Z = {:+.1}, salt {:.1} mM",
+            "HSY sphere: σ = {:.1} Å, φ = {:.4}, Z = {:+.1}, Debye length {:.1} Å",
             self.diameter,
             self.volume_fraction(),
             self.charge,
-            self.salt_density / (AVOGADRO_CONSTANT * 1e-27) * 1e3
+            self.debye_length
         )
     }
 
@@ -108,9 +130,7 @@ impl Reduced {
         let lb = fluid.bjerrum_length;
         // S37's 1/(1−φ) and S38's √(1−φ) cancel, so k_mod is plain κσ and
         // γ_mod is S10 evaluated at it.
-        let k_mod = (lb / sigma
-            * (24.0 * phi * fluid.charge.abs() + 8.0 * PI * fluid.salt_density * sigma.powi(3)))
-        .sqrt();
+        let k_mod = sigma / fluid.debye_length;
         let gamma_mod =
             lb / sigma * k_mod.exp() / (1.0 + k_mod / 2.0).powi(2) * fluid.charge.powi(2);
         let at = |s| Self::rescaled(sigma, phi, gamma_mod, k_mod, s);
@@ -325,7 +345,7 @@ mod tests {
             diameter: SIGMA,
             number_density: density(phi),
             charge: 0.0,
-            salt_density: 1e-5,
+            debye_length: 20.0,
             bjerrum_length: 7.0,
         }
     }
@@ -348,7 +368,7 @@ mod tests {
         let (lb, z, kappa) = (7.0, 2.0, 0.1);
         let fluid = HsyFluid {
             charge: z,
-            salt_density: kappa * kappa / (8.0 * PI * lb),
+            debye_length: 1.0 / kappa,
             bjerrum_length: lb,
             ..uncharged(1e-4)
         };
@@ -375,9 +395,10 @@ mod tests {
     #[test]
     fn strong_repulsion_keeps_pair_correlation_non_negative() {
         // βw(σ) ≈ 12 kT: the plain MSA gives g(σ) < 0 here.
+        // No salt: only counterions screen, κ² = 4πλ_B n|Z|.
         let fluid = HsyFluid {
             charge: 10.0,
-            salt_density: 0.0,
+            debye_length: (4.0 * PI * 7.0 * density(0.01) * 10.0).sqrt().recip(),
             ..uncharged(0.01)
         };
         approx::assert_abs_diff_eq!(pair_correlation(&fluid, SIGMA / 2.0), 0.0, epsilon = 0.02);
@@ -393,8 +414,9 @@ mod tests {
         let fluid = HsyFluid::protein(14_300.0, 8.0, 0.002, 0.1, 298.15);
         approx::assert_relative_eq!(fluid.diameter, 32.11, max_relative = 1e-3);
         approx::assert_relative_eq!(fluid.number_density, 1.2044e-6, max_relative = 1e-3);
-        approx::assert_relative_eq!(fluid.salt_density, 6.0221e-5, max_relative = 1e-3);
         approx::assert_relative_eq!(fluid.bjerrum_length, 7.15, max_relative = 0.01);
+        // Salt and counterions: κ² = 4π × 7.15 Å × (2 × 6.0221e-5 + 8 × 1.2044e-6) Å⁻³
+        approx::assert_relative_eq!(fluid.debye_length, 9.25, max_relative = 0.01);
         assert_eq!(fluid.charge, 8.0);
         // 1.2044e-6 Å⁻³ × 17334 Å³
         approx::assert_relative_eq!(fluid.volume_fraction(), 0.02088, max_relative = 1e-3);
@@ -404,10 +426,23 @@ mod tests {
     fn a_trace_of_charge_is_still_percus_yevick() {
         let fluid = HsyFluid {
             charge: 1e-13,
-            salt_density: 0.0,
+            debye_length: f64::INFINITY,
             ..uncharged(0.2)
         };
         approx::assert_relative_eq!(s0(&fluid), 0.208_980, max_relative = 1e-4);
+    }
+
+    #[test]
+    fn overrides_replace_only_what_they_name() {
+        let fluid = uncharged(0.1);
+        let both = MsaOverrides {
+            diameter: Some(40.0),
+            debye_length: Some(5.0),
+        };
+        let changed = fluid.clone().overridden(&both);
+        assert_eq!((changed.diameter, changed.debye_length), (40.0, 5.0));
+        assert_eq!(changed.number_density, fluid.number_density);
+        assert_eq!(fluid.clone().overridden(&MsaOverrides::default()), fluid);
     }
 
     #[test]

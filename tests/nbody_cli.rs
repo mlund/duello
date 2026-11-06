@@ -39,12 +39,17 @@ fn nbody_runs_from_a_scan_and_expands_to_xtc() {
         .args(["nbody", "--scan", "scan.duello", "--bodies", "20"])
         .args(["--protein-molarity", "0.001", "--copies", "2"])
         .args(["--sweeps", "100", "--frame-interval", "10", "-o", "run.1"])
-        .args(["--fixed-steps", "--translation", "2", "--rotation", "0.1"]));
+        .args(["--fixed-steps", "--translation", "2", "--rotation", "0.1"])
+        .args(["--msa-diameter", "30", "--msa-debye-length", "12"]));
 
     let csv = std::fs::read_to_string(dir.join("run.1.csv")).unwrap();
     assert!(csv.contains("# bodies: 20\n"), "{csv}");
     assert!(csv.contains("# translation step/Å: 2.0000\n"), "{csv}");
     assert!(csv.contains("# rotation step/rad: 0.1000\n"), "{csv}");
+    assert!(
+        csv.contains("σ = 30.0 Å") && csv.contains("Debye length 12.0 Å"),
+        "{csv}"
+    );
     let rows = csv.lines().skip_while(|l| l.starts_with('#')).skip(1);
     assert!(rows.count() > 10, "{csv}");
 

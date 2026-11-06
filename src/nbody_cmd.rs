@@ -3,7 +3,9 @@
 
 use anyhow::{ensure, Context, Result};
 use duello::archive::ScanArchive;
-use duello::nbody::{trajectory, NBodyRun, Progress, RunSpec, Stage, RESIDUE_FORM_FACTORS};
+use duello::nbody::{
+    trajectory, MsaOverrides, NBodyRun, Progress, RunSpec, Stage, RESIDUE_FORM_FACTORS,
+};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
@@ -46,6 +48,12 @@ pub struct NBodyArgs {
     /// Keep the steps as given instead of tuning them during equilibration
     #[arg(long)]
     fixed_steps: bool,
+    /// Diameter of the MSA reference sphere (Å) [default: from molar mass]
+    #[arg(long)]
+    msa_diameter: Option<f64>,
+    /// Debye length of the MSA reference (Å) [default: salt plus counterions]
+    #[arg(long)]
+    msa_debye_length: Option<f64>,
     /// Mass-centre S(q) only; far cheaper per frame, so frames are taken
     /// more often by default
     #[arg(long)]
@@ -106,6 +114,10 @@ fn spec(args: &NBodyArgs) -> RunSpec {
     spec.translation = args.translation.unwrap_or(spec.translation);
     spec.rotation = args.rotation.unwrap_or(spec.rotation);
     spec.tune_steps = !args.fixed_steps;
+    spec.msa = MsaOverrides {
+        diameter: args.msa_diameter,
+        debye_length: args.msa_debye_length,
+    };
     spec
 }
 

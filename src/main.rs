@@ -493,6 +493,7 @@ fn save_scan_request(
         grid,
         sr_cutoff,
         cg,
+        locator,
         ..
     } = cmd
     else {
@@ -523,6 +524,7 @@ fn save_scan_request(
         cutoff: spline_cutoff,
         grid_size: grid.size,
         homo_dimer,
+        subdivision: (*locator).into(),
     };
     // A given --top file replaces CG generation, so it is the topology to keep.
     let topology_yaml = match (generated, top_file) {

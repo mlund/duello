@@ -143,6 +143,8 @@ impl Scattering {
     /// Mass-centre S(q) only: about a bead count cheaper per frame.
     pub fn mass_centres(n_bodies: usize, box_length: f64, q_max: f64) -> Result<Self> {
         let grid = pripps::QGrid::lattice([box_length; 3], q_max, CENTRE_VECTORS_PER_BIN)?;
+        // Known up front, so a run can solve q-dependent references at start.
+        let q = grid.q().to_vec();
         Ok(Self {
             n_bodies,
             box_length,
@@ -153,7 +155,7 @@ impl Scattering {
                 n_bodies,
                 grid,
             )?,
-            q: Vec::new(),
+            q,
             copies: Vec::new(),
             centre_positions: Vec::with_capacity(n_bodies),
         })
@@ -173,9 +175,6 @@ impl Scattering {
             .centres
             .evaluate(&self.centre_positions, box_sides)
             .await?;
-        if self.q.is_empty() {
-            self.q = centres.q.clone();
-        }
         self.check_grid(&centres, "mass-centre")?;
         let beads = match &mut self.beads {
             Some(beads) => beads.evaluate(frame, box_sides).await?,
@@ -241,12 +240,23 @@ impl Scattering {
         add_into(&mut sums.centres, terms.centres);
     }
 
+    /// Every |q| bin, including any `curve` leaves out.
+    pub fn q(&self) -> &[f64] {
+        &self.q
+    }
+
     /// Forgets all frames; the q-grid and form factors are kept.
     pub fn reset(&mut self) {
         self.copies.clear();
     }
 
     pub fn curve(&self) -> ScatteringCurve {
+        self.curve_with(&[])
+    }
+
+    /// `reference` holds one value per bin of `q()` (or is empty); it is
+    /// filtered with the bins, so it stays aligned with `curve.q`.
+    pub fn curve_with(&self, reference: &[f64]) -> ScatteringCurve {
         let observed: Vec<&CopySums> = self.copies.iter().filter(|c| c.frames > 0).collect();
         let frames: usize = observed.iter().map(|c| c.frames).sum();
         if frames == 0 {
@@ -271,6 +281,7 @@ impl Scattering {
                 continue;
             }
             curve.q.push(q);
+            curve.s_hsy.extend(reference.get(k));
             if beads {
                 sums.push_beads(&mut curve, per_molecule);
             }

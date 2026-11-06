@@ -36,6 +36,10 @@ pub struct ScanSettings {
     pub cutoff: f64,
     pub grid_size: usize,
     pub homo_dimer: bool,
+    /// Angular mesh scheme of the table. Defaulted so trajectory headers
+    /// (JSON) written before it existed still read.
+    #[serde(default)]
+    pub subdivision: Subdivision,
 }
 
 /// Coarse-grained rigid body in its own frame (mass center at origin).
@@ -91,15 +95,6 @@ impl ScanArchive {
     /// Molecular weights in g/mol.
     pub fn molar_masses(&self) -> (f64, f64) {
         (self.bodies[0].mass(), self.bodies[1].mass())
-    }
-
-    /// Angular scheme the table was scanned with; all levels share it.
-    pub fn subdivision(&self) -> Subdivision {
-        self.table
-            .levels
-            .first()
-            .map(|l| l.subdivision())
-            .unwrap_or_default()
     }
 
     /// Net charges in elementary charges.
@@ -158,7 +153,7 @@ pub(crate) fn xyz_string<'a>(
 const MAGIC: &[u8; 12] = b"DUELLO-SCAN\0";
 /// Bumped on any layout change: bincode isn't self-describing, so old readers
 /// would otherwise misread new files silently.
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 2;
 
 impl ScanArchive {
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
@@ -184,6 +179,12 @@ impl ScanArchive {
         for body in &archive.bodies {
             body.check_consistency()?;
         }
+        // The label is stored beside the table, so a writer could disagree.
+        let labelled = archive.settings.subdivision;
+        ensure!(
+            archive.table.levels.iter().all(|l| l.subdivision() == labelled),
+            "settings say {labelled:?} but the table uses another angular mesh"
+        );
         Ok(archive)
     }
 }
@@ -313,6 +314,7 @@ mod tests {
                 cutoff: 30.0,
                 grid_size: 200,
                 homo_dimer: false,
+                subdivision: Default::default(),
             },
             table: table(),
             bodies: [body("LYS"), body("ARG")],
@@ -343,9 +345,17 @@ mod tests {
     }
 
     #[test]
+    fn a_scheme_label_that_disagrees_with_the_table_is_refused() {
+        let mut mislabelled = archive();
+        mislabelled.settings.subdivision = crate::Subdivision::Lattice;
+        let bytes = mislabelled.to_bytes().unwrap();
+        assert!(ScanArchive::from_bytes(&bytes).is_err());
+    }
+
+    #[test]
     fn header_is_magic_then_little_endian_version() {
         let bytes = archive().to_bytes().unwrap();
-        assert_eq!(&bytes[..16], b"DUELLO-SCAN\0\x01\0\0\0");
+        assert_eq!(&bytes[..16], b"DUELLO-SCAN\0\x02\0\0\0");
     }
 
     /// Derived from the beads, so they can't disagree with what a simulation uses.
