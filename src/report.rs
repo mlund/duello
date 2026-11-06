@@ -23,7 +23,7 @@ pub struct PmfResult {
 }
 
 /// One point of the PMF and mean energy curves, in kT.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PmfPoint {
     pub r: f32,
     pub free_energy: f32,

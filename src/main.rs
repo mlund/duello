@@ -366,6 +366,9 @@ enum Commands {
         /// Save binary 6D table for Faunus lookup (.gz suffix enables gzip compression)
         #[arg(long)]
         savetable: Option<PathBuf>,
+        /// Save a self-contained scan (table, CG bodies, PMF) for import in duello-web
+        #[arg(long)]
+        savescan: Option<PathBuf>,
         /// Export every table pose to an XTC trajectory, with energies and pose
         /// indices in a companion .energy.csv.gz and atom names in a .xyz
         #[arg(long)]
@@ -462,6 +465,71 @@ fn save_generated(inputs: &[&PathBuf], generated: Option<&CgSystem>) -> Result<(
     Ok(())
 }
 
+/// Archive contents for `--savescan`; see `ScanSettings` for what isn't recorded.
+fn save_scan_request(
+    cmd: &Commands,
+    path: PathBuf,
+    homo_dimer: bool,
+    generated: Option<&cgkitten::CgSystem>,
+) -> Result<icoscan::SaveScan> {
+    let Commands::Scan {
+        rmin,
+        rmax,
+        dr,
+        topology: top_file,
+        molarity,
+        cutoff,
+        temperature,
+        max_ndiv,
+        gradient_threshold,
+        backend,
+        grid,
+        sr_cutoff,
+        cg,
+        ..
+    } = cmd
+    else {
+        bail!("Unknown command");
+    };
+    let cg = cg.options()?;
+    // Mirrors do_scan: only the reference backend splines the full cutoff.
+    let spline_cutoff = match backend {
+        Backend::Reference => *cutoff,
+        _ => sr_cutoff.unwrap_or(*cutoff),
+    };
+    // Without generated CG, a --top file defined the system, not cg.model.
+    let model = match generated {
+        Some(_) => cg.model,
+        None => "custom topology".to_string(),
+    };
+    let settings = duello::archive::ScanSettings {
+        ph: cg.ph,
+        model,
+        single_bead: cg.single_bead,
+        rmin: *rmin,
+        rmax: *rmax,
+        dr: *dr,
+        molarity: *molarity,
+        temperature: *temperature,
+        max_ndiv: *max_ndiv,
+        gradient_threshold: *gradient_threshold,
+        cutoff: spline_cutoff,
+        grid_size: grid.size,
+        homo_dimer,
+    };
+    // A given --top file replaces CG generation, so it is the topology to keep.
+    let topology_yaml = match (generated, top_file) {
+        (Some(cg), _) => cg.topology.clone(),
+        (None, Some(file)) => std::fs::read_to_string(file)?,
+        (None, None) => String::new(),
+    };
+    Ok(icoscan::SaveScan {
+        path,
+        settings,
+        topology_yaml,
+    })
+}
+
 /// Calculate energy of all two-body poses
 fn do_scan(cmd: &Commands) -> Result<()> {
     let Commands::Scan {
@@ -477,6 +545,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         fixed_dielectric,
         pmf_file,
         savetable,
+        savescan,
         xtcfile,
         max_ndiv,
         gradient_threshold,
@@ -585,6 +654,10 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         save_table: savetable.clone(),
         trajectory: xtcfile.clone(),
         atom_kinds: topology.atomkinds().to_vec(),
+        save_scan: savescan
+            .clone()
+            .map(|path| save_scan_request(cmd, path, homo_dimer, generated.as_ref()))
+            .transpose()?,
     };
 
     // energy_cap only applies to SR-only splines (GPU/SIMD split path).

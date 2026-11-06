@@ -12,6 +12,7 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
+pub mod archive;
 pub mod backend;
 #[cfg(feature = "cli")]
 pub mod diffusion;

@@ -19,10 +19,9 @@ use crate::{
     Sample, Vector3,
 };
 use icotable::{AdaptiveBuilder, Subdivision, Table6DAdaptive};
+use icotable::{TableMetadata, TailCorrectionTerm};
 use std::ops::ControlFlow;
 
-#[cfg(feature = "cli")]
-use icotable::{TableMetadata, TailCorrectionTerm};
 #[cfg(feature = "cli")]
 use std::path::PathBuf;
 
@@ -61,6 +60,16 @@ pub struct ScanConfig {
     pub trajectory: Option<PathBuf>,
     /// Atom names for the trajectory's topology file; XTC stores none.
     pub atom_kinds: Vec<faunus::topology::AtomKind>,
+    /// Save a self-contained scan archive, e.g. for the web tool.
+    pub save_scan: Option<SaveScan>,
+}
+
+/// What an archive records beyond the scan itself.
+#[cfg(feature = "cli")]
+pub struct SaveScan {
+    pub path: PathBuf,
+    pub settings: crate::archive::ScanSettings,
+    pub topology_yaml: String,
 }
 
 /// Progress of a running scan, reported after each R-bin.
@@ -407,6 +416,38 @@ fn compute_slab_serial<B: EnergyBackend + Sync>(
     }
 }
 
+/// Tail fit and generation conditions, so table users can extend energies
+/// beyond `rmax` and check the temperature the table was made at.
+pub(crate) fn table_metadata(params: &ScanParams, result: &ScanResult) -> TableMetadata {
+    let free_energies: Vec<f64> = result
+        .samples
+        .iter()
+        .map(|(_, s)| s.free_energy())
+        .collect();
+    let electric_prefactor = faunus::interatomic::ELECTRIC_PREFACTOR / params.permittivity;
+    let tail_terms = fit_tail_correction(
+        &result.distances,
+        &free_energies,
+        params.charges,
+        params.dipole_moments,
+        params.kappa,
+        electric_prefactor,
+    );
+    let point_group = if params.homo_dimer {
+        icotable::PointGroup::Exchange
+    } else {
+        icotable::PointGroup::Asymmetric
+    };
+    TableMetadata {
+        tail_terms,
+        charges: Some(params.charges),
+        dipole_moments: Some(params.dipole_moments),
+        temperature: Some(params.temperature),
+        electric_prefactor: Some(electric_prefactor),
+        point_group,
+    }
+}
+
 /// CLI wrapper: runs compute_scan + file I/O + reporting.
 #[cfg(feature = "cli")]
 pub fn do_icoscan<B: EnergyBackend + Sync>(config: &ScanConfig, backend: &B) -> anyhow::Result<()> {
@@ -419,48 +460,49 @@ pub fn do_icoscan<B: EnergyBackend + Sync>(config: &ScanConfig, backend: &B) -> 
         elapsed.as_secs_f64()
     );
 
+    // Fitted once, and only if saved: both the table file and the archive carry it.
+    if config.save_table.is_some() || config.save_scan.is_some() {
+        result.table.metadata = Some(table_metadata(&config.params, &result));
+    }
     if let Some(path) = &config.save_table {
         log::info!("Saving adaptive 6D table to {}", path.display());
-        let free_energies: Vec<f64> = result
-            .samples
-            .iter()
-            .map(|(_, s)| s.free_energy())
-            .collect();
-        let electric_prefactor =
-            faunus::interatomic::ELECTRIC_PREFACTOR / config.params.permittivity;
-        let tail_terms = fit_tail_correction(
-            &result.distances,
-            &free_energies,
-            config.params.charges,
-            config.params.dipole_moments,
-            config.params.kappa,
-            electric_prefactor,
-        );
-        let point_group = if config.params.homo_dimer {
-            icotable::PointGroup::Exchange
-        } else {
-            icotable::PointGroup::Asymmetric
-        };
-        result.table.metadata = Some(TableMetadata {
-            tail_terms,
-            charges: Some(config.params.charges),
-            dipole_moments: Some(config.params.dipole_moments),
-            temperature: Some(config.params.temperature),
-            electric_prefactor: Some(electric_prefactor),
-            point_group,
-        });
         result.table.save(path)?;
     }
 
     let masses = (backend.ref_a().total_mass(), backend.ref_b().total_mass());
     crate::report::report_pmf(&result.samples, &config.pmf_file, Some(masses))?;
 
-    // After the PMF: the trajectory can run to tens of GB, and losing the
-    // primary result to a full disk would waste the whole scan.
+    // The archive consumes the result, so the trajectory reads its table.
+    let table = match &config.save_scan {
+        Some(save) => save_archive(save, config, result, backend)?.table,
+        None => result.table,
+    };
+    // Last: the trajectory can run to tens of GB, and losing the primary
+    // results to a full disk would waste the whole scan.
     if let Some(path) = &config.trajectory {
-        write_trajectory(path, &result.table, config, backend)?;
+        write_trajectory(path, &table, config, backend)?;
     }
     Ok(())
+}
+
+#[cfg(feature = "cli")]
+fn save_archive<B: EnergyBackend>(
+    save: &SaveScan,
+    config: &ScanConfig,
+    result: ScanResult,
+    backend: &B,
+) -> anyhow::Result<crate::archive::ScanArchive> {
+    log::info!("Saving scan archive to {}", save.path.display());
+    let archive = crate::archive::ScanArchive::from_scan(
+        save.settings.clone(),
+        &config.params,
+        result,
+        [backend.ref_a(), backend.ref_b()],
+        &config.atom_kinds,
+        save.topology_yaml.clone(),
+    )?;
+    std::fs::write(&save.path, archive.to_bytes()?)?;
+    Ok(archive)
 }
 
 /// Write the pose trajectory and its two sidecars.
@@ -507,7 +549,6 @@ pub(crate) fn orient_structures(
 /// The ion-ion (Yukawa) coefficient is the charge product `z₁·z₂`; the Coulomb
 /// prefactor `e²/(4��ε₀εᵣ)` is stored separately in [`TableMetadata::electric_prefactor`].
 /// Higher-order terms are fitted from the residual using log-space linear regression.
-#[cfg(feature = "cli")]
 fn fit_tail_correction(
     distances: &[f64],
     free_energies: &[f64],
@@ -569,7 +610,6 @@ fn fit_tail_correction(
 ///
 /// Linearizes `ln|u(R)·R^power| = ln|C| - κ·R` and fits slope/intercept.
 /// Only uses bins with the majority sign to avoid fitting across zero crossings.
-#[cfg(feature = "cli")]
 fn fit_screened_term(
     distances: &[f64],
     energies: &[f64],
