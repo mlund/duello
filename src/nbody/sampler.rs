@@ -71,6 +71,20 @@ pub struct MoveStats {
     pub rotate: MoveCounter,
 }
 
+impl MoveStats {
+    /// Adds another copy's or period's tallies, so runs can pool copies.
+    pub fn merge(&mut self, other: &MoveStats) {
+        for (mine, theirs) in [
+            (&mut self.translate, &other.translate),
+            (&mut self.rotate, &other.rotate),
+        ] {
+            mine.attempts += theirs.attempts;
+            mine.accepted += theirs.accepted;
+            mine.sum_square_displacement += theirs.sum_square_displacement;
+        }
+    }
+}
+
 /// One copy of the system, advanced by sequential Metropolis moves.
 pub struct Sampler {
     /// Shared, so copies and observers don't each load the table.

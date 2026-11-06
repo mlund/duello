@@ -67,6 +67,11 @@ impl EnergyStats {
         }
     }
 
+    /// Total energy of one frame in kT, without adding it to the statistics.
+    pub fn frame_energy(&self, frame: &Frame) -> Result<f64> {
+        self.total_energy(frame)
+    }
+
     fn total_energy(&self, frame: &Frame) -> Result<f64> {
         let mut total = 0.0;
         for (i, a) in frame.poses.iter().enumerate() {

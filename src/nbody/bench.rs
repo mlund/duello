@@ -104,14 +104,7 @@ fn step8_benchmark() {
 
 /// One I(q) frame for N lysozymes, to compare with a sweep.
 fn scattering_cost(archive: &ScanArchive, n: usize, molarity: f64) {
-    let yaml = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../pripps/assets/poly_amino_acid_combined.yaml"
-    ));
-    let Ok(yaml) = yaml else {
-        println!("scattering: pripps assets not found");
-        return;
-    };
+    let yaml = super::RESIDUE_FORM_FACTORS;
     let l = box_length(n, molarity);
     let mut rng = rand_pcg::Pcg64::seed_from_u64(3);
     let poses = (0..n)
@@ -134,7 +127,7 @@ fn scattering_cost(archive: &ScanArchive, n: usize, molarity: f64) {
         }
     }
     for device in [Device::Cpu, Device::Gpu] {
-        let made = pollster::block_on(Scattering::new(&reference, n, l, 0.5, &yaml, device));
+        let made = pollster::block_on(Scattering::new(&reference, n, l, 0.5, yaml, device));
         let Ok(mut scattering) = made else {
             println!(
                 "scattering {device:?}: unavailable ({})",
@@ -339,4 +332,46 @@ mod gpu {
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         start.elapsed().as_secs_f64()
     }
+}
+
+/// Whole run on the real table: timings and a sanity look at S_eff.
+#[test]
+#[ignore = "benchmark: needs DUELLO_BENCH_ARCHIVE; run in release with --nocapture"]
+fn lysozyme_run() {
+    let Some(archive) = archive() else {
+        eprintln!("set DUELLO_BENCH_ARCHIVE to a scan archive");
+        return;
+    };
+    let n = 200;
+    let spec = super::RunSpec::new(n, 0.005);
+    let mut run = super::NBodyRun::start(&archive, spec, super::RESIDUE_FORM_FACTORS).unwrap();
+    let start = Instant::now();
+    let mut production_at = None;
+    while start.elapsed().as_secs() < 60 {
+        let p = run.step(50).unwrap();
+        if production_at.is_none() && matches!(p.stage, super::Stage::Production { .. }) {
+            production_at = Some((start.elapsed().as_secs_f64(), p));
+        }
+    }
+    let p = run.step(0).unwrap();
+    println!("equilibrated: {production_at:?}");
+    println!("after 60 s: {p:?}");
+    let curve = run.curve();
+    let errors = curve.s_eff_error.clone().unwrap_or_default();
+    for k in (0..curve.q.len()).step_by(4) {
+        println!(
+            "q={:.3} S_eff={:.3} ± {:.3} P={:.0}",
+            curve.q[k],
+            curve.s_eff[k],
+            errors.get(k).unwrap_or(&f64::NAN),
+            curve.form_factor[k]
+        );
+    }
+    let stats = run.stats();
+    println!(
+        "acceptance translate {:.2} rotate {:.2}; <U>/N = {:.2} kT",
+        stats.moves.translate.acceptance().unwrap_or(f64::NAN),
+        stats.moves.rotate.acceptance().unwrap_or(f64::NAN),
+        stats.energy.mean / n as f64
+    );
 }

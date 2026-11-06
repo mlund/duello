@@ -45,7 +45,7 @@ const FORMAT_VERSION: u32 = 1;
 /// A header is a few kB; a larger length means a damaged or foreign file.
 const MAX_HEADER_BYTES: u32 = 64 << 20;
 /// Far above any run; a larger count means a damaged or foreign header.
-const MAX_BODIES: usize = 1 << 20;
+pub const MAX_BODIES: usize = 1 << 20;
 
 /// copy, sweep, box, then seven f64 per body.
 fn record_size(n_bodies: usize) -> usize {
@@ -117,6 +117,16 @@ impl<W: Write> TrajectoryWriter<W> {
 
     pub fn into_inner(self) -> W {
         self.sink
+    }
+
+    /// What has been written so far, e.g. to offer a download mid-run.
+    pub fn sink(&self) -> &W {
+        &self.sink
+    }
+
+    /// Bytes each `append` adds, for callers enforcing a size cap.
+    pub fn record_bytes(&self) -> usize {
+        record_size(self.n_bodies)
     }
 }
 
