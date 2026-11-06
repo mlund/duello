@@ -6,6 +6,7 @@ mod equilibration;
 mod sampler;
 #[cfg(test)]
 mod test_tables;
+pub mod trajectory;
 
 pub use energy::{PairEnergy, PairValue};
 pub use energy_stats::{EnergyStats, EnergySummary};
