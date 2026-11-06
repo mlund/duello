@@ -23,6 +23,21 @@ pub struct ScatteringCurve {
     pub frames: usize,
 }
 
+impl ScatteringCurve {
+    /// One row per q; the error is NaN without enough copies for one.
+    pub fn to_csv(&self) -> String {
+        let mut csv = String::from("q/Å⁻¹,I,P,S_eff,S_eff_error\n");
+        for k in 0..self.q.len() {
+            let error = self.s_eff_error.as_ref().map_or(f64::NAN, |e| e[k]);
+            csv += &format!(
+                "{:.5},{:.6e},{:.6e},{:.5},{:.5}\n",
+                self.q[k], self.intensity[k], self.form_factor[k], self.s_eff[k], error
+            );
+        }
+        csv
+    }
+}
+
 /// Where the scattering sums run.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Device {

@@ -109,6 +109,10 @@ pub struct NBodyRun {
     /// equilibration ended.
     trajectory: Option<TrajectoryWriter<Vec<u8>>>,
     recording: bool,
+    /// How equilibration ended; kept apart from `stage`, which forgets it on
+    /// `stop`.
+    equilibrated: bool,
+    equilibration_sweeps: u64,
     frames: usize,
     energy_per_body: f64,
 }
@@ -160,6 +164,8 @@ impl NBodyRun {
             scattering,
             trajectory: None,
             recording: true,
+            equilibrated: false,
+            equilibration_sweeps: 0,
             frames: 0,
             energy_per_body: 0.0,
         })
@@ -235,6 +241,8 @@ impl NBodyRun {
         let header = self.header(equilibrated);
         self.trajectory = Some(TrajectoryWriter::new(&header, Vec::new())?);
         self.stage = Stage::Production { equilibrated };
+        self.equilibrated = equilibrated;
+        self.equilibration_sweeps = self.sweep;
         Ok(())
     }
 
@@ -289,6 +297,47 @@ impl NBodyRun {
             moves: self.moves.clone(),
             energy: self.energy.summary(),
         }
+    }
+
+    /// Curve and statistics as CSV.
+    pub fn report_csv(&self) -> String {
+        let mut csv = self.stats_comments();
+        csv += &self.curve().to_csv();
+        csv
+    }
+
+    fn stats_comments(&self) -> String {
+        let stats = self.stats();
+        let n = self.spec.n_bodies as f64;
+        let show = |x: Option<f64>| x.map_or("NaN".to_string(), |v| format!("{v:.5}"));
+        let produced = stats.energy.frames > 0;
+        let per_body = |x: f64| show(produced.then_some(x / n));
+        let moves = &stats.moves;
+        [
+            format!("bodies: {}", self.spec.n_bodies),
+            format!("protein molarity: {}", self.spec.molarity),
+            format!("equilibrated: {}", self.equilibrated),
+            format!("equilibration sweeps: {}", self.equilibration_sweeps),
+            format!("frames: {}", stats.energy.frames),
+            format!(
+                "translate acceptance: {}",
+                show(moves.translate.acceptance())
+            ),
+            format!("rotate acceptance: {}", show(moves.rotate.acceptance())),
+            format!(
+                "translate msd/Å²: {}",
+                show(moves.translate.mean_square_displacement())
+            ),
+            format!(
+                "rotate msd/rad²: {}",
+                show(moves.rotate.mean_square_displacement())
+            ),
+            format!("U/N mean: {} kT", per_body(stats.energy.mean)),
+            format!("Var(U)/N: {} kT²", per_body(stats.energy.variance)),
+        ]
+        .iter()
+        .map(|line| format!("# {line}\n"))
+        .collect()
     }
 
     /// The trajectory so far, borrowed as it can be large; header only if
@@ -479,6 +528,23 @@ mod tests {
         assert!(progress.sweep >= 200);
         let (header, _) = frames_in(&run.trajectory_bytes().unwrap());
         assert!(!header.equilibrated);
+        assert!(run.report_csv().contains("# equilibrated: false\n"));
+    }
+
+    /// Statistics as `#` comments, so plotting tools skip them, then one
+    /// row per q.
+    #[test]
+    fn report_csv_has_stats_then_the_curve() {
+        let mut run = NBodyRun::start(&archive(true, &["X"]), spec(), UNIT).unwrap();
+        run_to(&mut run, |s| matches!(s, Stage::Production { .. }));
+        run.step(10).unwrap();
+        let csv = run.report_csv();
+        assert!(csv.contains("# equilibrated: true\n"), "{csv}");
+        assert!(csv.contains("# translate acceptance: "), "{csv}");
+        assert!(csv.contains("# U/N mean: "), "{csv}");
+        let mut table = csv.lines().skip_while(|l| l.starts_with('#'));
+        assert_eq!(table.next(), Some("q/Å⁻¹,I,P,S_eff,S_eff_error"));
+        assert_eq!(table.count(), run.curve().q.len());
     }
 
     #[test]

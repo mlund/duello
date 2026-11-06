@@ -12,6 +12,8 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
+mod nbody_cmd;
+
 use anyhow::{anyhow, bail, Context, Result};
 use cgkitten::{residue::PkaOverrides, CgSystem};
 use clap::{Parser, Subcommand};
@@ -431,6 +433,11 @@ enum Commands {
         #[arg(short = 'j', long, default_value = "0")]
         threads: usize,
     },
+    /// Metropolis MC of N rigid proteins from a homo-dimer scan; writes I(q),
+    /// MC statistics and a pose trajectory
+    Nbody(nbody_cmd::NBodyArgs),
+    /// Expand an nbody trajectory to bead coordinates (XTC plus XYZ topology)
+    NbodyExpand(nbody_cmd::ExpandArgs),
 }
 
 /// Mirrors faunus `--check`, so scripts can validate inputs cheaply.
@@ -1156,6 +1163,8 @@ fn do_main() -> Result<()> {
             Commands::Dipole { .. } => do_dipole(&cmd)?,
             Commands::Scan { .. } => do_scan(&cmd)?,
             Commands::Potential { .. } => do_potential(&cmd)?,
+            Commands::Nbody(args) => nbody_cmd::run_nbody(&args)?,
+            Commands::NbodyExpand(args) => nbody_cmd::run_expand(&args)?,
         },
         None => {
             bail!("No command given");
