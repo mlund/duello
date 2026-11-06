@@ -229,9 +229,9 @@ impl NBodyRun {
 
     /// Statistics restart here, so equilibration never enters them.
     fn begin_production(&mut self, equilibrated: bool) -> Result<()> {
-        self.samplers
-            .iter_mut()
-            .for_each(|s| drop(s.take_move_stats()));
+        for sampler in &mut self.samplers {
+            sampler.take_move_stats();
+        }
         let header = self.header(equilibrated);
         self.trajectory = Some(TrajectoryWriter::new(&header, Vec::new())?);
         self.stage = Stage::Production { equilibrated };
