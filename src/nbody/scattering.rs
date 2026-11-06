@@ -23,19 +23,33 @@ pub struct ScatteringCurve {
     /// Analytic S(q) of the equivalent charged sphere; empty unless filled
     /// by `NBodyRun`, which knows the protein and solution.
     pub s_hsy: Vec<f64>,
+    /// Mass-centre ⟨|Σ e^{iq·R}|²⟩ / N: what point-particle theories (such as
+    /// the HSY reference) predict, free of orientation–form-factor coupling.
+    pub s_com: Vec<f64>,
+    /// Jackknife error of `s_com`, as for `s_eff_error`.
+    pub s_com_error: Option<Vec<f64>>,
     pub frames: usize,
 }
 
 impl ScatteringCurve {
     /// One row per q; the error is NaN without enough copies for one.
     pub fn to_csv(&self) -> String {
-        let mut csv = String::from("q/Å⁻¹,I,P,S_eff,S_eff_error,S_HSY\n");
+        let mut csv = String::from("q/Å⁻¹,I,P,S_eff,S_eff_error,S_com,S_com_error,S_HSY\n");
+        // Bead columns are empty for mass-centre-only curves.
+        let at = |values: &[f64], k: usize| values.get(k).copied().unwrap_or(f64::NAN);
+        let s_eff_error = self.s_eff_error.as_deref().unwrap_or_default();
+        let s_com_error = self.s_com_error.as_deref().unwrap_or_default();
         for k in 0..self.q.len() {
-            let error = self.s_eff_error.as_ref().map_or(f64::NAN, |e| e[k]);
-            let hsy = self.s_hsy.get(k).copied().unwrap_or(f64::NAN);
             csv += &format!(
-                "{:.5},{:.6e},{:.6e},{:.5},{:.5},{:.5}\n",
-                self.q[k], self.intensity[k], self.form_factor[k], self.s_eff[k], error, hsy
+                "{:.5},{:.6e},{:.6e},{:.5},{:.5},{:.5},{:.5},{:.5}\n",
+                self.q[k],
+                at(&self.intensity, k),
+                at(&self.form_factor, k),
+                at(&self.s_eff, k),
+                at(s_eff_error, k),
+                at(&self.s_com, k),
+                at(s_com_error, k),
+                at(&self.s_hsy, k),
             );
         }
         csv
@@ -57,22 +71,41 @@ struct CopySums {
     frames: usize,
     total: Vec<f64>,
     self_term: Vec<f64>,
+    centres: Vec<f64>,
 }
 
 /// Far above any run; a larger index means a damaged or foreign frame.
 const MAX_COPIES: usize = 1 << 16;
 
 pub struct Scattering {
-    reference: CgBody,
     n_bodies: usize,
     /// q-vectors depend on the box, so every frame must have this one.
     box_length: f64,
-    scatterer: pripps::BoxScatterer,
+    /// `None` for mass-centre-only runs, which skip the costly bead sums.
+    beads: Option<Beads>,
+    /// One unit point per body at its mass centre, on the same q-grid.
+    centres: pripps::BoxScatterer,
     q: Vec<f64>,
     copies: Vec<CopySums>,
+    centre_positions: Vec<[f64; 3]>,
+}
+
+/// One frame's sums; the bead ones are empty without beads.
+struct Terms<'a> {
+    total: &'a [f64],
+    self_term: &'a [f64],
+    centres: &'a [f64],
+}
+
+struct Beads {
+    reference: CgBody,
+    scatterer: pripps::BoxScatterer,
     /// Reused bead positions, body after body as the scatterer expects.
     positions: Vec<[f64; 3]>,
 }
+
+const CENTRE_KIND: &str = "COM";
+const CENTRE_FORM_FACTOR: &str = "COM: { formfactor: !Constant 1.0 }\n";
 
 impl Scattering {
     /// `q_max` (Å⁻¹) bounds the sampled q-vectors; it must lie inside the form
@@ -86,11 +119,8 @@ impl Scattering {
         formfactors_yaml: &str,
         device: Device,
     ) -> Result<Self> {
+        let mut scattering = Self::mass_centres(n_bodies, box_length, q_max)?;
         let p = p_max(box_length, q_max);
-        ensure!(
-            p > 0,
-            "q_max {q_max} Å⁻¹ is below the shortest [111] q-vector of a {box_length} Å box"
-        );
         let kinds = &reference.kinds;
         let scatterer = match device {
             Device::Cpu => pripps::BoxScatterer::new_cpu(formfactors_yaml, kinds, n_bodies, p)?,
@@ -98,34 +128,79 @@ impl Scattering {
                 pripps::BoxScatterer::new_gpu(formfactors_yaml, kinds, n_bodies, p).await?
             }
         };
-        Ok(Self {
+        scattering.beads = Some(Beads {
             reference: reference.clone(),
+            scatterer,
+            positions: Vec::with_capacity(n_bodies * reference.positions.len()),
+        });
+        Ok(scattering)
+    }
+
+    /// Mass-centre S(q) only: about a bead count cheaper per frame.
+    pub fn mass_centres(n_bodies: usize, box_length: f64, q_max: f64) -> Result<Self> {
+        let p = p_max(box_length, q_max);
+        ensure!(
+            p > 0,
+            "q_max {q_max} Å⁻¹ is below the shortest [111] q-vector of a {box_length} Å box"
+        );
+        Ok(Self {
             n_bodies,
             box_length,
-            scatterer,
+            beads: None,
+            centres: pripps::BoxScatterer::new_cpu(
+                CENTRE_FORM_FACTOR,
+                &[CENTRE_KIND],
+                n_bodies,
+                p,
+            )?,
             q: Vec::new(),
             copies: Vec::new(),
-            positions: Vec::with_capacity(n_bodies * reference.positions.len()),
+            centre_positions: Vec::with_capacity(n_bodies),
         })
     }
 
     pub async fn observe(&mut self, frame: &Frame) -> Result<()> {
         self.check_frame(frame)?;
-        self.fill_positions(frame);
-        let result = self
-            .scatterer
-            .evaluate(&self.positions, [self.box_length; 3])
+        let box_sides = [self.box_length; 3];
+        self.centre_positions.clear();
+        self.centre_positions.extend(
+            frame
+                .poses
+                .iter()
+                .map(|p| [p.position.x, p.position.y, p.position.z]),
+        );
+        let centres = self
+            .centres
+            .evaluate(&self.centre_positions, box_sides)
             .await?;
         if self.q.is_empty() {
-            self.q = result.q;
+            self.q = centres.q.clone();
         }
+        self.check_grid(&centres, "mass-centre")?;
+        let beads = match &mut self.beads {
+            Some(beads) => beads.evaluate(frame, box_sides).await?,
+            None => pripps::BoxIntensity::default(),
+        };
+        if self.beads.is_some() {
+            self.check_grid(&beads, "bead")?;
+        }
+        let terms = Terms {
+            total: &beads.total,
+            self_term: &beads.self_term,
+            centres: &centres.total,
+        };
+        self.accumulate(frame.copy, terms);
+        Ok(())
+    }
+
+    /// Sums are added per q-point, so every grid must be the first one.
+    fn check_grid(&self, result: &pripps::BoxIntensity, what: &str) -> Result<()> {
+        let n = self.q.len();
         ensure!(
-            result.total.len() == self.q.len() && result.self_term.len() == self.q.len(),
-            "scattering returned {} q-points, expected {}",
-            result.total.len(),
-            self.q.len()
+            result.q == self.q && result.total.len() == n && result.self_term.len() == n,
+            "{what} scattering returned {} q-points, expected {n}",
+            result.q.len()
         );
-        self.accumulate(frame.copy, &result.total, &result.self_term);
         Ok(())
     }
 
@@ -150,29 +225,20 @@ impl Scattering {
         Ok(())
     }
 
-    /// R + q·r for every bead, without a temporary per body.
-    fn fill_positions(&mut self, frame: &Frame) {
-        self.positions.clear();
-        for pose in &frame.poses {
-            for &r in &self.reference.positions {
-                let p = pose.position + pose.orientation * Vector3::from(r);
-                self.positions.push([p.x, p.y, p.z]);
-            }
-        }
-    }
-
-    fn accumulate(&mut self, copy: usize, total: &[f64], self_term: &[f64]) {
+    fn accumulate(&mut self, copy: usize, terms: Terms) {
         if self.copies.len() <= copy {
             self.copies.resize(copy + 1, CopySums::default());
         }
         let sums = &mut self.copies[copy];
         if sums.frames == 0 {
-            sums.total = vec![0.0; total.len()];
-            sums.self_term = vec![0.0; self_term.len()];
+            sums.total = vec![0.0; terms.total.len()];
+            sums.self_term = vec![0.0; terms.self_term.len()];
+            sums.centres = vec![0.0; terms.centres.len()];
         }
         sums.frames += 1;
-        add_into(&mut sums.total, total);
-        add_into(&mut sums.self_term, self_term);
+        add_into(&mut sums.total, terms.total);
+        add_into(&mut sums.self_term, terms.self_term);
+        add_into(&mut sums.centres, terms.centres);
     }
 
     /// Forgets all frames; the q-grid and form factors are kept.
@@ -186,29 +252,87 @@ impl Scattering {
         if frames == 0 {
             return ScatteringCurve::default();
         }
-        let sum = |k: usize, field: fn(&CopySums) -> &Vec<f64>| -> f64 {
-            observed.iter().map(|c| field(c)[k]).sum()
-        };
-        let per_molecule = (frames * self.n_bodies) as f64;
+        let several = observed.len() > 1;
+        let beads = self.beads.is_some();
         let mut curve = ScatteringCurve {
             frames,
-            s_eff_error: (observed.len() > 1).then(Vec::new),
+            s_eff_error: (several && beads).then(Vec::new),
+            s_com_error: several.then(Vec::new),
             ..Default::default()
         };
+        let per_molecule = (frames * self.n_bodies) as f64;
         for (k, &q) in self.q.iter().enumerate() {
-            let (total, self_term) = (sum(k, |c| &c.total), sum(k, |c| &c.self_term));
-            if self_term == 0.0 {
+            let sums = Shell {
+                copies: &observed,
+                k,
+            };
+            // S_eff is undefined where the form factor vanishes.
+            if beads && sums.of(|c| &c.self_term) == 0.0 {
                 continue;
             }
             curve.q.push(q);
-            curve.intensity.push(total / per_molecule);
-            curve.form_factor.push(self_term / per_molecule);
-            curve.s_eff.push(total / self_term);
-            if let Some(errors) = &mut curve.s_eff_error {
-                errors.push(jackknife_error(&observed, k, total, self_term));
+            if beads {
+                sums.push_beads(&mut curve, per_molecule);
             }
+            sums.push_centres(&mut curve, per_molecule, self.n_bodies);
         }
         curve
+    }
+}
+
+impl Beads {
+    async fn evaluate(
+        &mut self,
+        frame: &Frame,
+        box_sides: [f64; 3],
+    ) -> Result<pripps::BoxIntensity> {
+        self.positions.clear();
+        // R + q·r for every bead, without a temporary per body.
+        for pose in &frame.poses {
+            for &r in &self.reference.positions {
+                let p = pose.position + pose.orientation * Vector3::from(r);
+                self.positions.push([p.x, p.y, p.z]);
+            }
+        }
+        Ok(self.scatterer.evaluate(&self.positions, box_sides).await?)
+    }
+}
+
+/// The copies' sums at one q-point.
+struct Shell<'a> {
+    copies: &'a [&'a CopySums],
+    k: usize,
+}
+
+impl Shell<'_> {
+    fn of(&self, field: fn(&CopySums) -> &Vec<f64>) -> f64 {
+        self.copies.iter().map(|c| field(c)[self.k]).sum()
+    }
+
+    fn push_beads(&self, curve: &mut ScatteringCurve, per_molecule: f64) {
+        let (total, self_term) = (self.of(|c| &c.total), self.of(|c| &c.self_term));
+        curve.intensity.push(total / per_molecule);
+        curve.form_factor.push(self_term / per_molecule);
+        curve.s_eff.push(total / self_term);
+        let k = self.k;
+        if let Some(errors) = &mut curve.s_eff_error {
+            errors.push(jackknife_error(
+                self.copies.iter().map(|c| (c.total[k], c.self_term[k])),
+            ));
+        }
+    }
+
+    /// A copy's mass-centre self term is N per frame.
+    fn push_centres(&self, curve: &mut ScatteringCurve, per_molecule: f64, n_bodies: usize) {
+        curve.s_com.push(self.of(|c| &c.centres) / per_molecule);
+        let k = self.k;
+        if let Some(errors) = &mut curve.s_com_error {
+            errors.push(jackknife_error(
+                self.copies
+                    .iter()
+                    .map(|c| (c.centres[k], (c.frames * n_bodies) as f64)),
+            ));
+        }
     }
 }
 
@@ -216,14 +340,15 @@ fn add_into(sum: &mut [f64], values: &[f64]) {
     sum.iter_mut().zip(values).for_each(|(s, v)| *s += v);
 }
 
-/// Leave-one-copy-out jackknife on the pooled ratio Σtotal/Σself: it weights
-/// copies by their frames, as the pooled S_eff does.
-fn jackknife_error(copies: &[&CopySums], k: usize, total: f64, self_term: f64) -> f64 {
-    let n = copies.len() as f64;
-    let leave_out: Vec<f64> = copies
-        .iter()
-        .map(|c| (total - c.total[k]) / (self_term - c.self_term[k]))
-        .collect();
+/// Leave-one-copy-out jackknife on a pooled ratio Σnumerator/Σdenominator
+/// over per-copy sums: it weights copies by their frames, as the pooled
+/// ratio does.
+fn jackknife_error(copies: impl Iterator<Item = (f64, f64)> + Clone) -> f64 {
+    let (top, bottom) = copies
+        .clone()
+        .fold((0.0, 0.0), |(t, b), (x, y)| (t + x, b + y));
+    let leave_out: Vec<f64> = copies.map(|(x, y)| (top - x) / (bottom - y)).collect();
+    let n = leave_out.len() as f64;
     let mean = leave_out.iter().sum::<f64>() / n;
     let spread = leave_out.iter().map(|x| (x - mean).powi(2)).sum::<f64>();
     ((n - 1.0) / n * spread).sqrt()
@@ -315,6 +440,57 @@ mod tests {
             approx::assert_relative_eq!(curve.s_eff[k], expected[k] / 2.0, max_relative = 1e-12);
         }
         assert_eq!(curve.s_eff_error, None);
+    }
+
+    /// Mass centres L/4 apart give the worked two-point curve halved,
+    /// 5/3, 4/3, 1 per shell, however the beads are arranged around them.
+    #[test]
+    fn mass_centre_structure_factor_ignores_bead_layout() {
+        let dumbbell = body(&[[-3.0, -4.0, 1.0], [3.0, 4.0, -1.0]], "X");
+        let mut s = scattering(&dumbbell, 2, 40.0, 0.3);
+        observe(
+            &mut s,
+            &frame(0, &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], 40.0),
+        );
+        let curve = s.curve();
+        for (k, expected) in [5.0 / 3.0, 4.0 / 3.0, 1.0].into_iter().enumerate() {
+            approx::assert_relative_eq!(curve.s_com[k], expected, max_relative = 1e-12);
+        }
+    }
+
+    /// Without beads, only S_com is computed, and every q is kept.
+    #[test]
+    fn mass_centres_alone_give_only_s_com() {
+        let mut s = Scattering::mass_centres(2, 40.0, 0.3).unwrap();
+        observe(
+            &mut s,
+            &frame(0, &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], 40.0),
+        );
+        let curve = s.curve();
+        assert_eq!(curve.q.len(), 3);
+        for (k, expected) in [5.0 / 3.0, 4.0 / 3.0, 1.0].into_iter().enumerate() {
+            approx::assert_relative_eq!(curve.s_com[k], expected, max_relative = 1e-12);
+        }
+        assert!(curve.intensity.is_empty() && curve.s_eff.is_empty());
+        assert_eq!(curve.to_csv().lines().count(), 4);
+    }
+
+    /// [100] shell. Copy 0 has centres L/4 apart: box sum 10/3. Copy 1 has
+    /// them L/2 apart: x gives |1 + e^{iπ}|² = 0, y and z give 4, so 8/3.
+    /// Pooled S_com = (10/3 + 8/3)/4 = 3/2; leave-one-out values 4/3 and
+    /// 5/3 give the error √(½·2·(1/6)²) = 1/6.
+    #[test]
+    fn s_com_error_is_the_jackknife_over_copies() {
+        let mut s = Scattering::mass_centres(2, 40.0, 0.3).unwrap();
+        observe(&mut s, &frame(0, &[[0.0; 3], [10.0, 0.0, 0.0]], 40.0));
+        observe(&mut s, &frame(1, &[[0.0; 3], [20.0, 0.0, 0.0]], 40.0));
+        let curve = s.curve();
+        approx::assert_relative_eq!(curve.s_com[0], 1.5, max_relative = 1e-12);
+        approx::assert_relative_eq!(
+            curve.s_com_error.unwrap()[0],
+            1.0 / 6.0,
+            max_relative = 1e-12
+        );
     }
 
     /// Beads must be grouped by body: each body is two unit beads L/4 apart,

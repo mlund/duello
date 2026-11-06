@@ -24,17 +24,29 @@ pub struct NBodyArgs {
     /// Production sweeps per copy, after equilibration
     #[arg(long, default_value = "10000")]
     sweeps: u64,
-    /// Sweeps between I(q) frames
-    #[arg(long, default_value = "50")]
-    frame_interval: u64,
+    /// Sweeps between I(q) frames [default: 50, or 10 with --centres-only]
+    #[arg(long)]
+    frame_interval: Option<u64>,
     /// Largest q (Å⁻¹)
     #[arg(long, default_value = "0.5")]
     qmax: f64,
     #[arg(long, default_value = "1")]
     seed: u64,
+    /// Mass-centre S(q) only; far cheaper per frame, so frames are taken
+    /// more often by default
+    #[arg(long)]
+    centres_only: bool,
     /// Output prefix: writes PREFIX.csv and PREFIX.traj
     #[arg(short = 'o', long, default_value = "nbody")]
     output: PathBuf,
+}
+
+impl NBodyArgs {
+    /// Mass-centre frames cost little next to the sweeps between them.
+    fn frame_interval(&self) -> u64 {
+        self.frame_interval
+            .unwrap_or(if self.centres_only { 10 } else { 50 })
+    }
 }
 
 #[derive(clap::Args)]
@@ -54,7 +66,7 @@ pub struct ExpandArgs {
 
 pub fn run_nbody(args: &NBodyArgs) -> Result<()> {
     ensure!(
-        args.sweeps > 0 && args.frame_interval > 0,
+        args.sweeps > 0 && args.frame_interval() > 0,
         "--sweeps and --frame-interval must be positive"
     );
     let bytes = std::fs::read(&args.scan).with_context(|| args.scan.display().to_string())?;
@@ -74,7 +86,8 @@ fn spec(args: &NBodyArgs) -> RunSpec {
     spec.copies = args.copies;
     spec.seed = args.seed;
     spec.q_max = args.qmax;
-    spec.sweeps_per_frame = args.frame_interval;
+    spec.sweeps_per_frame = args.frame_interval();
+    spec.centres_only = args.centres_only;
     spec
 }
 
@@ -91,7 +104,7 @@ fn with_suffix(prefix: &Path, suffix: &str) -> PathBuf {
 /// frames at staggered sweeps, so the minimal step (one check interval or up
 /// to the next frame) is used to stop right at the last one.
 fn drive(run: &mut NBodyRun, args: &NBodyArgs) -> Result<Progress> {
-    let target = args.sweeps.div_ceil(args.frame_interval) as usize * args.copies;
+    let target = args.sweeps.div_ceil(args.frame_interval()) as usize * args.copies;
     let mut announced = false;
     loop {
         let progress = run.step(1)?;

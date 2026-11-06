@@ -36,6 +36,9 @@ pub struct RunSpec {
     pub rotation: f64,
     /// Recording stops beyond this; the run and curve carry on.
     pub max_trajectory_bytes: usize,
+    /// Mass-centre S(q) only: frames become cheap enough to take at every
+    /// check, but I, P and S_eff are not computed.
+    pub centres_only: bool,
 }
 
 impl RunSpec {
@@ -57,6 +60,7 @@ impl RunSpec {
             translation: 3.0,
             rotation: 0.2,
             max_trajectory_bytes: 256 << 20,
+            centres_only: false,
         }
     }
 }
@@ -151,15 +155,19 @@ impl NBodyRun {
             archive.settings.molarity,
             archive.settings.temperature,
         );
-        let yaml = with_missing_kinds(formfactors_yaml, &reference.kinds);
-        let scattering = pollster::block_on(Scattering::new(
-            &reference,
-            spec.n_bodies,
-            sampler_spec.box_length,
-            spec.q_max,
-            &yaml,
-            Device::Cpu,
-        ))?;
+        let scattering = if spec.centres_only {
+            Scattering::mass_centres(spec.n_bodies, sampler_spec.box_length, spec.q_max)?
+        } else {
+            let yaml = with_missing_kinds(formfactors_yaml, &reference.kinds);
+            pollster::block_on(Scattering::new(
+                &reference,
+                spec.n_bodies,
+                sampler_spec.box_length,
+                spec.q_max,
+                &yaml,
+                Device::Cpu,
+            ))?
+        };
         Ok(Self {
             equilibration: Equilibration::new(spec.criteria),
             spec,
@@ -373,6 +381,7 @@ impl NBodyRun {
         [
             format!("bodies: {}", self.spec.n_bodies),
             format!("protein molarity: {}", self.spec.molarity),
+            format!("centres only: {}", self.spec.centres_only),
             format!("equilibrated: {}", self.equilibrated),
             format!("equilibration sweeps: {}", self.equilibration_sweeps),
             format!("frames: {}", stats.energy.frames),
@@ -675,8 +684,24 @@ mod tests {
         assert!(csv.contains("# translate acceptance: "), "{csv}");
         assert!(csv.contains("# U/N mean: "), "{csv}");
         let mut table = csv.lines().skip_while(|l| l.starts_with('#'));
-        assert_eq!(table.next(), Some("q/Å⁻¹,I,P,S_eff,S_eff_error,S_HSY"));
+        assert_eq!(
+            table.next(),
+            Some("q/Å⁻¹,I,P,S_eff,S_eff_error,S_com,S_com_error,S_HSY")
+        );
         assert_eq!(table.count(), run.curve().q.len());
+    }
+
+    #[test]
+    fn centres_only_runs_skip_bead_scattering() {
+        let mut spec = spec();
+        spec.centres_only = true;
+        let mut run = NBodyRun::start(&archive(true, &["X"]), spec, UNIT).unwrap();
+        run_to(&mut run, |s| matches!(s, Stage::Production { .. }));
+        run.step(10).unwrap();
+        let curve = run.curve();
+        assert!(!curve.s_com.is_empty());
+        assert!(curve.s_eff.is_empty() && curve.intensity.is_empty());
+        assert!(run.report_csv().contains("# centres only: true\n"));
     }
 
     #[test]
