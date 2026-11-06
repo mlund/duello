@@ -267,7 +267,10 @@ mod tests {
         let mut req = request(&peptide, &peptide);
         req.settings.rmax = 40.0;
         let geodesic = cpu_scan(&req);
-        assert_eq!(geodesic.table.levels[0].subdivision(), Subdivision::Geodesic);
+        assert_eq!(
+            geodesic.table.levels[0].subdivision(),
+            Subdivision::Geodesic
+        );
         req.settings.subdivision = Subdivision::Lattice;
         let archive = cpu_scan(&req);
         let restored = ScanArchive::from_bytes(&archive.to_bytes().unwrap()).unwrap();

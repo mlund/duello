@@ -125,10 +125,7 @@ pub struct NBodyRun {
     moves: MoveStats,
     scattering: Scattering,
     /// Charged-sphere S(q) to compare S_eff against.
-    reference_fluid: HsyFluid,
-    /// S_HSY on every bin of the fixed q-grid, solved once at start as the
-    /// curve is redrawn every UI frame; empty without a solution.
-    reference_curve: Vec<f64>,
+    msa: MsaReference,
     /// Created when production starts, as the header records how
     /// equilibration ended.
     trajectory: Option<TrajectoryWriter<Vec<u8>>>,
@@ -179,7 +176,6 @@ impl NBodyRun {
             })
             .collect::<Result<_>>()?;
         let reference = archive.bodies[0].clone();
-        let reference_fluid = HsyFluid::for_scan(archive, spec.molarity).overridden(&spec.msa);
         let scattering = if spec.centres_only {
             Scattering::mass_centres(spec.n_bodies, sampler_spec.box_length, spec.q_max)?
         } else {
@@ -194,9 +190,11 @@ impl NBodyRun {
                 Device::Cpu,
             ))?
         };
-        let reference_curve = reference_fluid
-            .structure_factor(scattering.q())
-            .unwrap_or_default();
+        let msa = MsaReference::new(
+            HsyFluid::for_scan(archive, spec.molarity),
+            spec.msa,
+            scattering.q(),
+        );
         Ok(Self {
             equilibration: Equilibration::new(spec.criteria),
             spec,
@@ -208,8 +206,7 @@ impl NBodyRun {
             energy: EnergyStats::new(energy),
             moves: MoveStats::default(),
             scattering,
-            reference_curve,
-            reference_fluid,
+            msa,
             trajectory: None,
             recording: true,
             equilibrated: false,
@@ -401,7 +398,7 @@ impl NBodyRun {
     }
 
     pub fn curve(&self) -> ScatteringCurve {
-        self.scattering.curve_with(&self.reference_curve)
+        self.scattering.curve_with(&self.msa.curve)
     }
 
     pub fn stats(&self) -> RunStats {
@@ -410,6 +407,18 @@ impl NBodyRun {
             energy: self.energy.summary(),
             steps: self.steps,
         }
+    }
+
+    /// Theory only, so it may change at any stage without touching the
+    /// simulation; a refused change keeps the current reference.
+    pub fn set_msa(&mut self, overrides: MsaOverrides) -> Result<()> {
+        check_msa(&overrides)?;
+        self.msa = MsaReference::new(self.msa.derived.clone(), overrides, self.scattering.q());
+        Ok(())
+    }
+
+    pub fn msa(&self) -> &MsaReference {
+        &self.msa
     }
 
     /// Discards production samples so far (curve, energy and move statistics,
@@ -467,7 +476,7 @@ impl NBodyRun {
             ),
             format!("U/N mean: {} kT", per_body(stats.energy.mean)),
             format!("Var(U)/N: {} kT²", per_body(stats.energy.variance)),
-            self.reference_fluid.describe(),
+            self.msa.sphere().describe(),
         ]
         .iter()
         .map(|line| format!("# {line}\n"))
@@ -508,16 +517,63 @@ fn validate(spec: &RunSpec) -> Result<()> {
         spec.vectors_per_bin > 0,
         "vectors per q-bin must be positive"
     );
+    check_msa(&spec.msa)
+}
+
+fn check_msa(overrides: &MsaOverrides) -> Result<()> {
     let MsaOverrides {
         diameter,
         debye_length,
-    } = spec.msa;
+    } = *overrides;
     // `> 0` is false for NaN too.
     ensure!(
         [diameter, debye_length].iter().flatten().all(|&x| x > 0.0),
         "MSA diameter and Debye length must be positive"
     );
     Ok(())
+}
+
+/// A run's charged sphere and its S(q) on every bin of the fixed q-grid,
+/// solved once per change as the curve is redrawn every UI frame.
+pub struct MsaReference {
+    /// From the scan and concentration, before overrides.
+    derived: HsyFluid,
+    overrides: MsaOverrides,
+    fluid: HsyFluid,
+    /// Empty without a solution.
+    curve: Vec<f64>,
+}
+
+impl MsaReference {
+    fn new(derived: HsyFluid, overrides: MsaOverrides, q: &[f64]) -> Self {
+        let fluid = derived.clone().overridden(&overrides);
+        let curve = fluid.structure_factor(q).unwrap_or_default();
+        Self {
+            derived,
+            overrides,
+            fluid,
+            curve,
+        }
+    }
+
+    /// The defaults the overrides replace.
+    pub fn derived(&self) -> &HsyFluid {
+        &self.derived
+    }
+
+    pub fn overrides(&self) -> MsaOverrides {
+        self.overrides
+    }
+
+    /// The sphere actually solved for.
+    pub fn sphere(&self) -> &HsyFluid {
+        &self.fluid
+    }
+
+    /// False when the rescaling found no physical solution.
+    pub fn solved(&self) -> bool {
+        !self.curve.is_empty()
+    }
 }
 
 fn mean(values: &[f64]) -> f64 {
@@ -933,6 +989,42 @@ mod tests {
                 assert!(NBodyRun::start(&archive(true, &["X"]), spec, UNIT).is_err());
             }
         }
+    }
+
+    /// Only the theory changes: the simulation and its frames carry on.
+    #[test]
+    fn msa_parameters_can_change_mid_run() {
+        let mut run = NBodyRun::start(&archive(true, &["X"]), spec(), UNIT).unwrap();
+        run_to(&mut run, |s| matches!(s, Stage::Production { .. }));
+        run.step(10).unwrap();
+        let frames = run.curve().frames;
+        let wide = MsaOverrides {
+            diameter: Some(5.0),
+            ..Default::default()
+        };
+        let derived = run.msa().derived().diameter;
+        run.set_msa(wide).unwrap();
+        let msa = run.msa();
+        assert_eq!(msa.overrides(), wide);
+        assert_eq!(
+            (msa.sphere().diameter, msa.derived().diameter),
+            (5.0, derived)
+        );
+        assert!(msa.solved());
+        // As in the test below: φ = 0.082 pulls S(0) well under 1.
+        assert!(run.curve().s_hsy[0] < 0.9, "{:?}", run.curve().s_hsy);
+        assert_eq!(run.curve().frames, frames);
+        assert!(run.report_csv().contains("σ = 5.0 Å"));
+        let bad = MsaOverrides {
+            debye_length: Some(-1.0),
+            ..Default::default()
+        };
+        assert!(run.set_msa(bad).is_err());
+        assert_eq!(run.msa().overrides(), wide);
+        assert!(
+            run.report_csv().contains("σ = 5.0 Å"),
+            "a refused change keeps the old"
+        );
     }
 
     #[test]

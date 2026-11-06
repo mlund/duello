@@ -21,7 +21,7 @@ pub use energy_stats::{EnergyStats, EnergySummary};
 pub use equilibration::{Criteria, Equilibration, Status};
 pub use hsy::{HsyFluid, MsaOverrides, PARTIAL_SPECIFIC_VOLUME};
 pub use pripps::RESIDUE_FORM_FACTORS;
-pub use run::{NBodyRun, Progress, RunSpec, RunStats, Stage};
+pub use run::{MsaReference, NBodyRun, Progress, RunSpec, RunStats, Stage};
 pub use sampler::{Frame, MoveCounter, MoveStats, Sampler, SamplerSpec};
 pub use scattering::{Device, Scattering, ScatteringCurve};
 pub use step_tuner::StepTuner;

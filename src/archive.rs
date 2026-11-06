@@ -182,7 +182,11 @@ impl ScanArchive {
         // The label is stored beside the table, so a writer could disagree.
         let labelled = archive.settings.subdivision;
         ensure!(
-            archive.table.levels.iter().all(|l| l.subdivision() == labelled),
+            archive
+                .table
+                .levels
+                .iter()
+                .all(|l| l.subdivision() == labelled),
             "settings say {labelled:?} but the table uses another angular mesh"
         );
         Ok(archive)
