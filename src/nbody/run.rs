@@ -324,6 +324,23 @@ impl NBodyRun {
         }
     }
 
+    /// Discards production samples so far (curve, energy and move statistics,
+    /// trajectory) and keeps sampling from the current state. The trajectory
+    /// header then counts the discarded sweeps as equilibration.
+    pub fn reset_statistics(&mut self) -> Result<Progress> {
+        ensure!(
+            matches!(self.stage, Stage::Production { .. }),
+            "statistics exist only during production"
+        );
+        self.scattering.reset();
+        self.energy.reset();
+        self.moves = MoveStats::default();
+        self.frames = 0;
+        self.recording = true;
+        self.begin_production(self.equilibrated)?;
+        Ok(self.progress())
+    }
+
     /// Curve and statistics as CSV.
     pub fn report_csv(&self) -> String {
         let mut csv = self.stats_comments();
@@ -580,6 +597,34 @@ mod tests {
         let mut copies: Vec<usize> = reader.map(|f| f.unwrap().copy).collect();
         copies.sort();
         assert_eq!(copies, [0, 0, 1, 1, 2, 2, 3, 3]);
+    }
+
+    /// Resetting discards production samples so far, e.g. once a plot shows
+    /// the early frames were still relaxing, and production carries on.
+    #[test]
+    fn reset_statistics_restarts_production_samples() {
+        let mut run = NBodyRun::start(&archive(true, &["X"]), spec(), UNIT).unwrap();
+        assert!(run.reset_statistics().is_err(), "nothing to reset yet");
+        run_to(&mut run, |s| matches!(s, Stage::Production { .. }));
+        let before = run.step(20).unwrap();
+        assert!(before.frames > 0);
+        let reset = run.reset_statistics().unwrap();
+        assert_eq!((reset.frames, reset.sweep), (0, before.sweep));
+        assert_eq!(run.curve().frames, 0);
+        let stats = run.stats();
+        assert_eq!(stats.energy.frames, 0);
+        assert_eq!(
+            stats.moves.translate.attempts + stats.moves.rotate.attempts,
+            0
+        );
+        let (header, frames) = frames_in(&run.trajectory_bytes().unwrap());
+        assert_eq!((frames, header.equilibration_sweeps), (0, before.sweep));
+        assert!(header.equilibrated);
+
+        let after = run.step(20).unwrap();
+        assert_eq!(after.stage, Stage::Production { equilibrated: true });
+        assert!(after.frames > 0);
+        assert_eq!(run.curve().frames, after.frames);
     }
 
     /// A run that never meets the drift test still produces, flagged as such.

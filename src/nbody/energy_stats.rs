@@ -36,6 +36,11 @@ impl EnergyStats {
         }
     }
 
+    /// Forgets all frames.
+    pub fn reset(&mut self) {
+        *self = Self::new(self.energy.clone());
+    }
+
     /// Adds the frame and returns its total energy in kT, which equilibration
     /// checks also need. Fails for a frame no valid sampler produces but a
     /// damaged or mismatched trajectory might: overlapping bodies, or a box

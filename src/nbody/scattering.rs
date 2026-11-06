@@ -171,6 +171,11 @@ impl Scattering {
         add_into(&mut sums.self_term, self_term);
     }
 
+    /// Forgets all frames; the q-grid and form factors are kept.
+    pub fn reset(&mut self) {
+        self.copies.clear();
+    }
+
     pub fn curve(&self) -> ScatteringCurve {
         let observed: Vec<&CopySums> = self.copies.iter().filter(|c| c.frames > 0).collect();
         let frames: usize = observed.iter().map(|c| c.frames).sum();
