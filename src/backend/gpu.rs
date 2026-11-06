@@ -122,8 +122,7 @@ impl GpuBackend {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
 
-        pollster::block_on(instance.request_adapter(&adapter_options()))
-        .is_ok()
+        pollster::block_on(instance.request_adapter(&adapter_options())).is_ok()
     }
 
     /// Create a new GPU backend, auto-detecting grid type from the splined matrix (not available on WASM).
@@ -169,9 +168,7 @@ impl GpuBackend {
     ) -> anyhow::Result<Self> {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let adapter = instance
-            .request_adapter(&adapter_options())
-            .await?;
+        let adapter = instance.request_adapter(&adapter_options()).await?;
 
         log::info!("Using GPU adapter: {:?}", adapter.get_info().name);
 

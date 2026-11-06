@@ -354,7 +354,7 @@ pub(super) fn add_into(sum: &mut [f64], values: &[f64]) {
 /// Leave-one-copy-out jackknife on a pooled ratio Σnumerator/Σdenominator
 /// over per-copy sums: it weights copies by their frames, as the pooled
 /// ratio does.
-fn jackknife_error(copies: impl Iterator<Item = (f64, f64)> + Clone) -> f64 {
+pub(super) fn jackknife_error(copies: impl Iterator<Item = (f64, f64)> + Clone) -> f64 {
     let (top, bottom) = copies
         .clone()
         .fold((0.0, 0.0), |(t, b), (x, y)| (t + x, b + y));

@@ -7,8 +7,8 @@
 use super::trajectory::{TrajectoryHeader, TrajectoryWriter};
 use super::{
     box_length, Criteria, Device, EnergyStats, EnergySummary, Equilibration, Frame, HsyFluid,
-    MoveStats, MsaOverrides, PairEnergy, Sampler, SamplerSpec, Scattering, ScatteringCurve, Status,
-    StepTuner,
+    MoveStats, MsaOverrides, PairCorrelation, PairEnergy, RdfCurve, Sampler, SamplerSpec,
+    Scattering, ScatteringCurve, Status, StepTuner,
 };
 use crate::archive::ScanArchive;
 use anyhow::{ensure, Result};
@@ -124,6 +124,7 @@ pub struct NBodyRun {
     energy: EnergyStats,
     moves: MoveStats,
     scattering: Scattering,
+    pair_correlation: PairCorrelation,
     /// Charged-sphere S(q) to compare S_eff against.
     msa: MsaReference,
     /// Created when production starts, as the header records how
@@ -206,6 +207,7 @@ impl NBodyRun {
             energy: EnergyStats::new(energy),
             moves: MoveStats::default(),
             scattering,
+            pair_correlation: PairCorrelation::new(sampler_spec.n_bodies, sampler_spec.box_length),
             msa,
             trajectory: None,
             recording: true,
@@ -373,6 +375,7 @@ impl NBodyRun {
         let mut energies = Vec::with_capacity(frames.len());
         for frame in frames {
             pollster::block_on(self.scattering.observe(frame))?;
+            self.pair_correlation.observe(frame);
             energies.push(self.energy.observe(frame)?);
             self.record(frame)?;
             // Only up to a copy's latest frame, so moves and frames agree.
@@ -399,6 +402,11 @@ impl NBodyRun {
 
     pub fn curve(&self) -> ScatteringCurve {
         self.scattering.curve_with(&self.msa.curve)
+    }
+
+    /// Mass-centre g(r) over production frames; empty before the first.
+    pub fn pair_correlation(&self) -> RdfCurve {
+        self.pair_correlation.curve()
     }
 
     pub fn stats(&self) -> RunStats {
@@ -430,6 +438,7 @@ impl NBodyRun {
             "statistics exist only during production"
         );
         self.scattering.reset();
+        self.pair_correlation.reset();
         self.energy.reset();
         self.moves = MoveStats::default();
         self.frames = 0;
@@ -799,6 +808,25 @@ mod tests {
         assert_eq!(after.stage, Stage::Production { equilibrated: true });
         assert!(after.frames > 0);
         assert_eq!(run.curve().frames, after.frames);
+    }
+
+    /// Hard spheres (σ = 5 Å, the fixture's rmin) never come closer than σ,
+    /// so g(r) is zero below it; like the curve it holds production only.
+    #[test]
+    fn pair_correlation_follows_production() {
+        let mut run = NBodyRun::start(&archive(true, &["X"]), spec(), UNIT).unwrap();
+        run.step(10).unwrap();
+        assert_eq!(run.pair_correlation(), RdfCurve::default());
+        run_to(&mut run, |s| matches!(s, Stage::Production { .. }));
+        run.step(50).unwrap();
+        let rdf = run.pair_correlation();
+        assert_eq!(rdf.r.last(), Some(&9.75), "out to L/2 of the 20 Å box");
+        for (r, g) in rdf.r.iter().zip(&rdf.g).filter(|(r, _)| **r < 5.0) {
+            assert_eq!(*g, 0.0, "overlap at r = {r}");
+        }
+        assert!(rdf.g.iter().any(|&g| g > 0.0));
+        run.reset_statistics().unwrap();
+        assert_eq!(run.pair_correlation(), RdfCurve::default());
     }
 
     /// A run that never meets the drift test still produces, flagged as such.

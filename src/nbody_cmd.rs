@@ -58,7 +58,7 @@ pub struct NBodyArgs {
     /// more often by default
     #[arg(long)]
     centres_only: bool,
-    /// Output prefix: writes PREFIX.csv and PREFIX.traj
+    /// Output prefix: writes PREFIX.csv, PREFIX.rdf.csv (g(r)) and PREFIX.traj
     #[arg(short = 'o', long, default_value = "nbody")]
     output: PathBuf,
 }
@@ -99,6 +99,11 @@ pub fn run_nbody(args: &NBodyArgs) -> Result<()> {
         log::warn!("Trajectory reached its size cap; later frames are not recorded");
     }
     std::fs::write(with_suffix(&args.output, ".csv"), run.report_csv())?;
+    // Its own file: a second table would break readers of the first.
+    std::fs::write(
+        with_suffix(&args.output, ".rdf.csv"),
+        run.pair_correlation().to_csv(),
+    )?;
     std::fs::write(with_suffix(&args.output, ".traj"), run.trajectory_bytes()?)?;
     Ok(())
 }

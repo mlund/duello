@@ -84,7 +84,7 @@ impl PairEnergy {
     }
 }
 
-fn minimum_image(d: crate::Vector3, box_length: f64) -> crate::Vector3 {
+pub(super) fn minimum_image(d: crate::Vector3, box_length: f64) -> crate::Vector3 {
     d.map(|x| x - box_length * (x / box_length).round())
 }
 
