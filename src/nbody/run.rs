@@ -258,17 +258,31 @@ impl NBodyRun {
         }
     }
 
-    /// At most one check interval, so a caller's time budget holds; frames
-    /// are observed only on the frame interval.
+    /// At most one check interval, so a caller's time budget holds. Each
+    /// copy takes a frame once per interval, but copies are staggered so
+    /// their scattering costs spread over steps instead of landing together.
     fn production_step(&mut self) -> Result<u64> {
+        let produced = self.sweep - self.equilibration_sweeps;
         let interval = self.spec.sweeps_per_frame;
-        let into_frame = (self.sweep - self.equilibration_sweeps) % interval;
-        let sweeps = (interval - into_frame).min(self.spec.sweeps_per_check);
+        let to_frame: Vec<u64> = (0..self.spec.copies)
+            .map(|copy| interval - (produced + self.phase(copy)) % interval)
+            .collect();
+        let next = to_frame.iter().copied().min().unwrap_or(interval);
+        let sweeps = next.min(self.spec.sweeps_per_check);
         let frames = self.advance(sweeps);
-        if into_frame + sweeps == interval {
-            self.observe(&frames)?;
+        let due: Vec<Frame> = frames
+            .into_iter()
+            .filter(|f| to_frame[f.copy] == sweeps)
+            .collect();
+        if !due.is_empty() {
+            self.observe(&due)?;
         }
         Ok(sweeps)
+    }
+
+    /// Sweeps by which copy `copy`'s frames come early.
+    fn phase(&self, copy: usize) -> u64 {
+        copy as u64 * self.spec.sweeps_per_frame / self.spec.copies as u64
     }
 
     fn observe(&mut self, frames: &[Frame]) -> Result<()> {
@@ -277,9 +291,9 @@ impl NBodyRun {
             pollster::block_on(self.scattering.observe(frame))?;
             energies.push(self.energy.observe(frame)?);
             self.record(frame)?;
-        }
-        for sampler in &mut self.samplers {
-            self.moves.merge(&sampler.take_move_stats());
+            // Only up to a copy's latest frame, so moves and frames agree.
+            let moves = self.samplers[frame.copy].take_move_stats();
+            self.moves.merge(&moves);
         }
         self.frames += frames.len();
         self.energy_per_body = mean(&energies) / self.spec.n_bodies as f64;
@@ -517,8 +531,17 @@ mod tests {
         assert_eq!(frames, progress.frames);
         let stats = run.stats();
         let attempts = stats.moves.translate.attempts + stats.moves.rotate.attempts;
-        // Production only: 2 copies × 10 bodies × the production sweeps.
-        assert_eq!(attempts, 2 * 10 * (progress.frames as u64 / 2) * 5);
+        // Production only, up to each copy's last frame: one move per body
+        // per sweep, 10 bodies.
+        let bytes = run.trajectory_bytes().unwrap();
+        let reader = TrajectoryReader::new(&bytes[..]).unwrap();
+        let mut last = [header.equilibration_sweeps; 2];
+        reader.for_each(|f| {
+            let f = f.unwrap();
+            last[f.copy] = last[f.copy].max(f.sweep);
+        });
+        let sweeps: u64 = last.iter().map(|s| s - header.equilibration_sweeps).sum();
+        assert_eq!(attempts, 10 * sweeps);
         assert_eq!(stats.energy.frames, progress.frames);
     }
 
@@ -538,6 +561,25 @@ mod tests {
         let framed = run.step(40).unwrap();
         assert_eq!(framed.sweep - start.sweep, 50);
         assert_eq!(framed.frames, start.frames + 2);
+    }
+
+    /// Copies take frames at staggered sweeps, so a UI step never pays for
+    /// every copy's scattering at once; each still gets one per interval.
+    #[test]
+    fn copies_take_frames_at_staggered_sweeps() {
+        let mut spec = spec();
+        spec.copies = 4;
+        spec.sweeps_per_frame = 40;
+        let mut run = NBodyRun::start(&archive(true, &["X"]), spec, UNIT).unwrap();
+        let start = run_to(&mut run, |s| matches!(s, Stage::Production { .. }));
+        let frames: Vec<usize> = (0..8).map(|_| run.step(10).unwrap().frames).collect();
+        let expected: Vec<usize> = (1..=8).map(|k| start.frames + k).collect();
+        assert_eq!(frames, expected);
+        let bytes = run.trajectory_bytes().unwrap();
+        let reader = TrajectoryReader::new(&bytes[..]).unwrap();
+        let mut copies: Vec<usize> = reader.map(|f| f.unwrap().copy).collect();
+        copies.sort();
+        assert_eq!(copies, [0, 0, 1, 1, 2, 2, 3, 3]);
     }
 
     /// A run that never meets the drift test still produces, flagged as such.

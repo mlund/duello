@@ -87,21 +87,19 @@ fn with_suffix(prefix: &Path, suffix: &str) -> PathBuf {
 }
 
 /// Steps until each copy has its production frames. Counting frames rather
-/// than sweeps is exact even when a step crosses into production; steps
-/// never exceed what remains, so the run cannot overshoot.
+/// than sweeps is exact even when a step crosses into production. Copies take
+/// frames at staggered sweeps, so the minimal step (one check interval or up
+/// to the next frame) is used to stop right at the last one.
 fn drive(run: &mut NBodyRun, args: &NBodyArgs) -> Result<Progress> {
-    let per_copy = args.sweeps.div_ceil(args.frame_interval);
+    let target = args.sweeps.div_ceil(args.frame_interval) as usize * args.copies;
     let mut announced = false;
-    let mut done = 0;
     loop {
-        let remaining = (per_copy - done) * args.frame_interval;
-        let progress = run.step(remaining.min(1000))?;
-        done = progress.frames as u64 / args.copies as u64;
+        let progress = run.step(1)?;
         if let (Stage::Production { equilibrated }, false) = (progress.stage, announced) {
             log_equilibration(equilibrated);
             announced = true;
         }
-        if done >= per_copy {
+        if progress.frames >= target {
             return Ok(progress);
         }
     }
