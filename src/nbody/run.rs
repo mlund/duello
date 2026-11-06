@@ -171,7 +171,7 @@ impl NBodyRun {
         })
     }
 
-    /// Advances every copy by about `sweeps`, in whole check or frame steps.
+    /// Advances every copy by about `sweeps`, in whole check intervals.
     /// An error stops the run, as copies may then be out of step.
     pub fn step(&mut self, sweeps: u64) -> Result<Progress> {
         let mut done = 0;
@@ -258,11 +258,22 @@ impl NBodyRun {
         }
     }
 
+    /// At most one check interval, so a caller's time budget holds; frames
+    /// are observed only on the frame interval.
     fn production_step(&mut self) -> Result<u64> {
-        let sweeps = self.spec.sweeps_per_frame;
+        let interval = self.spec.sweeps_per_frame;
+        let into_frame = (self.sweep - self.equilibration_sweeps) % interval;
+        let sweeps = (interval - into_frame).min(self.spec.sweeps_per_check);
         let frames = self.advance(sweeps);
+        if into_frame + sweeps == interval {
+            self.observe(&frames)?;
+        }
+        Ok(sweeps)
+    }
+
+    fn observe(&mut self, frames: &[Frame]) -> Result<()> {
         let mut energies = Vec::with_capacity(frames.len());
-        for frame in &frames {
+        for frame in frames {
             pollster::block_on(self.scattering.observe(frame))?;
             energies.push(self.energy.observe(frame)?);
             self.record(frame)?;
@@ -272,7 +283,7 @@ impl NBodyRun {
         }
         self.frames += frames.len();
         self.energy_per_body = mean(&energies) / self.spec.n_bodies as f64;
-        Ok(sweeps)
+        Ok(())
     }
 
     fn record(&mut self, frame: &Frame) -> Result<()> {
@@ -509,6 +520,24 @@ mod tests {
         // Production only: 2 copies × 10 bodies × the production sweeps.
         assert_eq!(attempts, 2 * 10 * (progress.frames as u64 / 2) * 5);
         assert_eq!(stats.energy.frames, progress.frames);
+    }
+
+    /// A UI budgets wall time per step, so production must not force a
+    /// whole frame interval per call; frames still land on the interval.
+    #[test]
+    fn production_steps_are_no_coarser_than_checks() {
+        let mut spec = spec();
+        spec.sweeps_per_frame = 50;
+        let mut run = NBodyRun::start(&archive(true, &["X"]), spec, UNIT).unwrap();
+        let start = run_to(&mut run, |s| matches!(s, Stage::Production { .. }));
+        let first = run.step(1).unwrap();
+        assert_eq!(
+            (first.sweep - start.sweep, first.frames),
+            (10, start.frames)
+        );
+        let framed = run.step(40).unwrap();
+        assert_eq!(framed.sweep - start.sweep, 50);
+        assert_eq!(framed.frames, start.frames + 2);
     }
 
     /// A run that never meets the drift test still produces, flagged as such.
