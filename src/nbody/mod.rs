@@ -2,6 +2,8 @@
 
 #[cfg(test)]
 mod acceptance;
+#[cfg(test)]
+mod bench;
 mod energy;
 mod energy_stats;
 mod equilibration;
