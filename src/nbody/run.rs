@@ -94,7 +94,8 @@ pub struct Progress {
     pub stage: Stage,
     /// Sweeps per copy so far.
     pub sweep: u64,
-    /// Latest copy-averaged energy per body (kT).
+    /// Copy-averaged energy per body (kT) at the last check or frame; 0
+    /// before the first check.
     pub energy_per_body: f64,
     /// Production frames, summed over copies.
     pub frames: usize,
@@ -137,6 +138,8 @@ pub struct NBodyRun {
     equilibration_sweeps: u64,
     frames: usize,
     energy_per_body: f64,
+    /// (sweep, U/N) at each equilibration check, for plotting convergence.
+    energy_trace: Vec<[f64; 2]>,
     /// Translation and rotation tuners; `None` once frozen or when off.
     tuners: Option<[StepTuner; 2]>,
     steps: (f64, f64),
@@ -215,20 +218,23 @@ impl NBodyRun {
             equilibration_sweeps: 0,
             frames: 0,
             energy_per_body: 0.0,
+            energy_trace: Vec::new(),
             tuners: spec_tuners,
             steps: (sampler_spec.translation, sampler_spec.rotation),
             converged: false,
         })
     }
 
-    /// Advances every copy by about `sweeps`, in whole check intervals.
-    /// An error stops the run, as copies may then be out of step.
+    /// Advances every copy by exactly `sweeps`, so a UI can step in small
+    /// pieces; energy checks and frames still fall on their intervals. An
+    /// error stops the run, as copies may then be out of step.
     pub fn step(&mut self, sweeps: u64) -> Result<Progress> {
         let mut done = 0;
         while done < sweeps {
+            let left = sweeps - done;
             let advanced = match self.stage {
-                Stage::Equilibrating => self.equilibration_step(),
-                Stage::Production { .. } => self.production_step(),
+                Stage::Equilibrating => self.equilibration_step(left),
+                Stage::Production { .. } => self.production_step(left),
                 Stage::Stopped => break,
             };
             match advanced {
@@ -255,6 +261,11 @@ impl NBodyRun {
     fn advance(&mut self, sweeps: u64) {
         self.sweep += sweeps;
         self.samplers.iter_mut().for_each(|s| s.advance(sweeps));
+    }
+
+    /// (sweep, U/N) at each equilibration check; empty before the first.
+    pub fn energy_trace(&self) -> &[[f64; 2]] {
+        &self.energy_trace
     }
 
     /// The latest configuration of every copy, at any stage; for viewers.
@@ -287,15 +298,23 @@ impl NBodyRun {
         }
     }
 
-    fn equilibration_step(&mut self) -> Result<u64> {
-        let sweeps = self.spec.sweeps_per_check;
+    /// Up to `most` sweeps, stopping at the next check, which runs only once
+    /// its interval is complete; a UI can then step in small pieces.
+    fn equilibration_step(&mut self, most: u64) -> Result<u64> {
+        let check = self.spec.sweeps_per_check;
+        let sweeps = (check - self.sweep % check).min(most);
         self.advance(sweeps);
+        if !self.sweep.is_multiple_of(check) {
+            return Ok(sweeps);
+        }
         let frames = self.frames();
         let energies = frames
             .iter()
             .map(|f| self.energy.frame_energy(f))
             .collect::<Result<Vec<_>>>()?;
         self.energy_per_body = mean(&energies) / self.spec.n_bodies as f64;
+        self.energy_trace
+            .push([self.sweep as f64, self.energy_per_body]);
         let tuned = self.tune_steps()?;
         let status = self.equilibration.push(self.sweep, &energies);
         // The verdict sticks while the tuners finish, so a later noisy
@@ -365,17 +384,17 @@ impl NBodyRun {
         }
     }
 
-    /// At most one check interval, so a caller's time budget holds. Each
-    /// copy takes a frame once per interval, but copies are staggered so
+    /// Up to `most` sweeps, stopping at the next due frame. Each copy takes a
+    /// frame once per interval, but copies are staggered so
     /// their scattering costs spread over steps instead of landing together.
-    fn production_step(&mut self) -> Result<u64> {
+    fn production_step(&mut self, most: u64) -> Result<u64> {
         let produced = self.sweep - self.equilibration_sweeps;
         let interval = self.spec.sweeps_per_frame;
         let to_frame: Vec<u64> = (0..self.spec.copies)
             .map(|copy| interval - (produced + self.phase(copy)) % interval)
             .collect();
         let next = to_frame.iter().copied().min().unwrap_or(interval);
-        let sweeps = next.min(self.spec.sweeps_per_check);
+        let sweeps = next.min(most);
         self.advance(sweeps);
         // Only copies due a frame pay for one.
         let due: Vec<Frame> = (to_frame.iter().enumerate())
@@ -767,20 +786,55 @@ mod tests {
         assert_eq!(stats.energy.frames, progress.frames);
     }
 
-    /// A UI budgets wall time per step, so production must not force a
-    /// whole frame interval per call; frames still land on the interval.
+    /// A UI budgets wall time per step, so equilibration takes the sweeps
+    /// asked for; its energy trace gains a point only per completed check.
     #[test]
-    fn production_steps_are_no_coarser_than_checks() {
+    fn equilibration_traces_energy_at_each_check() {
+        let mut run = NBodyRun::start(&archive_with(true, &["X"], -0.5), spec(), UNIT).unwrap();
+        let first = run.step(1).unwrap();
+        assert_eq!((first.stage, first.sweep), (Stage::Equilibrating, 1));
+        assert!(run.energy_trace().is_empty());
+        let progress = run.step(19).unwrap();
+        let trace = run.energy_trace();
+        let sweeps: Vec<f64> = trace.iter().map(|p| p[0]).collect();
+        assert_eq!(sweeps, [10.0, 20.0]);
+        assert_eq!(trace[1][1], progress.energy_per_body);
+    }
+
+    /// Small steps only split the work: the samplers draw the same random
+    /// numbers, and checks, tuning, the start of production and staggered
+    /// frames fall on the same sweeps however a total is split.
+    #[test]
+    fn small_steps_end_where_one_large_step_does() {
+        let scan = archive_with(true, &["X"], -0.5);
+        let mut whole = NBodyRun::start(&scan, spec(), UNIT).unwrap();
+        let mut pieces = NBodyRun::start(&scan, spec(), UNIT).unwrap();
+        // Past the 200-sweep cap, so production has started and framed.
+        let once = whole.step(230).unwrap();
+        let mut split = [3, 7, 13, 1, 26].iter().cycle();
+        let mut last = pieces.progress();
+        while last.sweep < 230 {
+            let n = (*split.next().unwrap()).min(230 - last.sweep);
+            last = pieces.step(n).unwrap();
+        }
+        assert!(matches!(once.stage, Stage::Production { .. }), "{once:?}");
+        assert_eq!(once, last);
+        assert_eq!(whole.stats().steps, pieces.stats().steps);
+        assert_eq!(whole.frames(), pieces.frames());
+        assert_eq!(whole.curve(), pieces.curve());
+    }
+
+    /// A UI budgets wall time per step, so production takes the sweeps
+    /// asked for; frames still land on their interval.
+    #[test]
+    fn production_steps_take_the_sweeps_asked_for() {
         let mut spec = spec();
         spec.sweeps_per_frame = 50;
         let mut run = NBodyRun::start(&archive(true, &["X"]), spec, UNIT).unwrap();
         let start = run_to(&mut run, |s| matches!(s, Stage::Production { .. }));
         let first = run.step(1).unwrap();
-        assert_eq!(
-            (first.sweep - start.sweep, first.frames),
-            (10, start.frames)
-        );
-        let framed = run.step(40).unwrap();
+        assert_eq!((first.sweep - start.sweep, first.frames), (1, start.frames));
+        let framed = run.step(49).unwrap();
         assert_eq!(framed.sweep - start.sweep, 50);
         assert_eq!(framed.frames, start.frames + 2);
     }

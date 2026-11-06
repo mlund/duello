@@ -136,8 +136,7 @@ fn with_suffix(prefix: &Path, suffix: &str) -> PathBuf {
 
 /// Steps until each copy has its production frames. Counting frames rather
 /// than sweeps is exact even when a step crosses into production. Copies take
-/// frames at staggered sweeps, so the minimal step (one check interval or up
-/// to the next frame) is used to stop right at the last one.
+/// frames at staggered sweeps, so single sweeps stop right at the last one.
 fn drive(run: &mut NBodyRun, args: &NBodyArgs) -> Result<Progress> {
     let target = args.sweeps.div_ceil(args.frame_interval()) as usize * args.copies;
     let mut announced = false;
