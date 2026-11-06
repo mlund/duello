@@ -8,6 +8,7 @@ mod energy;
 mod energy_stats;
 mod equilibration;
 mod hsy;
+mod pending;
 mod rdf;
 mod run;
 mod sampler;

@@ -1,9 +1,12 @@
 //! Scattering intensity from many-body frames, via pripps' box scatterer.
 
+use super::pending::{self, PendingFrames};
 use super::Frame;
 use crate::archive::CgBody;
 use crate::Vector3;
 use anyhow::{ensure, Result};
+use std::future::Future;
+use std::sync::Arc;
 
 /// Frame-averaged scattering per molecule. `s_eff = intensity / form_factor`
 /// is a ratio of averages, which is what an experiment measures.
@@ -88,6 +91,8 @@ pub struct Scattering {
     q: Vec<f64>,
     copies: Vec<CopySums>,
     centre_positions: Vec<[f64; 3]>,
+    /// Bead sums not yet back, each with its frame's mass-centre sum.
+    pending: PendingFrames<pripps::BoxIntensity>,
 }
 
 /// One frame's sums; the bead ones are empty without beads.
@@ -99,9 +104,8 @@ struct Terms<'a> {
 
 struct Beads {
     reference: CgBody,
-    scatterer: pripps::BoxScatterer,
-    /// Reused bead positions, body after body as the scatterer expects.
-    positions: Vec<[f64; 3]>,
+    /// Shared with in-flight sums, which outlive the `observe` call.
+    scatterer: Arc<pripps::BoxScatterer>,
 }
 
 const CENTRE_KIND: &str = "COM";
@@ -134,8 +138,7 @@ impl Scattering {
         };
         scattering.beads = Some(Beads {
             reference: reference.clone(),
-            scatterer,
-            positions: Vec::with_capacity(n_bodies * reference.positions.len()),
+            scatterer: Arc::new(scatterer),
         });
         Ok(scattering)
     }
@@ -158,12 +161,60 @@ impl Scattering {
             q,
             copies: Vec::new(),
             centre_positions: Vec::with_capacity(n_bodies),
+            pending: PendingFrames::new(),
         })
     }
 
-    pub async fn observe(&mut self, frame: &Frame) -> Result<()> {
+    /// Never blocks: bead sums that aren't back yet (GPU) are folded in by
+    /// a later `observe` or `settle`, so `curve` may lag by those frames.
+    pub fn observe(&mut self, frame: &Frame) -> Result<()> {
         self.check_frame(frame)?;
-        let box_sides = [self.box_length; 3];
+        let centres = self.centre_sums(frame)?;
+        let Some(beads) = &self.beads else {
+            return self.fold(frame.copy, &centres, None);
+        };
+        let job = beads.evaluate(frame, [self.box_length; 3]);
+        self.pending.push(frame.copy, centres, job);
+        self.settle()?;
+        Ok(())
+    }
+
+    /// Folds in finished bead sums; returns how many frames are still out.
+    /// A failed frame doesn't discard the good ones finished with it.
+    pub fn settle(&mut self) -> Result<usize> {
+        let mut first_error = None;
+        for finished in self.pending.drain_ready() {
+            if let Err(e) =
+                finished.and_then(|(copy, centres, beads)| self.fold(copy, &centres, Some(&beads)))
+            {
+                first_error.get_or_insert(e);
+            }
+        }
+        first_error.map_or(Ok(self.pending.len()), Err)
+    }
+
+    /// `beads` is `None` for mass-centre-only runs.
+    fn fold(
+        &mut self,
+        copy: usize,
+        centres: &[f64],
+        beads: Option<&pripps::BoxIntensity>,
+    ) -> Result<()> {
+        if let Some(beads) = beads {
+            self.check_grid(beads, "bead")?;
+        }
+        let (total, self_term) = beads.map_or((&[][..], &[][..]), |b| (&b.total, &b.self_term));
+        let terms = Terms {
+            total,
+            self_term,
+            centres,
+        };
+        self.accumulate(copy, terms);
+        Ok(())
+    }
+
+    /// Always on the CPU, so it is ready at once.
+    fn centre_sums(&mut self, frame: &Frame) -> Result<Vec<f64>> {
         self.centre_positions.clear();
         self.centre_positions.extend(
             frame
@@ -171,25 +222,12 @@ impl Scattering {
                 .iter()
                 .map(|p| [p.position.x, p.position.y, p.position.z]),
         );
-        let centres = self
+        let sums = self
             .centres
-            .evaluate(&self.centre_positions, box_sides)
-            .await?;
+            .evaluate(&self.centre_positions, [self.box_length; 3]);
+        let centres = pending::ready_now(sums)?;
         self.check_grid(&centres, "mass-centre")?;
-        let beads = match &mut self.beads {
-            Some(beads) => beads.evaluate(frame, box_sides).await?,
-            None => pripps::BoxIntensity::default(),
-        };
-        if self.beads.is_some() {
-            self.check_grid(&beads, "bead")?;
-        }
-        let terms = Terms {
-            total: &beads.total,
-            self_term: &beads.self_term,
-            centres: &centres.total,
-        };
-        self.accumulate(frame.copy, terms);
-        Ok(())
+        Ok(centres.total)
     }
 
     /// Sums are added per q-point, so every grid must be the first one.
@@ -203,19 +241,23 @@ impl Scattering {
         Ok(())
     }
 
-    fn check_frame(&self, frame: &Frame) -> Result<()> {
+    /// q-vectors and bead counts are fixed at setup, so a run must match.
+    pub(super) fn check_system(&self, n_bodies: usize, box_length: f64) -> Result<()> {
         ensure!(
-            frame.box_length == self.box_length,
-            "frame box {} Å differs from the {} Å the q-vectors were set up for",
-            frame.box_length,
+            box_length == self.box_length,
+            "box {box_length} Å differs from the {} Å the q-vectors were set up for",
             self.box_length
         );
         ensure!(
-            frame.poses.len() == self.n_bodies,
-            "frame has {} bodies, expected {}",
-            frame.poses.len(),
+            n_bodies == self.n_bodies,
+            "{n_bodies} bodies, but scattering was set up for {}",
             self.n_bodies
         );
+        Ok(())
+    }
+
+    fn check_frame(&self, frame: &Frame) -> Result<()> {
+        self.check_system(frame.poses.len(), frame.box_length)?;
         ensure!(
             frame.copy < MAX_COPIES,
             "implausible copy index {}",
@@ -248,6 +290,7 @@ impl Scattering {
     /// Forgets all frames; the q-grid and form factors are kept.
     pub fn reset(&mut self) {
         self.copies.clear();
+        self.pending.clear();
     }
 
     pub fn curve(&self) -> ScatteringCurve {
@@ -292,20 +335,25 @@ impl Scattering {
 }
 
 impl Beads {
-    async fn evaluate(
-        &mut self,
+    /// Owns its inputs, so it can outlive the frame and the caller.
+    fn evaluate(
+        &self,
         frame: &Frame,
         box_sides: [f64; 3],
-    ) -> Result<pripps::BoxIntensity> {
-        self.positions.clear();
-        // R + q·r for every bead, without a temporary per body.
-        for pose in &frame.poses {
-            for &r in &self.reference.positions {
-                let p = pose.position + pose.orientation * Vector3::from(r);
-                self.positions.push([p.x, p.y, p.z]);
-            }
-        }
-        Ok(self.scatterer.evaluate(&self.positions, box_sides).await?)
+    ) -> impl Future<Output = Result<pripps::BoxIntensity>> + 'static {
+        // R + q·r for every bead, body after body as the scatterer expects.
+        let positions: Vec<[f64; 3]> = frame
+            .poses
+            .iter()
+            .flat_map(|pose| {
+                self.reference.positions.iter().map(move |&r| {
+                    let p = pose.position + pose.orientation * Vector3::from(r);
+                    [p.x, p.y, p.z]
+                })
+            })
+            .collect();
+        let scatterer = self.scatterer.clone();
+        async move { Ok(scatterer.evaluate(&positions, box_sides).await?) }
     }
 }
 
@@ -402,7 +450,7 @@ mod tests {
     }
 
     fn observe(scattering: &mut Scattering, frame: &Frame) {
-        pollster::block_on(scattering.observe(frame)).unwrap();
+        scattering.observe(frame).unwrap();
     }
 
     fn frame(copy: usize, positions: &[[f64; 3]], box_length: f64) -> Frame {
@@ -446,6 +494,16 @@ mod tests {
             approx::assert_relative_eq!(curve.s_eff[k], expected[k] / 2.0, max_relative = 1e-12);
         }
         assert_eq!(curve.s_eff_error, None);
+    }
+
+    /// CPU bead sums finish within `observe`, so the curve never lags.
+    #[test]
+    fn cpu_frames_are_folded_in_at_once() {
+        let mut s = scattering(&bead("X"), 2, 40.0, 0.3);
+        s.observe(&frame(0, &[[0.0; 3], [10.0, 0.0, 0.0]], 40.0))
+            .unwrap();
+        assert_eq!(s.curve().frames, 1);
+        assert_eq!(s.settle().unwrap(), 0);
     }
 
     /// Mass centres L/4 apart give the worked two-point curve halved,
@@ -587,7 +645,7 @@ mod tests {
     #[test]
     fn frame_with_the_wrong_body_count_is_an_error() {
         let mut s = scattering(&bead("X"), 2, 40.0, 0.3);
-        let result = pollster::block_on(s.observe(&frame(0, &[[0.0; 3]], 40.0)));
+        let result = s.observe(&frame(0, &[[0.0; 3]], 40.0));
         assert!(result.err().unwrap().to_string().contains("bodies"));
     }
 

@@ -13,6 +13,7 @@ use super::{
 use crate::archive::{CgBody, ScanArchive};
 use anyhow::{ensure, Result};
 use std::borrow::Cow;
+use std::future::Future;
 use std::sync::Arc;
 
 /// What to run. `RunSpec::new` fills in defaults for everything but the
@@ -49,6 +50,8 @@ pub struct RunSpec {
     /// Mass-centre S(q) only: frames become cheap enough to take at every
     /// check, but I, P and S_eff are not computed.
     pub centres_only: bool,
+    /// Where bead sums run; on a GPU they are folded in as they come back.
+    pub device: Device,
 }
 
 impl RunSpec {
@@ -74,6 +77,7 @@ impl RunSpec {
             msa: MsaOverrides::default(),
             max_trajectory_bytes: 256 << 20,
             centres_only: false,
+            device: Device::Cpu,
         }
     }
 }
@@ -97,7 +101,8 @@ pub struct Progress {
     /// Copy-averaged energy per body (kT) at the last check or frame; 0
     /// before the first check.
     pub energy_per_body: f64,
-    /// Production frames, summed over copies.
+    /// Production frames taken, summed over copies; `curve().frames` lags
+    /// it while GPU sums are out.
     pub frames: usize,
     /// False once the trajectory reached its size cap.
     pub recording: bool,
@@ -149,12 +154,42 @@ pub struct NBodyRun {
 
 impl NBodyRun {
     /// Fails for hetero-dimer archives: every body is the archive's first.
+    /// Blocks on scattering setup, so a browser wanting `Device::Gpu` must
+    /// await `scattering` and call `start_with` instead.
     pub fn start(archive: &ScanArchive, spec: RunSpec, formfactors_yaml: &str) -> Result<Self> {
-        ensure!(
-            archive.settings.homo_dimer,
-            "many-body runs need a scan of identical molecules"
-        );
-        validate(&spec)?;
+        let scattering = pollster::block_on(Self::scattering(archive, &spec, formfactors_yaml))?;
+        Self::start_with(archive, spec, scattering)
+    }
+
+    /// The scattering `start_with` needs. Owns its inputs, so a browser can
+    /// await it on the event loop, as GPU setup requires.
+    pub fn scattering(
+        archive: &ScanArchive,
+        spec: &RunSpec,
+        formfactors_yaml: &str,
+    ) -> impl Future<Output = Result<Scattering>> + 'static {
+        let checked = check_inputs(archive, spec);
+        let reference = archive.bodies[0].clone();
+        let yaml = with_missing_kinds(formfactors_yaml, &reference.kinds);
+        let l = box_length(spec.n_bodies, spec.molarity);
+        let spec = spec.clone();
+        async move {
+            checked?;
+            if spec.centres_only {
+                return Scattering::mass_centres(spec.n_bodies, l, spec.q_max);
+            }
+            let (n, q_max, per_bin) = (spec.n_bodies, spec.q_max, spec.vectors_per_bin);
+            Scattering::new(&reference, n, l, q_max, per_bin, &yaml, spec.device).await
+        }
+    }
+
+    /// `scattering` must come from `NBodyRun::scattering` with this spec.
+    pub fn start_with(
+        archive: &ScanArchive,
+        spec: RunSpec,
+        scattering: Scattering,
+    ) -> Result<Self> {
+        check_inputs(archive, &spec)?;
         let energy = Arc::new(PairEnergy::new(archive.table.clone())?);
         let l = box_length(spec.n_bodies, spec.molarity);
         // Larger steps add nothing, so a start beyond them is clamped.
@@ -179,21 +214,8 @@ impl NBodyRun {
                 )
             })
             .collect::<Result<_>>()?;
+        scattering.check_system(spec.n_bodies, l)?;
         let reference = archive.bodies[0].clone();
-        let scattering = if spec.centres_only {
-            Scattering::mass_centres(spec.n_bodies, sampler_spec.box_length, spec.q_max)?
-        } else {
-            let yaml = with_missing_kinds(formfactors_yaml, &reference.kinds);
-            pollster::block_on(Scattering::new(
-                &reference,
-                spec.n_bodies,
-                sampler_spec.box_length,
-                spec.q_max,
-                spec.vectors_per_bin,
-                &yaml,
-                Device::Cpu,
-            ))?
-        };
         let msa = MsaReference::new(
             HsyFluid::for_scan(archive, spec.molarity),
             spec.msa,
@@ -229,23 +251,36 @@ impl NBodyRun {
     /// pieces; energy checks and frames still fall on their intervals. An
     /// error stops the run, as copies may then be out of step.
     pub fn step(&mut self, sweeps: u64) -> Result<Progress> {
+        let stepped = self.settle().and_then(|_| self.sweep_for(sweeps));
+        self.stop_on_error(stepped).map(|()| self.progress())
+    }
+
+    /// Folds in frames whose GPU sums came back since the last call; true
+    /// while some are still out. `step` does this too, but a paused or
+    /// stopped UI must call it for the curve to catch up.
+    pub fn settle(&mut self) -> Result<bool> {
+        let pending = self.scattering.settle();
+        self.stop_on_error(pending).map(|left| left > 0)
+    }
+
+    fn stop_on_error<T>(&mut self, result: Result<T>) -> Result<T> {
+        if result.is_err() {
+            self.stage = Stage::Stopped;
+        }
+        result
+    }
+
+    fn sweep_for(&mut self, sweeps: u64) -> Result<()> {
         let mut done = 0;
         while done < sweeps {
             let left = sweeps - done;
-            let advanced = match self.stage {
-                Stage::Equilibrating => self.equilibration_step(left),
-                Stage::Production { .. } => self.production_step(left),
+            done += match self.stage {
+                Stage::Equilibrating => self.equilibration_step(left)?,
+                Stage::Production { .. } => self.production_step(left)?,
                 Stage::Stopped => break,
             };
-            match advanced {
-                Ok(sweeps) => done += sweeps,
-                Err(e) => {
-                    self.stage = Stage::Stopped;
-                    return Err(e);
-                }
-            }
         }
-        Ok(self.progress())
+        Ok(())
     }
 
     fn progress(&self) -> Progress {
@@ -415,7 +450,7 @@ impl NBodyRun {
     fn observe(&mut self, frames: &[Frame]) -> Result<()> {
         let mut energies = Vec::with_capacity(frames.len());
         for frame in frames {
-            pollster::block_on(self.scattering.observe(frame))?;
+            self.scattering.observe(frame)?;
             self.pair_correlation.observe(frame);
             energies.push(self.energy.observe(frame)?);
             self.record(frame)?;
@@ -548,6 +583,15 @@ impl NBodyRun {
     pub fn stop(&mut self) {
         self.stage = Stage::Stopped;
     }
+}
+
+/// Before any setup, so a bad archive or spec never builds GPU buffers.
+fn check_inputs(archive: &ScanArchive, spec: &RunSpec) -> Result<()> {
+    ensure!(
+        archive.settings.homo_dimer,
+        "many-body runs need a scan of identical molecules"
+    );
+    validate(spec)
 }
 
 /// Checks that would otherwise surface late: a zero interval hangs `step`,
@@ -784,6 +828,65 @@ mod tests {
         let sweeps: u64 = last.iter().map(|s| s - header.equilibration_sweeps).sum();
         assert_eq!(attempts, 10 * sweeps);
         assert_eq!(stats.energy.frames, progress.frames);
+    }
+
+    /// A browser builds the scattering asynchronously and starts with it;
+    /// the run must not depend on how it was built.
+    #[test]
+    fn starting_with_prebuilt_scattering_matches_start() {
+        let archive = archive(true, &["X"]);
+        let mut direct = NBodyRun::start(&archive, spec(), UNIT).unwrap();
+        let scattering = pollster::block_on(NBodyRun::scattering(&archive, &spec(), UNIT));
+        let mut prebuilt = NBodyRun::start_with(&archive, spec(), scattering.unwrap()).unwrap();
+        for run in [&mut direct, &mut prebuilt] {
+            run_to(run, |s| matches!(s, Stage::Production { .. }));
+            run.step(20).unwrap();
+        }
+        assert!(direct.curve().frames > 0);
+        assert_eq!(direct.curve(), prebuilt.curve());
+    }
+
+    /// A paused or stopped UI keeps settling; on the CPU nothing is ever
+    /// outstanding, and a stopped run still reports where it is.
+    #[test]
+    fn cpu_runs_have_nothing_left_to_settle() {
+        let mut run = NBodyRun::start(&archive(true, &["X"]), spec(), UNIT).unwrap();
+        run_to(&mut run, |s| matches!(s, Stage::Production { .. }));
+        run.step(10).unwrap();
+        assert!(!run.settle().unwrap());
+        run.stop();
+        let progress = run.step(0).unwrap();
+        assert_eq!(progress.stage, Stage::Stopped);
+        assert_eq!(run.curve().frames, progress.frames);
+        assert!(!run.settle().unwrap());
+    }
+
+    /// Sampling never depends on where the sums run, so GPU and CPU see
+    /// the same frames; only f32 phases separate their curves.
+    #[test]
+    #[ignore = "needs a GPU adapter: run in release with --ignored"]
+    fn gpu_bead_sums_match_the_cpu() {
+        let archive = archive(true, &["X", "X", "X"]);
+        let mut gpu_spec = spec();
+        gpu_spec.device = Device::Gpu;
+        let scattering = pollster::block_on(NBodyRun::scattering(&archive, &gpu_spec, UNIT));
+        let scattering = match scattering {
+            Ok(scattering) => scattering,
+            Err(e) => return eprintln!("skipping: no GPU scattering ({e})"),
+        };
+        let mut gpu = NBodyRun::start_with(&archive, gpu_spec, scattering).unwrap();
+        let mut cpu = NBodyRun::start(&archive, spec(), UNIT).unwrap();
+        for run in [&mut cpu, &mut gpu] {
+            run_to(run, |s| matches!(s, Stage::Production { .. }));
+            run.step(100).unwrap();
+        }
+        while gpu.settle().unwrap() {}
+        let (cpu, gpu) = (cpu.curve(), gpu.curve());
+        assert!(cpu.frames >= 40, "{}", cpu.frames);
+        assert_eq!((cpu.frames, &cpu.q), (gpu.frames, &gpu.q));
+        for (c, g) in cpu.s_eff.iter().zip(&gpu.s_eff) {
+            approx::assert_relative_eq!(c, g, max_relative = 1e-3);
+        }
     }
 
     /// A UI budgets wall time per step, so equilibration takes the sweeps

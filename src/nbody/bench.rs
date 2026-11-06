@@ -126,11 +126,11 @@ fn scattering_cost(archive: &ScanArchive, n: usize, molarity: f64) {
             );
             continue;
         };
-        pollster::block_on(scattering.observe(&frame)).unwrap();
+        scattering.observe(&frame).unwrap();
         let start = Instant::now();
         let repeats = 5;
         for _ in 0..repeats {
-            pollster::block_on(scattering.observe(&frame)).unwrap();
+            scattering.observe(&frame).unwrap();
         }
         let ms = start.elapsed().as_secs_f64() * 1e3 / repeats as f64;
         let points = scattering.curve().q.len();

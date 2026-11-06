@@ -83,7 +83,7 @@ fn structure_factor(
                 copy,
                 ..sampler.frame()
             };
-            pollster::block_on(scattering.observe(&frame)).unwrap();
+            scattering.observe(&frame).unwrap();
         }
     }
     scattering.curve()
