@@ -6,8 +6,8 @@
 
 use super::trajectory::{TrajectoryHeader, TrajectoryWriter};
 use super::{
-    box_length, Criteria, Device, EnergyStats, EnergySummary, Equilibration, Frame, MoveStats,
-    PairEnergy, Sampler, SamplerSpec, Scattering, ScatteringCurve, Status,
+    box_length, Criteria, Device, EnergyStats, EnergySummary, Equilibration, Frame, HsyFluid,
+    MoveStats, PairEnergy, Sampler, SamplerSpec, Scattering, ScatteringCurve, Status,
 };
 use crate::archive::ScanArchive;
 use anyhow::{ensure, Result};
@@ -105,6 +105,8 @@ pub struct NBodyRun {
     energy: EnergyStats,
     moves: MoveStats,
     scattering: Scattering,
+    /// Charged-sphere S(q) to compare S_eff against.
+    reference_fluid: HsyFluid,
     /// Created when production starts, as the header records how
     /// equilibration ended.
     trajectory: Option<TrajectoryWriter<Vec<u8>>>,
@@ -142,6 +144,13 @@ impl NBodyRun {
             })
             .collect::<Result<_>>()?;
         let reference = archive.bodies[0].clone();
+        let reference_fluid = HsyFluid::protein(
+            reference.mass(),
+            reference.net_charge(),
+            spec.molarity,
+            archive.settings.molarity,
+            archive.settings.temperature,
+        );
         let yaml = with_missing_kinds(formfactors_yaml, &reference.kinds);
         let scattering = pollster::block_on(Scattering::new(
             &reference,
@@ -162,6 +171,7 @@ impl NBodyRun {
             energy: EnergyStats::new(energy),
             moves: MoveStats::default(),
             scattering,
+            reference_fluid,
             trajectory: None,
             recording: true,
             equilibrated: false,
@@ -314,7 +324,12 @@ impl NBodyRun {
     }
 
     pub fn curve(&self) -> ScatteringCurve {
-        self.scattering.curve()
+        let mut curve = self.scattering.curve();
+        curve.s_hsy = self
+            .reference_fluid
+            .structure_factor(&curve.q)
+            .unwrap_or_default();
+        curve
     }
 
     pub fn stats(&self) -> RunStats {
@@ -376,6 +391,7 @@ impl NBodyRun {
             ),
             format!("U/N mean: {} kT", per_body(stats.energy.mean)),
             format!("Var(U)/N: {} kT²", per_body(stats.energy.variance)),
+            self.reference_fluid.describe(),
         ]
         .iter()
         .map(|line| format!("# {line}\n"))
@@ -659,8 +675,28 @@ mod tests {
         assert!(csv.contains("# translate acceptance: "), "{csv}");
         assert!(csv.contains("# U/N mean: "), "{csv}");
         let mut table = csv.lines().skip_while(|l| l.starts_with('#'));
-        assert_eq!(table.next(), Some("q/Å⁻¹,I,P,S_eff,S_eff_error"));
+        assert_eq!(table.next(), Some("q/Å⁻¹,I,P,S_eff,S_eff_error,S_HSY"));
         assert_eq!(table.count(), run.curve().q.len());
+    }
+
+    #[test]
+    fn curve_carries_the_charged_sphere_reference() {
+        let mut run = NBodyRun::start(&archive(true, &["X"]), spec(), UNIT).unwrap();
+        run_to(&mut run, |s| matches!(s, Stage::Production { .. }));
+        run.step(10).unwrap();
+        let curve = run.curve();
+        assert_eq!(curve.s_hsy.len(), curve.q.len());
+        // One 1 g/mol neutral bead: a 1.3 Å sphere at φ ≈ 1.5e-3, so S ≈ 1.
+        assert!(
+            curve.s_hsy.iter().all(|s| (s - 1.0).abs() < 0.02),
+            "{:?}",
+            curve.s_hsy
+        );
+        assert!(
+            run.report_csv().contains("# HSY sphere: σ = 1.3 Å"),
+            "{}",
+            run.report_csv()
+        );
     }
 
     #[test]

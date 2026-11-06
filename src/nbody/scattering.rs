@@ -20,18 +20,22 @@ pub struct ScatteringCurve {
     /// Jackknife standard error of `s_eff` over copies; `None` with fewer
     /// than two copies.
     pub s_eff_error: Option<Vec<f64>>,
+    /// Analytic S(q) of the equivalent charged sphere; empty unless filled
+    /// by `NBodyRun`, which knows the protein and solution.
+    pub s_hsy: Vec<f64>,
     pub frames: usize,
 }
 
 impl ScatteringCurve {
     /// One row per q; the error is NaN without enough copies for one.
     pub fn to_csv(&self) -> String {
-        let mut csv = String::from("q/Å⁻¹,I,P,S_eff,S_eff_error\n");
+        let mut csv = String::from("q/Å⁻¹,I,P,S_eff,S_eff_error,S_HSY\n");
         for k in 0..self.q.len() {
             let error = self.s_eff_error.as_ref().map_or(f64::NAN, |e| e[k]);
+            let hsy = self.s_hsy.get(k).copied().unwrap_or(f64::NAN);
             csv += &format!(
-                "{:.5},{:.6e},{:.6e},{:.5},{:.5}\n",
-                self.q[k], self.intensity[k], self.form_factor[k], self.s_eff[k], error
+                "{:.5},{:.6e},{:.6e},{:.5},{:.5},{:.5}\n",
+                self.q[k], self.intensity[k], self.form_factor[k], self.s_eff[k], error, hsy
             );
         }
         csv
