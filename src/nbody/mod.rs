@@ -1,5 +1,7 @@
 //! Many-body Metropolis simulation of rigid bodies interacting through a 6D table.
 
+#[cfg(test)]
+mod acceptance;
 mod energy;
 mod energy_stats;
 mod equilibration;

@@ -36,10 +36,11 @@ impl EnergyStats {
         }
     }
 
-    /// Fails for a frame no valid sampler produces but a damaged or mismatched
-    /// trajectory might: overlapping bodies, or a box below 2·rmax, where the
-    /// minimum image would silently fold pairs back into the table.
-    pub fn observe(&mut self, frame: &Frame) -> Result<()> {
+    /// Adds the frame and returns its total energy in kT, which equilibration
+    /// checks also need. Fails for a frame no valid sampler produces but a
+    /// damaged or mismatched trajectory might: overlapping bodies, or a box
+    /// below 2·rmax, where the minimum image would fold pairs into the table.
+    pub fn observe(&mut self, frame: &Frame) -> Result<f64> {
         ensure!(
             frame.box_length >= self.energy.min_box_length(),
             "frame box of {:.1} Å is below the {:.1} Å the table needs",
@@ -51,7 +52,7 @@ impl EnergyStats {
         let delta = u - self.mean;
         self.mean += delta / self.frames as f64;
         self.sum_squared_deviation += delta * (u - self.mean);
-        Ok(())
+        Ok(u)
     }
 
     pub fn summary(&self) -> EnergySummary {

@@ -7,8 +7,13 @@ pub struct Criteria {
     pub min_sweeps: u64,
     /// Give up after this many sweeps.
     pub max_sweeps: u64,
-    /// Drift is accepted below this many standard errors.
+    /// Standard errors added to the measured drift, so the verdict needs the
+    /// drift to be shown small, not merely hidden by noise.
     pub tolerance: f64,
+    /// Largest acceptable drift between the last two quarters, as a fraction
+    /// of the frame-to-frame energy spread; scale-free, so it suits any
+    /// system size or interaction strength.
+    pub max_drift: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -65,7 +70,11 @@ impl Equilibration {
             1 => within_series(early, late),
             _ => between_copies(early, late),
         };
-        drift.abs() <= self.criteria.tolerance * error
+        // Equivalence test: the drift plus its uncertainty must fit inside
+        // the margin. Testing only "drift < k·error" passes whenever slow,
+        // copy-to-copy fluctuations make the error large.
+        let spread = variance(&late.concat()).sqrt();
+        drift.abs() + self.criteria.tolerance * error <= self.criteria.max_drift * spread
     }
 }
 
@@ -112,19 +121,34 @@ mod tests {
         min_sweeps: 500,
         max_sweeps: 20_000,
         tolerance: 2.0,
+        max_drift: 0.5,
     };
 
-    /// Pushes `signal(sweep)` plus unit-variance noise for `copies` copies,
-    /// every 10 sweeps, and returns the first sweep with a final status.
     fn run(copies: usize, signal: impl Fn(f64) -> f64) -> (u64, Status) {
+        run_noisy(copies, 1.0, 0.0, signal)
+    }
+
+    /// Pushes `signal(sweep)` plus noise for `copies` copies, every 10 sweeps,
+    /// and returns the first sweep with a final status. The noise has standard
+    /// deviation `noise_std` and correlation time `tau` sweeps (AR(1); 0 for
+    /// white noise), as slow fluctuations like clustering produce.
+    fn run_noisy(
+        copies: usize,
+        noise_std: f64,
+        tau: f64,
+        signal: impl Fn(f64) -> f64,
+    ) -> (u64, Status) {
         let mut rng = Pcg64::seed_from_u64(17);
         let mut equilibration = Equilibration::new(CRITERIA);
+        let a = if tau > 0.0 { (-10.0 / tau).exp() } else { 0.0 };
         // Uniform on ±√3 has unit variance.
-        let mut noise = || rng.gen_range(-3f64.sqrt()..3f64.sqrt());
+        let mut kick = || rng.gen_range(-3f64.sqrt()..3f64.sqrt());
+        let mut state: Vec<f64> = (0..copies).map(|_| noise_std * kick()).collect();
         for sweep in (10..).step_by(10) {
-            let energies: Vec<f64> = (0..copies)
-                .map(|_| signal(sweep as f64) + noise())
-                .collect();
+            for x in state.iter_mut() {
+                *x = a * *x + (1.0 - a * a).sqrt() * noise_std * kick();
+            }
+            let energies: Vec<f64> = state.iter().map(|x| signal(sweep as f64) + x).collect();
             let status = equilibration.push(sweep, &energies);
             if status != Status::Running {
                 return (sweep, status);
@@ -149,6 +173,24 @@ mod tests {
         assert!((800..5000).contains(&sweep), "converged at {sweep}");
     }
 
+    /// Noise that hides the drift is not evidence of no drift. With 60 kT
+    /// relaxing (τ = 300) under slow noise (σ = 10, correlation 200 sweeps),
+    /// the verdict must wait until the remaining offset is within the drift
+    /// margin, max_drift·σ (20% slack for the 10-sweep grid). Testing only
+    /// "drift < 2 errors" stopped at sweep 510, with 11 kT still to go.
+    #[test]
+    fn noisy_slow_relaxation_is_not_declared_converged_early() {
+        let offset = |t: f64| 60.0 * (-t / 300.0).exp();
+        let (sweep, status) = run_noisy(4, 10.0, 200.0, |t| -40.0 + offset(t));
+        assert_eq!(status, Status::Converged);
+        let margin = 1.2 * CRITERIA.max_drift * 10.0;
+        let remaining = offset(sweep as f64);
+        assert!(
+            remaining <= margin,
+            "converged at {sweep} with {remaining:.1} kT to go"
+        );
+    }
+
     #[test]
     fn drifting_series_never_converges() {
         let (sweep, status) = run(8, |t| 0.01 * t);
@@ -168,6 +210,6 @@ mod tests {
     fn single_copy_uses_the_spread_within_its_series() {
         let (sweep, status) = run(1, |_| -40.0);
         assert_eq!(status, Status::Converged);
-        assert!((500..2000).contains(&sweep), "converged at {sweep}");
+        assert!((500..10_000).contains(&sweep), "converged at {sweep}");
     }
 }
