@@ -19,7 +19,7 @@ pub mod trajectory;
 pub use energy::{PairEnergy, PairValue};
 pub use energy_stats::{EnergyStats, EnergySummary};
 pub use equilibration::{Criteria, Equilibration, Status};
-pub use hsy::HsyFluid;
+pub use hsy::{HsyFluid, PARTIAL_SPECIFIC_VOLUME};
 pub use pripps::RESIDUE_FORM_FACTORS;
 pub use run::{NBodyRun, Progress, RunSpec, RunStats, Stage};
 pub use sampler::{Frame, MoveCounter, MoveStats, Sampler, SamplerSpec};

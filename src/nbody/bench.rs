@@ -196,7 +196,11 @@ mod gpu {
             println!("GPU: no adapter");
             return;
         };
-        let table = GpuTable::new(&archive.table).unwrap();
+        // Lattice tables have no GPU lookup yet.
+        let table = match GpuTable::new(&archive.table) {
+            Ok(table) => table,
+            Err(e) => return println!("GPU: {e}"),
+        };
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("bench"),
             source: wgpu::ShaderSource::Wgsl(format!("{KERNEL}\n{}", wgsl()).into()),

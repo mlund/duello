@@ -3,13 +3,14 @@
 //! Phys. 134, 044532, 2011), with the misprint-free equations of Kaieda et
 //! al., J. Phys. Chem. B 118, 2014, SI eqs S5–S42.
 
+use crate::archive::ScanArchive;
 use faunus::interatomic::coulomb::{Medium, Salt};
 use nalgebra::Complex;
 use physical_constants::AVOGADRO_CONSTANT;
 use std::f64::consts::PI;
 
 /// Typical for globular proteins, cm³/g; Kaieda et al. used measured values.
-const PARTIAL_SPECIFIC_VOLUME: f64 = 0.73;
+pub const PARTIAL_SPECIFIC_VOLUME: f64 = 0.73;
 
 /// Charged hard spheres in 1:1 salt; lengths in Å.
 #[derive(Clone, Debug, PartialEq)]
@@ -46,13 +47,30 @@ impl HsyFluid {
         }
     }
 
+    /// The sphere for a homo-dimer scan's molecule at `protein_molarity`
+    /// (mol/L), in the scan's salt and temperature.
+    pub fn for_scan(archive: &ScanArchive, protein_molarity: f64) -> Self {
+        let body = &archive.bodies[0];
+        let settings = &archive.settings;
+        Self::protein(
+            body.mass(),
+            body.net_charge(),
+            protein_molarity,
+            settings.molarity,
+            settings.temperature,
+        )
+    }
+
+    pub fn volume_fraction(&self) -> f64 {
+        self.number_density * PI * self.diameter.powi(3) / 6.0
+    }
+
     /// One line for reports.
     pub fn describe(&self) -> String {
-        let phi = self.number_density * PI * self.diameter.powi(3) / 6.0;
         format!(
             "HSY sphere: σ = {:.1} Å, φ = {:.4}, Z = {:+.1}, salt {:.1} mM",
             self.diameter,
-            phi,
+            self.volume_fraction(),
             self.charge,
             self.salt_density / (AVOGADRO_CONSTANT * 1e-27) * 1e3
         )
@@ -86,7 +104,7 @@ impl Reduced {
     /// that penetrate the spheres, which the plain RMSA ignores.
     fn of(fluid: &HsyFluid) -> Option<Self> {
         let sigma = fluid.diameter;
-        let phi = fluid.number_density * PI * sigma.powi(3) / 6.0;
+        let phi = fluid.volume_fraction();
         let lb = fluid.bjerrum_length;
         // S37's 1/(1−φ) and S38's √(1−φ) cancel, so k_mod is plain κσ and
         // γ_mod is S10 evaluated at it.
@@ -378,6 +396,8 @@ mod tests {
         approx::assert_relative_eq!(fluid.salt_density, 6.0221e-5, max_relative = 1e-3);
         approx::assert_relative_eq!(fluid.bjerrum_length, 7.15, max_relative = 0.01);
         assert_eq!(fluid.charge, 8.0);
+        // 1.2044e-6 Å⁻³ × 17334 Å³
+        approx::assert_relative_eq!(fluid.volume_fraction(), 0.02088, max_relative = 1e-3);
     }
 
     #[test]

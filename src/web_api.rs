@@ -14,6 +14,7 @@ use crate::icoscan::{compute_scan_async, ScanParams, ScanResult};
 pub use crate::icoscan::{OnProgress, ScanProgress};
 pub use crate::report::PmfPoint;
 use crate::system::{CgOptions, PairSpec, PairSystem, Source};
+use crate::Subdivision;
 use faunus::interatomic::coulomb::{DebyeLength as _, Medium, Salt};
 use faunus::interatomic::twobody::SplineConfig;
 
@@ -23,6 +24,9 @@ pub struct WebScanRequest {
     pub mol1_pdb: Vec<u8>,
     pub mol2_pdb: Vec<u8>,
     pub settings: ScanSettings,
+    /// Not in `ScanSettings`: the table records it, so the archive format
+    /// stays as is.
+    pub subdivision: Subdivision,
 }
 
 /// A web scan's result is the exportable archive itself, so what the UI shows
@@ -76,7 +80,8 @@ fn prepare_scan(req: &WebScanRequest) -> anyhow::Result<PreparedScan> {
     })
 }
 
-fn build_scan_params(settings: &ScanSettings, prep: &PreparedScan) -> ScanParams {
+fn build_scan_params(req: &WebScanRequest, prep: &PreparedScan) -> ScanParams {
+    let settings = &req.settings;
     ScanParams {
         rmin: settings.rmin,
         rmax: settings.rmax,
@@ -94,7 +99,7 @@ fn build_scan_params(settings: &ScanSettings, prep: &PreparedScan) -> ScanParams
         permittivity: prep.medium.permittivity(),
         max_n_div: settings.max_ndiv,
         gradient_threshold: settings.gradient_threshold,
-        subdivision: icotable::Subdivision::default(),
+        subdivision: req.subdivision,
         homo_dimer: settings.homo_dimer,
     }
 }
@@ -124,7 +129,7 @@ fn finish_scan(
     backend: &(impl EnergyBackend + Sync),
     progress: OnProgress,
 ) -> anyhow::Result<WebScanResult> {
-    let scan_params = build_scan_params(&req.settings, prep);
+    let scan_params = build_scan_params(req, prep);
 
     log::info!("Running 6D scan...");
     let scan_result = compute_scan(&scan_params, backend, progress)?;
@@ -147,7 +152,7 @@ pub async fn run_scan_async(
     )
     .await?;
 
-    let scan_params = build_scan_params(&req.settings, &prep);
+    let scan_params = build_scan_params(&req, &prep);
 
     log::info!("Running 6D scan (async)...");
     let scan_result = compute_scan_async(&scan_params, &backend, progress).await?;
@@ -221,6 +226,7 @@ mod tests {
                 grid_size: 200,
                 homo_dimer: mol1 == mol2,
             },
+            subdivision: Subdivision::default(),
         }
     }
 
@@ -256,6 +262,18 @@ mod tests {
 
         let restored = ScanArchive::from_bytes(&archive.to_bytes().unwrap()).unwrap();
         assert_eq!(restored.bodies, archive.bodies);
+    }
+
+    #[test]
+    fn scan_uses_and_records_the_requested_subdivision() {
+        let peptide = ["LYS", "LYS", "LYS"];
+        let mut req = request(&peptide, &peptide);
+        req.settings.rmax = 40.0;
+        assert_eq!(cpu_scan(&req).subdivision(), Subdivision::Geodesic);
+        req.subdivision = Subdivision::Lattice;
+        let archive = cpu_scan(&req);
+        let restored = ScanArchive::from_bytes(&archive.to_bytes().unwrap()).unwrap();
+        assert_eq!(restored.subdivision(), Subdivision::Lattice);
     }
 
     #[test]

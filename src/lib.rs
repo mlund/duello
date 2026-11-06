@@ -48,5 +48,6 @@ extern crate log;
 // the shared `icotable` crate to avoid duplication with Faunus.
 pub use icotable::{
     make_icosphere_vertices, Adaptive3DBuilder, AdaptiveBuilder, IcoTable2D, PaddedTable,
-    SphericalCoord, Table3DAdaptive, Table6D, Table6DAdaptive, UnitQuaternion, Vector3,
+    SphericalCoord, Subdivision, Table3DAdaptive, Table6D, Table6DAdaptive, UnitQuaternion,
+    Vector3,
 };

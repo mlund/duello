@@ -7,7 +7,7 @@
 use crate::icoscan::{table_metadata, ScanParams, ScanResult};
 use crate::report::{compute_pmf, PmfPoint};
 use crate::structure::Structure;
-use crate::{Table6DAdaptive, VirialCoeff};
+use crate::{Subdivision, Table6DAdaptive, VirialCoeff};
 use anyhow::{anyhow, ensure, Result};
 use bincode::Options as _;
 use faunus::topology::AtomKind;
@@ -91,6 +91,15 @@ impl ScanArchive {
     /// Molecular weights in g/mol.
     pub fn molar_masses(&self) -> (f64, f64) {
         (self.bodies[0].mass(), self.bodies[1].mass())
+    }
+
+    /// Angular scheme the table was scanned with; all levels share it.
+    pub fn subdivision(&self) -> Subdivision {
+        self.table
+            .levels
+            .first()
+            .map(|l| l.subdivision())
+            .unwrap_or_default()
     }
 
     /// Net charges in elementary charges.

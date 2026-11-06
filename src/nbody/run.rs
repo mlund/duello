@@ -172,13 +172,7 @@ impl NBodyRun {
             })
             .collect::<Result<_>>()?;
         let reference = archive.bodies[0].clone();
-        let reference_fluid = HsyFluid::protein(
-            reference.mass(),
-            reference.net_charge(),
-            spec.molarity,
-            archive.settings.molarity,
-            archive.settings.temperature,
-        );
+        let reference_fluid = HsyFluid::for_scan(archive, spec.molarity);
         let scattering = if spec.centres_only {
             Scattering::mass_centres(spec.n_bodies, sampler_spec.box_length, spec.q_max)?
         } else {
@@ -611,6 +605,17 @@ mod tests {
         let reader = TrajectoryReader::new(bytes).unwrap();
         let header = reader.header().clone();
         (header, reader.count())
+    }
+
+    #[test]
+    fn the_reference_sphere_takes_charge_from_the_scan() {
+        let mut scan = archive(true, &["X", "X"]);
+        scan.bodies[0].charges = vec![1.0, 0.5];
+        let fluid = HsyFluid::for_scan(&scan, 1e-3);
+        assert_eq!(fluid.charge, 1.5);
+        // 1 mM protein and the scan's 50 mM salt, per Å³.
+        approx::assert_relative_eq!(fluid.number_density, 6.0221e-7, max_relative = 1e-4);
+        approx::assert_relative_eq!(fluid.salt_density, 3.0110e-5, max_relative = 1e-4);
     }
 
     #[test]
