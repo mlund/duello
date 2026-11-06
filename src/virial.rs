@@ -93,9 +93,12 @@ impl VirialCoeff {
     /// Association constant, 𝐾𝑑⁻¹ = -2(𝐵₂ - 𝐵₂hs)
     /// See "Colloidal Domain" by Evans and Wennerström, 2nd Ed, p. 408
     pub fn association_const(&self) -> Option<f64> {
-        const LITER_PER_CUBIC_ANGSTROM: f64 = 1e-27;
-        Some(-2.0 * (self.b2 - self.hardsphere()) * LITER_PER_CUBIC_ANGSTROM * AVOGADRO_CONSTANT)
-            .filter(|x| x.is_sign_positive())
+        Some(
+            -2.0 * (self.b2 - self.hardsphere())
+                * crate::LITER_PER_CUBIC_ANGSTROM
+                * AVOGADRO_CONSTANT,
+        )
+        .filter(|x| x.is_sign_positive())
     }
     /// Dissociation constant, 𝐾𝑑
     /// See "Colloidal Domain" by Evans and Wennerström, 2nd Ed, p. 408

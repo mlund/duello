@@ -33,6 +33,9 @@ pub use sample::Sample;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub use virial::VirialCoeff;
 
+/// Converts number densities in Å⁻³ to and from mol/L.
+pub(crate) const LITER_PER_CUBIC_ANGSTROM: f64 = 1e-27;
+
 /// kT in kJ/mol, the energy unit of all tables.
 pub fn thermal_energy(temperature: f64) -> f64 {
     physical_constants::MOLAR_GAS_CONSTANT * temperature * 1e-3
