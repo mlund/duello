@@ -32,6 +32,10 @@ pub struct NBodyArgs {
     qmax: f64,
     #[arg(long, default_value = "1")]
     seed: u64,
+    /// Lattice q-vectors per |q| bin for the bead sums; more cost more
+    /// per frame but give smoother I(q) and S_eff
+    #[arg(long, default_value = "16")]
+    vectors_per_bin: usize,
     /// Mass-centre S(q) only; far cheaper per frame, so frames are taken
     /// more often by default
     #[arg(long)]
@@ -88,6 +92,7 @@ fn spec(args: &NBodyArgs) -> RunSpec {
     spec.q_max = args.qmax;
     spec.sweeps_per_frame = args.frame_interval();
     spec.centres_only = args.centres_only;
+    spec.vectors_per_bin = args.vectors_per_bin;
     spec
 }
 

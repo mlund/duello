@@ -26,6 +26,9 @@ pub struct RunSpec {
     pub seed: u64,
     /// Largest q (Å⁻¹) in the scattering curve.
     pub q_max: f64,
+    /// Lattice q-vectors kept per |q| bin for the bead sums, whose cost is
+    /// per vector; mass centres always use many more.
+    pub vectors_per_bin: usize,
     /// Sweeps between production frames.
     pub sweeps_per_frame: u64,
     /// Sweeps between equilibration energy checks.
@@ -49,6 +52,7 @@ impl RunSpec {
             copies: 4,
             seed: 1,
             q_max: 0.5,
+            vectors_per_bin: 16,
             sweeps_per_frame: 50,
             sweeps_per_check: 10,
             criteria: Criteria {
@@ -164,6 +168,7 @@ impl NBodyRun {
                 spec.n_bodies,
                 sampler_spec.box_length,
                 spec.q_max,
+                spec.vectors_per_bin,
                 &yaml,
                 Device::Cpu,
             ))?
@@ -437,6 +442,10 @@ fn validate(spec: &RunSpec) -> Result<()> {
         spec.sweeps_per_frame > 0 && spec.sweeps_per_check > 0,
         "sweep intervals must be positive"
     );
+    ensure!(
+        spec.vectors_per_bin > 0,
+        "vectors per q-bin must be positive"
+    );
     Ok(())
 }
 
@@ -448,7 +457,7 @@ fn mean(values: &[f64]) -> f64 {
 /// disulfide cysteines (CYX). N and O mark small charged groups next to
 /// their residue's bead, so they scatter nothing here; CYX scatters as CYS.
 /// Added only when absent, so a file that defines them wins.
-fn with_missing_kinds(yaml: &str, kinds: &[String]) -> String {
+pub(super) fn with_missing_kinds(yaml: &str, kinds: &[String]) -> String {
     let defined = |kind: &str| {
         yaml.lines()
             .any(|line| line.starts_with(&format!("{kind}:")))

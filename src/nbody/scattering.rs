@@ -106,26 +106,30 @@ struct Beads {
 
 const CENTRE_KIND: &str = "COM";
 const CENTRE_FORM_FACTOR: &str = "COM: { formfactor: !Constant 1.0 }\n";
+/// Mass-centre sums are cheap, so bins keep up to this many lattice vectors.
+pub(super) const CENTRE_VECTORS_PER_BIN: usize = 500;
 
 impl Scattering {
-    /// `q_max` (Å⁻¹) bounds the sampled q-vectors; it must lie inside the form
-    /// factors' range (0.75 Å⁻¹ for pripps' residue form factors). Async as
-    /// GPU setup is.
+    /// `q_max` (Å⁻¹) bounds the sampled lattice vectors; it must lie inside
+    /// the form factors' range (0.75 Å⁻¹ for pripps' residue form factors).
+    /// Bead sums cost per vector, so `vectors_per_bin` caps them per |q| bin.
+    /// Async as GPU setup is.
     pub async fn new(
         reference: &CgBody,
         n_bodies: usize,
         box_length: f64,
         q_max: f64,
+        vectors_per_bin: usize,
         formfactors_yaml: &str,
         device: Device,
     ) -> Result<Self> {
         let mut scattering = Self::mass_centres(n_bodies, box_length, q_max)?;
-        let p = p_max(box_length, q_max);
+        let grid = pripps::QGrid::lattice([box_length; 3], q_max, vectors_per_bin)?;
         let kinds = &reference.kinds;
         let scatterer = match device {
-            Device::Cpu => pripps::BoxScatterer::new_cpu(formfactors_yaml, kinds, n_bodies, p)?,
+            Device::Cpu => pripps::BoxScatterer::new_cpu(formfactors_yaml, kinds, n_bodies, grid)?,
             Device::Gpu => {
-                pripps::BoxScatterer::new_gpu(formfactors_yaml, kinds, n_bodies, p).await?
+                pripps::BoxScatterer::new_gpu(formfactors_yaml, kinds, n_bodies, grid).await?
             }
         };
         scattering.beads = Some(Beads {
@@ -138,11 +142,7 @@ impl Scattering {
 
     /// Mass-centre S(q) only: about a bead count cheaper per frame.
     pub fn mass_centres(n_bodies: usize, box_length: f64, q_max: f64) -> Result<Self> {
-        let p = p_max(box_length, q_max);
-        ensure!(
-            p > 0,
-            "q_max {q_max} Å⁻¹ is below the shortest [111] q-vector of a {box_length} Å box"
-        );
+        let grid = pripps::QGrid::lattice([box_length; 3], q_max, CENTRE_VECTORS_PER_BIN)?;
         Ok(Self {
             n_bodies,
             box_length,
@@ -151,7 +151,7 @@ impl Scattering {
                 CENTRE_FORM_FACTOR,
                 &[CENTRE_KIND],
                 n_bodies,
-                p,
+                grid,
             )?,
             q: Vec::new(),
             copies: Vec::new(),
@@ -336,7 +336,7 @@ impl Shell<'_> {
     }
 }
 
-fn add_into(sum: &mut [f64], values: &[f64]) {
+pub(super) fn add_into(sum: &mut [f64], values: &[f64]) {
     sum.iter_mut().zip(values).for_each(|(s, v)| *s += v);
 }
 
@@ -352,14 +352,6 @@ fn jackknife_error(copies: impl Iterator<Item = (f64, f64)> + Clone) -> f64 {
     let mean = leave_out.iter().sum::<f64>() / n;
     let spread = leave_out.iter().map(|x| (x - mean).powi(2)).sum::<f64>();
     ((n - 1.0) / n * spread).sqrt()
-}
-
-/// Largest multiple p of the shortest q-vector such that every sampled
-/// vector, the longest being p·(2π/L)·√3 along [111], stays within `q_max`.
-fn p_max(box_length: f64, q_max: f64) -> usize {
-    let longest_unit = std::f64::consts::TAU / box_length * 3f64.sqrt();
-    // Small tolerance: a q_max chosen at exactly a shell should include it.
-    (q_max / longest_unit + 1e-9).floor() as usize
 }
 
 #[cfg(test)]
@@ -386,7 +378,16 @@ mod tests {
     }
 
     fn scattering(reference: &CgBody, n: usize, l: f64, q_max: f64) -> Scattering {
-        pollster::block_on(Scattering::new(reference, n, l, q_max, UNIT, Device::Cpu)).unwrap()
+        pollster::block_on(Scattering::new(
+            reference,
+            n,
+            l,
+            q_max,
+            usize::MAX,
+            UNIT,
+            Device::Cpu,
+        ))
+        .unwrap()
     }
 
     fn observe(scattering: &mut Scattering, frame: &Frame) {
@@ -409,17 +410,10 @@ mod tests {
         }
     }
 
-    /// The longest vector at p is p·(2π/60)·√3 = 0.1814·p: p = 2 fits 0.4,
-    /// p = 3 (0.544) does not.
-    #[test]
-    fn p_max_keeps_all_vectors_inside_q_max() {
-        assert_eq!(p_max(60.0, 0.4), 2);
-        assert_eq!(p_max(60.0, 0.55), 3);
-    }
-
-    /// Two unit scatterers L/4 apart (see pripps' BoxScatterer test): box
-    /// intensity 10/3, 8/3, 2 per Miller shell, self term 2; per molecule
-    /// halved, and S_eff = total/self.
+    /// Two unit scatterers L/4 apart on the lattice grid (L = 40, q ≤ 0.3):
+    /// bin 1 is n = (1,0,0)- and (1,1,0)-type, 26/9 as in pripps' worked
+    /// test; bin 2 only the four (±1,±1,±1), h = ±1, so 2. Self term 2; per
+    /// molecule halved, and S_eff = total/self.
     #[test]
     fn two_bodies_give_the_worked_curve() {
         let mut s = scattering(&bead("X"), 2, 40.0, 0.3);
@@ -428,9 +422,10 @@ mod tests {
             &frame(0, &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], 40.0),
         );
         let curve = s.curve();
-        let expected = [10.0 / 3.0, 8.0 / 3.0, 2.0];
+        let expected = [26.0 / 9.0, 2.0];
         assert_eq!(curve.frames, 1);
-        for k in 0..3 {
+        assert_eq!(curve.q.len(), 2);
+        for k in 0..2 {
             approx::assert_relative_eq!(
                 curve.intensity[k],
                 expected[k] / 2.0,
@@ -443,7 +438,7 @@ mod tests {
     }
 
     /// Mass centres L/4 apart give the worked two-point curve halved,
-    /// 5/3, 4/3, 1 per shell, however the beads are arranged around them.
+    /// 13/9 and 1 per bin, however the beads are arranged around them.
     #[test]
     fn mass_centre_structure_factor_ignores_bead_layout() {
         let dumbbell = body(&[[-3.0, -4.0, 1.0], [3.0, 4.0, -1.0]], "X");
@@ -453,7 +448,7 @@ mod tests {
             &frame(0, &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], 40.0),
         );
         let curve = s.curve();
-        for (k, expected) in [5.0 / 3.0, 4.0 / 3.0, 1.0].into_iter().enumerate() {
+        for (k, expected) in [13.0 / 9.0, 1.0].into_iter().enumerate() {
             approx::assert_relative_eq!(curve.s_com[k], expected, max_relative = 1e-12);
         }
     }
@@ -467,34 +462,35 @@ mod tests {
             &frame(0, &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], 40.0),
         );
         let curve = s.curve();
-        assert_eq!(curve.q.len(), 3);
-        for (k, expected) in [5.0 / 3.0, 4.0 / 3.0, 1.0].into_iter().enumerate() {
+        assert_eq!(curve.q.len(), 2);
+        for (k, expected) in [13.0 / 9.0, 1.0].into_iter().enumerate() {
             approx::assert_relative_eq!(curve.s_com[k], expected, max_relative = 1e-12);
         }
         assert!(curve.intensity.is_empty() && curve.s_eff.is_empty());
-        assert_eq!(curve.to_csv().lines().count(), 4);
+        assert_eq!(curve.to_csv().lines().count(), 3);
     }
 
-    /// [100] shell. Copy 0 has centres L/4 apart: box sum 10/3. Copy 1 has
-    /// them L/2 apart: x gives |1 + e^{iπ}|² = 0, y and z give 4, so 8/3.
-    /// Pooled S_com = (10/3 + 8/3)/4 = 3/2; leave-one-out values 4/3 and
-    /// 5/3 give the error √(½·2·(1/6)²) = 1/6.
+    /// Bin 1 (nine vectors). Copy 0 has centres L/4 apart: box sum 26/9.
+    /// Copy 1 has them L/2 apart, |1 + e^{iπh}|² = 0 for odd h, 4 for h = 0:
+    /// (0,1,0), (0,0,1), (0,1,±1) give 4 each, so 16/9. Pooled S_com =
+    /// (26/9 + 16/9)/4 = 7/6; leave-one-out values 8/9 and 13/9 give the
+    /// error √(½·2·(5/18)²) = 5/18.
     #[test]
     fn s_com_error_is_the_jackknife_over_copies() {
         let mut s = Scattering::mass_centres(2, 40.0, 0.3).unwrap();
         observe(&mut s, &frame(0, &[[0.0; 3], [10.0, 0.0, 0.0]], 40.0));
         observe(&mut s, &frame(1, &[[0.0; 3], [20.0, 0.0, 0.0]], 40.0));
         let curve = s.curve();
-        approx::assert_relative_eq!(curve.s_com[0], 1.5, max_relative = 1e-12);
+        approx::assert_relative_eq!(curve.s_com[0], 7.0 / 6.0, max_relative = 1e-12);
         approx::assert_relative_eq!(
             curve.s_com_error.unwrap()[0],
-            1.0 / 6.0,
+            5.0 / 18.0,
             max_relative = 1e-12
         );
     }
 
     /// Beads must be grouped by body: each body is two unit beads L/4 apart,
-    /// so its own |F|² is the worked 10/3, 8/3, 2 per shell. Pairing beads
+    /// so its own |F|² is the worked 26/9 and 2 per bin. Pairing beads
     /// across bodies would give a different self term.
     #[test]
     fn self_term_groups_beads_by_body() {
@@ -504,7 +500,7 @@ mod tests {
             &mut s,
             &frame(0, &[[1.0, 3.0, 5.0], [21.0, 17.0, 11.0]], 40.0),
         );
-        let expected = [10.0 / 3.0, 8.0 / 3.0, 2.0];
+        let expected = [26.0 / 9.0, 2.0];
         for (p, e) in s.curve().form_factor.iter().zip(expected) {
             approx::assert_relative_eq!(*p, e, max_relative = 1e-12);
         }
@@ -558,6 +554,7 @@ mod tests {
             2,
             40.0,
             0.3,
+            16,
             UNIT,
             Device::Cpu,
         ));

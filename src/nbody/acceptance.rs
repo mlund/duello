@@ -68,6 +68,8 @@ fn structure_factor(
         spec.n_bodies,
         spec.box_length,
         q_max,
+        // Point bodies cost no more than mass centres.
+        super::scattering::CENTRE_VECTORS_PER_BIN,
         UNIT,
         Device::Cpu,
     ))
