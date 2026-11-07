@@ -29,7 +29,7 @@ fn cli_scan_archive_loads_with_its_results() {
         .args([
             "--cutoff",
             "2000",
-            "--molarity",
+            "--ionic-strength",
             "0.05",
             "--backend",
             "reference",
@@ -43,7 +43,8 @@ fn cli_scan_archive_loads_with_its_results() {
     let expected = -240356.77888141517;
     assert!(((archive.virial.b2() - expected) / expected).abs() < 1e-9);
     assert!(archive.settings.homo_dimer);
-    assert_eq!(archive.settings.molarity, 0.05);
+    assert_eq!(archive.settings.ionic_strength, 0.05);
+    assert_eq!(archive.session, Default::default());
     assert_eq!(archive.settings.model, "custom topology");
     assert_eq!(archive.settings.cutoff, 2000.0); // reference backend: full cutoff
     assert!(!archive.bodies[0].kinds.is_empty());

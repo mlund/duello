@@ -268,9 +268,10 @@ enum Commands {
         /// YAML file with atom definitions (names, charges, etc.)
         #[arg(short = 'p', long = "top")]
         topology: PathBuf,
-        /// 1:1 salt molarity in mol/l
-        #[arg(short = 'M', long, default_value = "0.1")]
-        molarity: f64,
+        /// Ionic strength (mol/L) setting the Debye length for titration, the
+        /// pair energy and the HSY reference; estimate it yourself, e.g. from free salt.
+        #[arg(short = 'M', long, visible_alias = "molarity", default_value = "0.1")]
+        ionic_strength: f64,
         /// Cutoff distance for pair-wise interactions (angstroms)
         #[arg(long, default_value = "30.0")]
         cutoff: f64,
@@ -308,9 +309,10 @@ enum Commands {
         /// YAML file with atom definitions (required for XYZ input, generated for PDB/CIF; inputs must not mix the two)
         #[arg(short = 'a', long = "top")]
         topology: Option<PathBuf>,
-        /// 1:1 salt molarity in mol/l
-        #[arg(short = 'M', long, default_value = "0.1")]
-        molarity: f64,
+        /// Ionic strength (mol/L) setting the Debye length for titration, the
+        /// pair energy and the HSY reference; estimate it yourself, e.g. from free salt.
+        #[arg(short = 'M', long, visible_alias = "molarity", default_value = "0.1")]
+        ionic_strength: f64,
         /// Cutoff distance for pair-wise interactions (angstroms)
         #[arg(long, default_value = "30.0")]
         cutoff: f64,
@@ -350,9 +352,10 @@ enum Commands {
         /// YAML file with atom definitions (required for XYZ input, generated for PDB/CIF; inputs must not mix the two)
         #[arg(short = 'a', long = "top")]
         topology: Option<PathBuf>,
-        /// 1:1 salt molarity in mol/l
-        #[arg(short = 'M', long, default_value = "0.1")]
-        molarity: f64,
+        /// Ionic strength (mol/L) setting the Debye length for titration, the
+        /// pair energy and the HSY reference; estimate it yourself, e.g. from free salt.
+        #[arg(short = 'M', long, visible_alias = "molarity", default_value = "0.1")]
+        ionic_strength: f64,
         /// Cutoff distance for pair-wise interactions (angstroms)
         #[arg(long, default_value = "30.0")]
         cutoff: f64,
@@ -484,7 +487,7 @@ fn save_scan_request(
         rmax,
         dr,
         topology: top_file,
-        molarity,
+        ionic_strength,
         cutoff,
         temperature,
         max_ndiv,
@@ -517,7 +520,7 @@ fn save_scan_request(
         rmin: *rmin,
         rmax: *rmax,
         dr: *dr,
-        molarity: *molarity,
+        ionic_strength: *ionic_strength,
         temperature: *temperature,
         max_ndiv: *max_ndiv,
         gradient_threshold: *gradient_threshold,
@@ -548,7 +551,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         rmax,
         dr,
         topology: top_file,
-        molarity,
+        ionic_strength,
         cutoff,
         temperature,
         fixed_dielectric,
@@ -580,12 +583,12 @@ fn do_scan(cmd: &Commands) -> Result<()> {
 
     // Either use fixed dielectric constant or calculate it from the medium
     let medium = fixed_dielectric.map_or_else(
-        || Medium::salt_water(*temperature, Salt::SodiumChloride, *molarity),
+        || Medium::salt_water(*temperature, Salt::SodiumChloride, *ionic_strength),
         |dielectric_const| {
             Medium::new(
                 *temperature,
                 permittivity::Permittivity::Fixed(dielectric_const),
-                Some((Salt::SodiumChloride, *molarity)),
+                Some((Salt::SodiumChloride, *ionic_strength)),
             )
         },
     );
@@ -727,7 +730,7 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
         rmax,
         dr,
         topology: top_file,
-        molarity,
+        ionic_strength,
         cutoff: _,
         temperature,
         output,
@@ -740,7 +743,7 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
     };
     anyhow::ensure!(rmin < rmax, "rmin ({rmin}) must be less than rmax ({rmax})");
 
-    let medium = Medium::salt_water(*temperature, Salt::SodiumChloride, *molarity);
+    let medium = Medium::salt_water(*temperature, Salt::SodiumChloride, *ionic_strength);
     let PairSystem {
         ref_a,
         topology,
@@ -930,7 +933,7 @@ fn do_potential(cmd: &Commands) -> Result<()> {
         resolution,
         radius,
         topology,
-        molarity,
+        ionic_strength,
         cutoff: _,
         temperature,
     } = cmd
@@ -953,7 +956,7 @@ fn do_potential(cmd: &Commands) -> Result<()> {
     );
 
     // Electrolyte background
-    let medium = Medium::salt_water(*temperature, Salt::SodiumChloride, *molarity);
+    let medium = Medium::salt_water(*temperature, Salt::SodiumChloride, *ionic_strength);
     let multipole = Plain::new(f64::INFINITY, medium.debye_length());
 
     let icotable = IcoTable2D::<f64>::from_min_points(n_points)?;
@@ -1181,5 +1184,35 @@ fn main() -> ExitCode {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--molarity` stays as an alias, so old scripts scan at the same salt.
+    #[test]
+    fn molarity_is_the_ionic_strength_by_its_old_name() {
+        for flag in ["--molarity", "--ionic-strength"] {
+            let args = [
+                "duello",
+                "potential",
+                "-1",
+                "a.xyz",
+                "--radius",
+                "5",
+                "--top",
+                "t.yaml",
+                flag,
+                "0.03",
+            ];
+            let Some(Commands::Potential { ionic_strength, .. }) =
+                Cli::try_parse_from(args).unwrap().command
+            else {
+                unreachable!()
+            };
+            assert_eq!(ionic_strength, 0.03, "{flag}");
+        }
     }
 }

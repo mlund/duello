@@ -27,7 +27,7 @@ use std::io::{ErrorKind, Read, Write};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TrajectoryHeader {
     pub n_bodies: usize,
-    /// Protein concentration in mol/L (the salt is in `settings.molarity`).
+    /// Protein concentration in mol/L (the salt is in `settings.ionic_strength`).
     pub protein_molarity: f64,
     pub sweeps_per_frame: u64,
     pub equilibration_sweeps: u64,
@@ -322,7 +322,7 @@ mod tests {
                 rmin: 20.0,
                 rmax: 60.0,
                 dr: 0.5,
-                molarity: 0.05,
+                ionic_strength: 0.05,
                 temperature: 298.15,
                 max_ndiv: 2,
                 gradient_threshold: 0.5,
@@ -372,17 +372,24 @@ mod tests {
     /// Written field by field from the documented layout, independently of
     /// the writer, so it pins the format that external readers rely on.
     fn golden_bytes() -> Vec<u8> {
-        let json = br#"{"n_bodies":1,"protein_molarity":0.005,
+        golden_bytes_with("ionic_strength")
+    }
+
+    /// `salt_key` names the ionic strength; older headers call it `molarity`.
+    fn golden_bytes_with(salt_key: &str) -> Vec<u8> {
+        let json = format!(
+            r#"{{"n_bodies":1,"protein_molarity":0.005,
             "sweeps_per_frame":700,"equilibration_sweeps":5000,"equilibrated":true,
-            "reference":{"positions":[[1.0,0.0,0.0]],"masses":[110.0],"charges":[1.0],
-            "radii":[3.0],"kinds":["LYS"]},
-            "settings":{"ph":7.0,"model":"calvados3","single_bead":true,"rmin":20.0,
-            "rmax":60.0,"dr":0.5,"molarity":0.05,"temperature":298.15,"max_ndiv":2,
-            "gradient_threshold":0.5,"cutoff":30.0,"grid_size":200,"homo_dimer":true}}"#;
+            "reference":{{"positions":[[1.0,0.0,0.0]],"masses":[110.0],"charges":[1.0],
+            "radii":[3.0],"kinds":["LYS"]}},
+            "settings":{{"ph":7.0,"model":"calvados3","single_bead":true,"rmin":20.0,
+            "rmax":60.0,"dr":0.5,"{salt_key}":0.05,"temperature":298.15,"max_ndiv":2,
+            "gradient_threshold":0.5,"cutoff":30.0,"grid_size":200,"homo_dimer":true}}}}"#
+        );
         let mut bytes = b"DUELLO-TRAJ\0".to_vec();
         bytes.extend(1u32.to_le_bytes());
         bytes.extend((json.len() as u32).to_le_bytes());
-        bytes.extend(json);
+        bytes.extend(json.as_bytes());
         bytes.extend(2u32.to_le_bytes()); // copy
         bytes.extend(1400u64.to_le_bytes()); // sweep
         bytes.extend(50.0f64.to_le_bytes()); // box
@@ -402,6 +409,12 @@ mod tests {
         // qz = 1: a half turn about z.
         let half_turn = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), std::f64::consts::PI);
         assert!(frame.poses[0].orientation.angle_to(&half_turn) < 1e-12);
+    }
+
+    #[test]
+    fn headers_naming_the_ionic_strength_molarity_still_read() {
+        let (restored_header, _) = read_all(&golden_bytes_with("molarity"));
+        assert_eq!(restored_header.settings.ionic_strength, 0.05);
     }
 
     /// A run stopped mid-write leaves a partial record; earlier frames survive.

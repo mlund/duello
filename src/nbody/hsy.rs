@@ -4,13 +4,11 @@
 //! al., J. Phys. Chem. B 118, 2014, SI eqs S5–S42.
 
 use crate::archive::ScanArchive;
+use crate::solution::protein_volume;
 use faunus::interatomic::coulomb::{Medium, Salt};
 use nalgebra::Complex;
-use physical_constants::AVOGADRO_CONSTANT;
+use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
-
-/// Typical for globular proteins, cm³/g; Kaieda et al. used measured values.
-pub const PARTIAL_SPECIFIC_VOLUME: f64 = 0.73;
 
 /// Charged hard spheres in 1:1 salt; lengths in Å.
 #[derive(Clone, Debug, PartialEq)]
@@ -20,14 +18,14 @@ pub struct HsyFluid {
     pub number_density: f64,
     /// Net charge per sphere, e.
     pub charge: f64,
-    /// κ⁻¹, Å; the MPB-RMSA screens with salt and counterions alike.
+    /// κ⁻¹, Å.
     pub debye_length: f64,
     pub bjerrum_length: f64,
 }
 
 /// User choices that replace the derived sphere parameters; `None` keeps
 /// the default.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct MsaOverrides {
     /// Å
     pub diameter: Option<f64>,
@@ -37,23 +35,22 @@ pub struct MsaOverrides {
 
 impl HsyFluid {
     /// Equivalent sphere of a protein's volume and net charge, in NaCl at
-    /// `temperature` (K); molarities in mol/L.
+    /// `temperature` (K); concentrations in mol/L.
     pub fn protein(
         molar_mass: f64,
         charge: f64,
         protein_molarity: f64,
-        salt_molarity: f64,
+        ionic_strength: f64,
         temperature: f64,
     ) -> Self {
-        let per_cubic_angstrom = AVOGADRO_CONSTANT * 1e-27;
-        let volume = molar_mass * PARTIAL_SPECIFIC_VOLUME * 1e24 / AVOGADRO_CONSTANT;
-        let number_density = protein_molarity * per_cubic_angstrom;
+        let number_density = crate::number_density(protein_molarity);
         let bjerrum_length =
-            Medium::salt_water(temperature, Salt::SodiumChloride, salt_molarity).bjerrum_length();
-        // Eq S10's κ: both salt ions plus the |Z| counterions per protein.
-        let ions = 2.0 * salt_molarity * per_cubic_angstrom + number_density * charge.abs();
+            Medium::salt_water(temperature, Salt::SodiumChloride, ionic_strength).bjerrum_length();
+        // Not Eq S10's salt plus |Z| counterions: the one ionic strength that
+        // set titration and the pair energy, so all three screen alike.
+        let ions = 2.0 * crate::number_density(ionic_strength);
         Self {
-            diameter: (6.0 * volume / PI).cbrt(),
+            diameter: (6.0 * protein_volume(molar_mass) / PI).cbrt(),
             number_density,
             charge,
             debye_length: (4.0 * PI * bjerrum_length * ions).sqrt().recip(),
@@ -70,7 +67,7 @@ impl HsyFluid {
     }
 
     /// The sphere for a homo-dimer scan's molecule at `protein_molarity`
-    /// (mol/L), in the scan's salt and temperature.
+    /// (mol/L), at the scan's ionic strength and temperature.
     pub fn for_scan(archive: &ScanArchive, protein_molarity: f64) -> Self {
         let body = &archive.bodies[0];
         let settings = &archive.settings;
@@ -78,7 +75,7 @@ impl HsyFluid {
             body.mass(),
             body.net_charge(),
             protein_molarity,
-            settings.molarity,
+            settings.ionic_strength,
             settings.temperature,
         )
     }
@@ -415,8 +412,8 @@ mod tests {
         approx::assert_relative_eq!(fluid.diameter, 32.11, max_relative = 1e-3);
         approx::assert_relative_eq!(fluid.number_density, 1.2044e-6, max_relative = 1e-3);
         approx::assert_relative_eq!(fluid.bjerrum_length, 7.15, max_relative = 0.01);
-        // Salt and counterions: κ² = 4π × 7.15 Å × (2 × 6.0221e-5 + 8 × 1.2044e-6) Å⁻³
-        approx::assert_relative_eq!(fluid.debye_length, 9.25, max_relative = 0.01);
+        // Ionic strength only: κ² = 4π × 7.15 Å × 2 × 6.0221e-5 Å⁻³
+        approx::assert_relative_eq!(fluid.debye_length, 9.61, max_relative = 0.005);
         assert_eq!(fluid.charge, 8.0);
         // 1.2044e-6 Å⁻³ × 17334 Å³
         approx::assert_relative_eq!(fluid.volume_fraction(), 0.02088, max_relative = 1e-3);

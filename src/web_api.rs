@@ -44,7 +44,7 @@ fn prepare_scan(req: &WebScanRequest) -> anyhow::Result<PreparedScan> {
     let medium = Medium::salt_water(
         settings.temperature,
         Salt::SodiumChloride,
-        settings.molarity,
+        settings.ionic_strength,
     );
     let system = PairSystem::load(PairSpec {
         a: Source::PdbBytes(&req.mol1_pdb),
@@ -215,7 +215,7 @@ mod tests {
                 rmin: 20.0,
                 rmax: 24.0,
                 dr: 2.0,
-                molarity: 0.05,
+                ionic_strength: 0.05,
                 temperature: 298.15,
                 max_ndiv: 0,
                 gradient_threshold: 0.5,

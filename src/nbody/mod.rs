@@ -21,7 +21,7 @@ pub mod trajectory;
 pub use energy::{PairEnergy, PairValue};
 pub use energy_stats::{EnergyStats, EnergySummary};
 pub use equilibration::{Criteria, Equilibration, Status};
-pub use hsy::{HsyFluid, MsaOverrides, PARTIAL_SPECIFIC_VOLUME};
+pub use hsy::{HsyFluid, MsaOverrides};
 pub use pripps::RESIDUE_FORM_FACTORS;
 pub use rdf::{PairCorrelation, RdfCurve};
 pub use run::{MsaReference, NBodyRun, Progress, RunSpec, RunStats, Stage};
@@ -41,9 +41,7 @@ pub struct Pose {
 
 /// Side length in Å of the cubic box holding `n_bodies` at `molarity` (mol/L).
 pub fn box_length(n_bodies: usize, molarity: f64) -> f64 {
-    let density =
-        molarity * physical_constants::AVOGADRO_CONSTANT * crate::LITER_PER_CUBIC_ANGSTROM;
-    (n_bodies as f64 / density).cbrt()
+    (n_bodies as f64 / crate::number_density(molarity)).cbrt()
 }
 
 #[cfg(test)]

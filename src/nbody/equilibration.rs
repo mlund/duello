@@ -1,7 +1,9 @@
 //! Decides when energy has stopped drifting, from a series of per-copy energies.
 
+use serde::{Deserialize, Serialize};
+
 /// When to start and stop testing for drift.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Criteria {
     /// No verdict before this many sweeps.
     pub min_sweeps: u64,

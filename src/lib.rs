@@ -21,6 +21,7 @@ pub mod icoscan;
 pub mod nbody;
 pub mod report;
 mod sample;
+pub mod solution;
 pub mod structure;
 pub mod system;
 #[cfg(feature = "cli")]
@@ -35,6 +36,11 @@ pub use virial::VirialCoeff;
 
 /// Converts number densities in Å⁻³ to and from mol/L.
 pub(crate) const LITER_PER_CUBIC_ANGSTROM: f64 = 1e-27;
+
+/// Particles per Å³ at `molarity` mol/L.
+pub(crate) fn number_density(molarity: f64) -> f64 {
+    molarity * physical_constants::AVOGADRO_CONSTANT * LITER_PER_CUBIC_ANGSTROM
+}
 
 /// kT in kJ/mol, the energy unit of all tables.
 pub fn thermal_energy(temperature: f64) -> f64 {

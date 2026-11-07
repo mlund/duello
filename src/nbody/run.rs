@@ -12,13 +12,15 @@ use super::{
 };
 use crate::archive::{CgBody, ScanArchive};
 use anyhow::{ensure, Result};
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::future::Future;
 use std::sync::Arc;
 
 /// What to run. `RunSpec::new` fills in defaults for everything but the
-/// system.
-#[derive(Clone, Debug)]
+/// system. Saved in `.duello` sessions: a field change needs an archive
+/// `FORMAT_VERSION` bump.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RunSpec {
     pub n_bodies: usize,
     /// Protein concentration in mol/L.
@@ -45,12 +47,17 @@ pub struct RunSpec {
     pub tune_steps: bool,
     /// Replaces the reference sphere's derived diameter or screening.
     pub msa: MsaOverrides,
+    /// Off by default: a trajectory grows by MBs per minute and the curve
+    /// doesn't need it.
+    pub record_trajectory: bool,
     /// Recording stops beyond this; the run and curve carry on.
     pub max_trajectory_bytes: usize,
     /// Mass-centre S(q) only: frames become cheap enough to take at every
     /// check, but I, P and S_eff are not computed.
     pub centres_only: bool,
     /// Where bead sums run; on a GPU they are folded in as they come back.
+    /// Not saved: a runtime choice, not an input.
+    #[serde(skip)]
     pub device: Device,
 }
 
@@ -75,6 +82,7 @@ impl RunSpec {
             rotation: 0.2,
             tune_steps: true,
             msa: MsaOverrides::default(),
+            record_trajectory: false,
             max_trajectory_bytes: 256 << 20,
             centres_only: false,
             device: Device::Cpu,
@@ -104,7 +112,7 @@ pub struct Progress {
     /// Production frames taken, summed over copies; `curve().frames` lags
     /// it while GPU sums are out.
     pub frames: usize,
-    /// False once the trajectory reached its size cap.
+    /// False if recording is off or the trajectory reached its size cap.
     pub recording: bool,
 }
 
@@ -136,7 +144,8 @@ pub struct NBodyRun {
     /// Created when production starts, as the header records how
     /// equilibration ended.
     trajectory: Option<TrajectoryWriter<Vec<u8>>>,
-    recording: bool,
+    /// The trajectory reached `max_trajectory_bytes`.
+    capped: bool,
     /// How equilibration ended; kept apart from `stage`, which forgets it on
     /// `stop`.
     equilibrated: bool,
@@ -235,7 +244,7 @@ impl NBodyRun {
             pair_correlation: PairCorrelation::new(sampler_spec.n_bodies, sampler_spec.box_length),
             msa,
             trajectory: None,
-            recording: true,
+            capped: false,
             equilibrated: false,
             equilibration_sweeps: 0,
             frames: 0,
@@ -289,7 +298,7 @@ impl NBodyRun {
             sweep: self.sweep,
             energy_per_body: self.energy_per_body,
             frames: self.frames,
-            recording: self.recording,
+            recording: self.spec.record_trajectory && !self.capped,
         }
     }
 
@@ -397,8 +406,10 @@ impl NBodyRun {
         for sampler in &mut self.samplers {
             sampler.take_move_stats();
         }
-        let header = self.header(equilibrated);
-        self.trajectory = Some(TrajectoryWriter::new(&header, Vec::new())?);
+        if self.spec.record_trajectory {
+            let header = self.header(equilibrated);
+            self.trajectory = Some(TrajectoryWriter::new(&header, Vec::new())?);
+        }
         self.stage = Stage::Production { equilibrated };
         self.equilibrated = equilibrated;
         self.equilibration_sweeps = self.sweep;
@@ -467,10 +478,9 @@ impl NBodyRun {
         let Some(writer) = self.trajectory.as_mut() else {
             return Ok(());
         };
-        if writer.sink().len() + writer.record_bytes() > self.spec.max_trajectory_bytes {
-            self.recording = false;
-        }
-        if self.recording {
+        // Sticky, so a later smaller frame can't leave a gap.
+        self.capped |= writer.sink().len() + writer.record_bytes() > self.spec.max_trajectory_bytes;
+        if !self.capped {
             writer.append(frame)?;
         }
         Ok(())
@@ -518,7 +528,7 @@ impl NBodyRun {
         self.energy.reset();
         self.moves = MoveStats::default();
         self.frames = 0;
-        self.recording = true;
+        self.capped = false;
         self.begin_production(self.equilibrated)?;
         Ok(self.progress())
     }
@@ -569,8 +579,12 @@ impl NBodyRun {
     }
 
     /// The trajectory so far, borrowed as it can be large; header only if
-    /// production hasn't started.
+    /// production hasn't started. An error if the spec didn't record one.
     pub fn trajectory_bytes(&self) -> Result<Cow<'_, [u8]>> {
+        ensure!(
+            self.spec.record_trajectory,
+            "trajectory not recorded: recording was off for this run"
+        );
         match &self.trajectory {
             Some(writer) => Ok(Cow::Borrowed(writer.sink())),
             None => Ok(Cow::Owned(
@@ -728,7 +742,7 @@ mod tests {
                 rmin: 5.0,
                 rmax: 8.0,
                 dr: 1.0,
-                molarity: 0.05,
+                ionic_strength: 0.05,
                 temperature: 298.15,
                 max_ndiv: 1,
                 gradient_threshold: 0.5,
@@ -742,10 +756,12 @@ mod tests {
             points: vec![],
             virial: crate::VirialCoeff::from_raw_parts(0.0, 5.0),
             topology_yaml: String::new(),
+            session: Default::default(),
         }
     }
 
-    /// Ten bodies in a 20 Å box (ρ = 1.25e-3 Å⁻³), small test criteria.
+    /// Ten bodies in a 20 Å box (ρ = 1.25e-3 Å⁻³), small test criteria,
+    /// recording a trajectory.
     fn spec() -> RunSpec {
         let molarity = 10.0 / 8000.0 / (physical_constants::AVOGADRO_CONSTANT * 1e-27);
         let mut spec = RunSpec::new(10, molarity);
@@ -754,7 +770,24 @@ mod tests {
         spec.sweeps_per_frame = 5;
         spec.criteria.min_sweeps = 20;
         spec.criteria.max_sweeps = 200;
+        spec.record_trajectory = true;
         spec
+    }
+
+    #[test]
+    fn without_recording_frames_reach_only_the_curve() {
+        let spec = RunSpec {
+            record_trajectory: false,
+            ..spec()
+        };
+        let mut run = NBodyRun::start(&archive(true, &["X"]), spec, UNIT).unwrap();
+        run_to(&mut run, |s| matches!(s, Stage::Production { .. }));
+        let progress = run.step(10).unwrap();
+        assert!(progress.frames >= 4, "{progress:?}");
+        assert_eq!(run.curve().frames, progress.frames);
+        assert!(!progress.recording);
+        let error = run.trajectory_bytes().unwrap_err();
+        assert!(error.to_string().contains("not recorded"), "{error}");
     }
 
     fn run_to(run: &mut NBodyRun, stage: fn(&Stage) -> bool) -> Progress {
@@ -781,8 +814,8 @@ mod tests {
         assert_eq!(fluid.charge, 1.5);
         // 1 mM protein, per Å³.
         approx::assert_relative_eq!(fluid.number_density, 6.0221e-7, max_relative = 1e-4);
-        // The scan's 50 mM salt plus 1.5 counterions per protein, λ_B ≈ 7.1 Å.
-        approx::assert_relative_eq!(fluid.debye_length, 13.5, max_relative = 0.01);
+        // The scan's 50 mM only: κ² = 4π × 7.13 Å × 2 × 3.011e-5 Å⁻³.
+        approx::assert_relative_eq!(fluid.debye_length, 13.6, max_relative = 0.005);
     }
 
     #[test]

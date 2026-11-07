@@ -60,8 +60,9 @@ impl ScatteringCurve {
 }
 
 /// Where the scattering sums run.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Device {
+    #[default]
     Cpu,
     /// Phases in f32; fails if no GPU adapter is available.
     Gpu,

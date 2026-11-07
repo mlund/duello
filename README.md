@@ -71,7 +71,7 @@ duello scan \
     --mol1 4lzt.pdb \
     --mol2 4lzt.pdb \
     --rmin 24 --rmax 80 --dr 0.5 \
-    --molarity 0.05
+    --ionic-strength 0.05
 ```
 
 This computes the potential of mean force _w(R)_ and reports the second virial coefficient _B2_ and dissociation constant _Kd_.
@@ -84,7 +84,7 @@ To override these defaults:
 duello scan \
     --mol1 4lzt.pdb --mol2 4lzt.pdb \
     --rmin 24 --rmax 80 --dr 0.5 \
-    --molarity 0.05 \
+    --ionic-strength 0.05 \
     --ph 4.5 --model calvados3 --cg multi
 ```
 
@@ -152,7 +152,7 @@ The primary command. Scans all inter-molecular orientations at each mass center 
 duello scan \
     --mol1 4lzt.pdb --mol2 4lzt.pdb \
     --rmin 24 --rmax 80 --dr 0.5 \
-    --molarity 0.05
+    --ionic-strength 0.05
 ```
 
 **From pre-generated XYZ (full control):**
@@ -164,7 +164,7 @@ duello scan \
     --top topology.yaml \
     --max-ndiv 3 \
     --cutoff 30 \
-    --molarity 0.05 \
+    --ionic-strength 0.05 \
     --temperature 298.15 \
     --backend auto \
     --grid "type=powerlaw2,size=200,shift=true"
@@ -178,7 +178,7 @@ duello scan \
 | `-2, --mol2`             | (required)    | Second structure (PDB, CIF, or XYZ)                   |
 | `--rmin`, `--rmax`, `--dr` | (required) | Radial scan range and step size (angstrom)            |
 | `-a, --top`              | --            | Topology YAML (required for XYZ, auto-generated for PDB/CIF) |
-| `-M, --molarity`         | 0.1           | 1:1 salt concentration (mol/L)                        |
+| `-M, --ionic-strength`   | 0.1           | Ionic strength (mol/L) for titration, pair energy and HSY; alias `--molarity` |
 | `-T, --temperature`      | 298.15        | Temperature (K)                                       |
 | `--cutoff`               | 30.0          | Short-range spline cutoff (angstrom)                  |
 | `--sr-cutoff`            | = `--cutoff`  | Fine-tuned SR potential range (angstrom)              |
@@ -238,7 +238,7 @@ duello atom-scan \
     --atom Na \
     --rmin 2.0 --rmax 60 --dr 0.5 \
     --top topology.yaml \
-    --molarity 0.02 \
+    --ionic-strength 0.02 \
     --cutoff 150
 ```
 

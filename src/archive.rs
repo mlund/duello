@@ -2,9 +2,10 @@
 //!
 //! Holds everything needed to view a scan or run a many-body simulation from
 //! it without the original PDB: the 6D table, the coarse-grained bodies, and
-//! the derived PMF and virial results.
+//! the derived PMF and virial results. A web [`Session`] rides along.
 
 use crate::icoscan::{table_metadata, ScanParams, ScanResult};
+use crate::nbody::RunSpec;
 use crate::report::{compute_pmf, PmfPoint};
 use crate::structure::Structure;
 use crate::{Subdivision, Table6DAdaptive, VirialCoeff};
@@ -29,7 +30,8 @@ pub struct ScanSettings {
     pub rmin: f64,
     pub rmax: f64,
     pub dr: f64,
-    pub molarity: f64,
+    #[serde(alias = "molarity")]
+    pub ionic_strength: f64,
     pub temperature: f64,
     pub max_ndiv: usize,
     pub gradient_threshold: f64,
@@ -64,6 +66,39 @@ pub struct ScanArchive {
     #[serde(with = "virial_parts")]
     pub virial: VirialCoeff,
     pub topology_yaml: String,
+    pub session: Session,
+}
+
+/// The web app's inputs at export, so importing a scan restores the user's
+/// work; inputs only, never results. Empty when the CLI made the scan.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Session {
+    /// Input structures as loaded, so Onebody can be restored.
+    pub structures: Vec<StructureFile>,
+    /// Indices into `structures` of the scanned pair; None if made elsewhere.
+    pub scanned: Option<[usize; 2]>,
+    /// What a free-salt estimate assumed; None if the ionic strength was entered.
+    pub estimate: Option<FreeSaltEstimate>,
+    /// Many-body inputs last used with this scan.
+    pub run: Option<RunSpec>,
+}
+
+/// A structure file as loaded, e.g. a PDB or mmCIF.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StructureFile {
+    pub name: String,
+    #[serde(with = "serde_bytes")]
+    pub contents: Vec<u8>,
+}
+
+/// Inputs to [`crate::solution::free_salt`]; the charge and volume come from
+/// the scanned body.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FreeSaltEstimate {
+    /// mol/L
+    pub reservoir: f64,
+    /// mol/L
+    pub protein_molarity: f64,
 }
 
 impl ScanArchive {
@@ -89,6 +124,7 @@ impl ScanArchive {
             points: pmf.points,
             virial: pmf.virial,
             topology_yaml,
+            session: Session::default(),
         })
     }
 
@@ -153,7 +189,7 @@ pub(crate) fn xyz_string<'a>(
 const MAGIC: &[u8; 12] = b"DUELLO-SCAN\0";
 /// Bumped on any layout change: bincode isn't self-describing, so old readers
 /// would otherwise misread new files silently.
-const FORMAT_VERSION: u32 = 2;
+const FORMAT_VERSION: u32 = 3;
 
 impl ScanArchive {
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
@@ -179,6 +215,7 @@ impl ScanArchive {
         for body in &archive.bodies {
             body.check_consistency()?;
         }
+        archive.session.check_consistency()?;
         // The label is stored beside the table, so a writer could disagree.
         let labelled = archive.settings.subdivision;
         ensure!(
@@ -190,6 +227,19 @@ impl ScanArchive {
             "settings say {labelled:?} but the table uses another angular mesh"
         );
         Ok(archive)
+    }
+}
+
+impl Session {
+    /// Restoring indexes `structures` by `scanned`.
+    fn check_consistency(&self) -> Result<()> {
+        let n = self.structures.len();
+        ensure!(
+            self.scanned.is_none_or(|pair| pair.iter().all(|&i| i < n)),
+            "session's scanned pair {:?} is beyond its {n} structures",
+            self.scanned
+        );
+        Ok(())
     }
 }
 
@@ -311,7 +361,7 @@ mod tests {
                 rmin: 5.0,
                 rmax: 7.0,
                 dr: 1.0,
-                molarity: 0.5,
+                ionic_strength: 0.5,
                 temperature: 298.15,
                 max_ndiv: 1,
                 gradient_threshold: 0.5,
@@ -325,7 +375,57 @@ mod tests {
             virial: VirialCoeff::from_pmf([(5.0, 1.5), (6.0, -0.25)], None).unwrap(),
             points,
             topology_yaml: "atoms: []".into(),
+            session: Session::default(),
         }
+    }
+
+    /// A web session: two loaded structures, both scanned, a free-salt
+    /// estimate and the many-body inputs.
+    fn session() -> Session {
+        let file = |name: &str, contents: &[u8]| StructureFile {
+            name: name.into(),
+            contents: contents.to_vec(),
+        };
+        let mut run = crate::nbody::RunSpec::new(200, 0.002);
+        run.record_trajectory = true;
+        run.msa.debye_length = Some(12.0);
+        Session {
+            structures: vec![file("4lzt.pdb", b"ATOM 1"), file("1ubq.cif", b"data_")],
+            scanned: Some([1, 0]),
+            estimate: Some(FreeSaltEstimate {
+                reservoir: 0.02,
+                protein_molarity: 0.002,
+            }),
+            run: Some(run),
+        }
+    }
+
+    #[test]
+    fn round_trip_keeps_the_ionic_strength_and_the_session() {
+        let mut original = archive();
+        original.session = session();
+        let restored = ScanArchive::from_bytes(&original.to_bytes().unwrap()).unwrap();
+        assert_eq!(restored.settings.ionic_strength, 0.5);
+        assert_eq!(restored.session, session());
+    }
+
+    #[test]
+    fn a_scanned_pair_beyond_the_structures_is_refused() {
+        let mut bad = archive();
+        bad.session = Session {
+            scanned: Some([2, 0]),
+            ..session()
+        };
+        let error = ScanArchive::from_bytes(&bad.to_bytes().unwrap()).unwrap_err();
+        assert!(error.to_string().contains("scanned"), "{error}");
+    }
+
+    #[test]
+    fn version_2_files_are_refused() {
+        let mut bytes = archive().to_bytes().unwrap();
+        bytes[12] = 2;
+        let error = ScanArchive::from_bytes(&bytes).unwrap_err().to_string();
+        assert!(error.contains("version 2"), "{error}");
     }
 
     #[test]
@@ -359,7 +459,7 @@ mod tests {
     #[test]
     fn header_is_magic_then_little_endian_version() {
         let bytes = archive().to_bytes().unwrap();
-        assert_eq!(&bytes[..16], b"DUELLO-SCAN\0\x02\0\0\0");
+        assert_eq!(&bytes[..16], b"DUELLO-SCAN\0\x03\0\0\0");
     }
 
     /// Derived from the beads, so they can't disagree with what a simulation uses.

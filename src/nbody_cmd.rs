@@ -51,7 +51,7 @@ pub struct NBodyArgs {
     /// Diameter of the MSA reference sphere (Å) [default: from molar mass]
     #[arg(long)]
     msa_diameter: Option<f64>,
-    /// Debye length of the MSA reference (Å) [default: salt plus counterions]
+    /// Debye length of the MSA reference (Å) [default: from the scan's ionic strength]
     #[arg(long)]
     msa_debye_length: Option<f64>,
     /// Mass-centre S(q) only; far cheaper per frame, so frames are taken
@@ -115,6 +115,7 @@ fn spec(args: &NBodyArgs) -> RunSpec {
     spec.q_max = args.qmax;
     spec.sweeps_per_frame = args.frame_interval();
     spec.centres_only = args.centres_only;
+    spec.record_trajectory = true;
     spec.vectors_per_bin = args.vectors_per_bin;
     spec.translation = args.translation.unwrap_or(spec.translation);
     spec.rotation = args.rotation.unwrap_or(spec.rotation);
