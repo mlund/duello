@@ -124,8 +124,7 @@ impl Titrating {
     }
 }
 
-/// One point of a titration curve. Moments are root-mean-square: unlike ⟨μ⟩,
-/// √⟨μ²⟩ is exact for Henderson–Hasselbalch too, so the two curves compare.
+/// One point of a titration curve.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CurvePoint {
     pub ph: f64,
@@ -133,9 +132,9 @@ pub struct CurvePoint {
     pub charge: f64,
     /// ⟨Z²⟩ − ⟨Z⟩².
     pub capacitance: f64,
-    /// √⟨μ²⟩, e·Å.
+    /// ⟨|μ|⟩, e·Å.
     pub dipole: f64,
-    /// √⟨‖Θ‖²⟩, e·Å².
+    /// ⟨‖Θ‖⟩, e·Å².
     pub quadrupole: f64,
 }
 
@@ -145,14 +144,18 @@ impl CurvePoint {
             ph,
             charge: multipole.charge,
             capacitance: multipole.capacitance(),
-            dipole: multipole.dipole_sq.sqrt(),
-            quadrupole: multipole.quadrupole_sq.sqrt(),
+            dipole: multipole.dipole,
+            quadrupole: multipole.quadrupole,
         }
     }
 }
 
-/// An MC titration curve computed one pH at a time, so it can fill in over many
-/// frames; see [`Curve::advance`]. `spec.ph` is ignored.
+/// Henderson–Hasselbalch points per [`Curve::advance_ideal`]: each samples site
+/// states (~0.5 ms for 2CDS), so a frame takes a few.
+const IDEAL_PER_ADVANCE: usize = 4;
+
+/// MC and ideal titration curves computed one pH at a time, so they fill in over
+/// many frames; see [`Curve::advance`]. `spec.ph` is ignored.
 pub struct Curve {
     beads: Vec<Bead>,
     spec: MoleculeSpec,
@@ -161,8 +164,9 @@ pub struct Curve {
     /// At `ph[points.len()]`.
     running: Option<Titration>,
     points: Vec<CurvePoint>,
-    /// Henderson–Hasselbalch for the same beads, computed up front as it's cheap.
+    /// Henderson–Hasselbalch for the same beads, over `ideal_ph`.
     ideal: Vec<CurvePoint>,
+    ideal_ph: Vec<f64>,
 }
 
 impl Curve {
@@ -174,26 +178,30 @@ impl Curve {
         ideal_ph: &[f64],
         seed: u64,
     ) -> Result<Self> {
-        let beads = coarse_grain(pdb, spec)?;
-        let ideal = ideal_ph
-            .iter()
-            .map(|&ph| {
-                let result = titrate(&beads, spec, ph, 0, 0).finish();
-                CurvePoint::new(ph, &result.multipole)
-            })
-            .collect();
         Ok(Self {
-            beads,
+            beads: coarse_grain(pdb, spec)?,
             spec: spec.clone(),
             ph: ph.to_vec(),
             seed,
             running: None,
             points: Vec::new(),
-            ideal,
+            ideal: Vec::new(),
+            ideal_ph: ideal_ph.to_vec(),
         })
     }
 
-    /// Runs at most `max_sweeps` more sweeps, across points; true once all are done.
+    /// A few more ideal points; cheap, so callers run it every frame.
+    pub fn advance_ideal(&mut self) {
+        let next = self.ideal.len();
+        let end = (next + IDEAL_PER_ADVANCE).min(self.ideal_ph.len());
+        for &ph in &self.ideal_ph[next..end] {
+            let result = titrate(&self.beads, &self.spec, ph, 0, self.seed).finish();
+            self.ideal.push(CurvePoint::new(ph, &result.multipole));
+        }
+    }
+
+    /// At most `max_sweeps` more MC sweeps, across points; true once both curves
+    /// are done.
     pub fn advance(&mut self, max_sweeps: usize) -> bool {
         let mut left = max_sweeps;
         while let Some(&ph) = self.ph.get(self.points.len()) {
@@ -230,10 +238,10 @@ impl Curve {
     }
 
     pub fn is_done(&self) -> bool {
-        self.points.len() == self.ph.len()
+        self.points.len() == self.ph.len() && self.ideal.len() == self.ideal_ph.len()
     }
 
-    /// Henderson–Hasselbalch points, all there from the start.
+    /// Finished Henderson–Hasselbalch points, in pH order.
     pub fn ideal(&self) -> &[CurvePoint] {
         &self.ideal
     }
@@ -384,12 +392,21 @@ mod tests {
     #[test]
     fn titration_curve_falls_with_ph() {
         let ph = [3.0, 5.0, 7.0, 9.0, 11.0];
-        let curve = Curve::start(&cif(), &MoleculeSpec::default(), &[], &ph, 0).unwrap();
+        let mut curve = Curve::start(&cif(), &MoleculeSpec::default(), &[], &ph, 0).unwrap();
+        assert!(curve.ideal().is_empty(), "start leaves the work to advance");
+        curve.advance_ideal();
+        assert_eq!(curve.ideal().len(), 4, "a few points a frame");
+        assert!(!curve.advance(0));
+        curve.advance_ideal();
+        assert!(curve.advance(0), "ideal points cost no sweeps");
         let curve = curve.ideal();
         assert_eq!(curve.iter().map(|p| p.ph).collect::<Vec<_>>(), ph);
         assert!(curve.windows(2).all(|w| w[1].charge < w[0].charge));
         assert!(curve.iter().all(|p| p.capacitance > 0.0));
-        assert!((curve[2].charge - hh_molecule().multipole.charge).abs() < 1e-12);
+        let hh = hh_molecule().multipole;
+        assert!((curve[2].charge - hh.charge).abs() < 1e-12);
+        // Sampled moments, other seed: equal within sampling noise.
+        assert!((curve[2].dipole / hh.dipole - 1.0).abs() < 0.05);
     }
 
     /// The browser fills the MC curve a few sweeps a frame, a point at a time.
