@@ -133,8 +133,8 @@ pub struct Pose {
 /// Derived from the finest icosphere mesh so that the ω resolution matches the
 /// angular vertex spacing. The generated table keeps only the resulting bin
 /// count, so after-analysis has to rederive the step from here.
-pub(crate) fn omega_step(params: &ScanParams) -> f64 {
-    params.subdivision.angular_resolution(params.max_n_div)
+pub(crate) fn omega_step(subdivision: Subdivision, max_n_div: usize) -> f64 {
+    subdivision.angular_resolution(max_n_div)
 }
 
 /// Build the adaptive 6D table builder for `params` and log its resolution.
@@ -149,7 +149,7 @@ fn make_6d_builder(params: &ScanParams) -> AdaptiveBuilder {
         params.rmin,
         params.rmax,
         params.dr,
-        omega_step(params),
+        omega_step(params.subdivision, params.max_n_div),
         params.max_n_div,
         params.gradient_threshold,
         beta,
@@ -518,7 +518,7 @@ fn write_trajectory<B: EnergyBackend>(
 ) -> anyhow::Result<()> {
     use crate::trajectory::{write_table_poses, write_topology, TrajectoryPaths};
     let paths = TrajectoryPaths::derive(path);
-    let omega_step = omega_step(&config.params);
+    let omega_step = omega_step(config.params.subdivision, config.params.max_n_div);
     let (ref_a, ref_b) = (backend.ref_a(), backend.ref_b());
 
     write_topology(&paths, table, omega_step, ref_a, ref_b, &config.atom_kinds)?;
@@ -772,7 +772,7 @@ mod tests {
             let builder = make_6d_builder(&params);
             for oi in 0..builder.n_omega() {
                 assert_relative_eq!(
-                    oi as f64 * omega_step(&params),
+                    oi as f64 * omega_step(params.subdivision, params.max_n_div),
                     builder.omega_value(oi),
                     epsilon = 1e-12
                 );

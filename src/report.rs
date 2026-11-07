@@ -28,6 +28,8 @@ pub struct PmfPoint {
     pub r: f32,
     pub free_energy: f32,
     pub mean_energy: f32,
+    /// ⟨δU²⟩ over orientations at R in kT², which equals the orientational heat capacity C(R)/k.
+    pub energy_variance: f32,
 }
 
 impl PmfPoint {
@@ -40,6 +42,7 @@ impl PmfPoint {
             r: r as f32,
             free_energy: free_energy as f32,
             mean_energy: mean_energy as f32,
+            energy_variance: sample.heat_capacity() as f32,
         })
     }
 }
@@ -139,4 +142,29 @@ pub fn report_pmf(
             .nice();
     };
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    /// Two levels, 0 and ε, with degeneracies 1 and 3: a Bernoulli variable,
+    /// so ⟨δU²⟩ = p(1−p)ε² with p the weight of the ε level.
+    #[test]
+    fn energy_variance_of_a_two_level_system() {
+        let temperature = 298.15;
+        let kt = crate::thermal_energy(temperature);
+        let epsilon = 2.0;
+        let sample =
+            Sample::new(0.0, temperature, 1.0) + Sample::new(epsilon * kt, temperature, 3.0);
+        let point = PmfPoint::new(4.0, &sample).unwrap();
+
+        let p = 3.0 * (-epsilon).exp() / (1.0 + 3.0 * (-epsilon).exp());
+        assert_relative_eq!(
+            point.energy_variance as f64,
+            p * (1.0 - p) * epsilon * epsilon,
+            max_relative = 1e-6
+        );
+    }
 }

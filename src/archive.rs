@@ -9,10 +9,11 @@ use crate::nbody::RunSpec;
 use crate::report::{compute_pmf, PmfPoint};
 use crate::structure::Structure;
 use crate::{Subdivision, Table6DAdaptive, VirialCoeff};
-use anyhow::{anyhow, ensure, Result};
+use anyhow::{anyhow, bail, ensure, Result};
 use bincode::Options as _;
 use faunus::topology::AtomKind;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 
 /// The scan settings shared by the web tool and the CLI, recorded with a scan.
 ///
@@ -189,7 +190,7 @@ pub(crate) fn xyz_string<'a>(
 const MAGIC: &[u8; 12] = b"DUELLO-SCAN\0";
 /// Bumped on any layout change: bincode isn't self-describing, so old readers
 /// would otherwise misread new files silently.
-const FORMAT_VERSION: u32 = 3;
+const FORMAT_VERSION: u32 = 4;
 
 impl ScanArchive {
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
@@ -207,10 +208,15 @@ impl ScanArchive {
             .split_first_chunk::<4>()
             .ok_or_else(|| anyhow!("not a duello scan file"))?;
         let version = u32::from_le_bytes(*version);
-        ensure!(
-            version == FORMAT_VERSION,
-            "scan file format version {version} is not supported (expected {FORMAT_VERSION})"
-        );
+        match version.cmp(&FORMAT_VERSION) {
+            Ordering::Less => bail!(
+                "scan file format version {version} is too old (expected {FORMAT_VERSION}); re-run the scan"
+            ),
+            Ordering::Greater => bail!(
+                "scan file format version {version} is newer than this duello reads ({FORMAT_VERSION})"
+            ),
+            Ordering::Equal => {}
+        }
         let archive: Self = bincode_options(body.len()).deserialize(body)?;
         for body in &archive.bodies {
             body.check_consistency()?;
@@ -307,7 +313,7 @@ mod virial_parts {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{AdaptiveBuilder, Vector3};
     use icotable::lookup::Lookup6D;
@@ -330,7 +336,7 @@ mod tests {
         builder.build()
     }
 
-    fn body(kind: &str) -> CgBody {
+    pub(crate) fn body(kind: &str) -> CgBody {
         CgBody {
             positions: vec![[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]],
             masses: vec![110.0, 110.0],
@@ -340,17 +346,19 @@ mod tests {
         }
     }
 
-    fn archive() -> ScanArchive {
+    pub(crate) fn archive() -> ScanArchive {
         let points = vec![
             PmfPoint {
                 r: 5.0,
                 free_energy: 1.5,
                 mean_energy: 2.0,
+                energy_variance: 0.5,
             },
             PmfPoint {
                 r: 6.0,
                 free_energy: -0.25,
                 mean_energy: -0.5,
+                energy_variance: 0.25,
             },
         ];
         ScanArchive {
@@ -421,11 +429,12 @@ mod tests {
     }
 
     #[test]
-    fn version_2_files_are_refused() {
+    fn version_3_files_are_refused_and_told_to_rescan() {
         let mut bytes = archive().to_bytes().unwrap();
-        bytes[12] = 2;
+        bytes[12] = 3;
         let error = ScanArchive::from_bytes(&bytes).unwrap_err().to_string();
-        assert!(error.contains("version 2"), "{error}");
+        assert!(error.contains("version 3"), "{error}");
+        assert!(error.contains("re-run the scan"), "{error}");
     }
 
     #[test]
@@ -459,7 +468,7 @@ mod tests {
     #[test]
     fn header_is_magic_then_little_endian_version() {
         let bytes = archive().to_bytes().unwrap();
-        assert_eq!(&bytes[..16], b"DUELLO-SCAN\0\x03\0\0\0");
+        assert_eq!(&bytes[..16], b"DUELLO-SCAN\0\x04\0\0\0");
     }
 
     /// Derived from the beads, so they can't disagree with what a simulation uses.
