@@ -11,6 +11,7 @@ mod hsy;
 mod pair_cache;
 mod pending;
 mod rdf;
+mod record;
 mod run;
 mod sampler;
 mod scattering;
@@ -25,6 +26,9 @@ pub use equilibration::{Criteria, Equilibration, Status};
 pub use hsy::{HsyFluid, MsaOverrides};
 pub use pripps::RESIDUE_FORM_FACTORS;
 pub use rdf::{PairCorrelation, RdfCurve};
+pub use record::RunRecord;
+#[cfg(test)]
+pub(crate) use run::tests as run_tests;
 pub use run::{MsaReference, NBodyRun, Progress, RunSpec, RunStats, Stage};
 pub use sampler::{Frame, MoveCounter, MoveStats, Sampler, SamplerSpec};
 pub use scattering::{Device, Scattering, ScatteringCurve};

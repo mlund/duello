@@ -492,7 +492,7 @@ fn save_archive<B: EnergyBackend>(
     result: ScanResult,
     backend: &B,
 ) -> anyhow::Result<crate::archive::ScanArchive> {
-    log::info!("Saving scan archive to {}", save.path.display());
+    log::info!("Saving scan session to {}", save.path.display());
     let archive = crate::archive::ScanArchive::from_scan(
         save.settings.clone(),
         &config.params,
@@ -501,7 +501,12 @@ fn save_archive<B: EnergyBackend>(
         &config.atom_kinds,
         save.topology_yaml.clone(),
     )?;
-    std::fs::write(&save.path, archive.to_bytes()?)?;
+    let bundle = crate::bundle::BundleRef {
+        session: &Default::default(),
+        scan: Some(&archive),
+        run: None,
+    };
+    std::fs::write(&save.path, bundle.to_zip(&Default::default())?)?;
     Ok(archive)
 }
 

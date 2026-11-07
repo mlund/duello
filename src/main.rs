@@ -371,7 +371,8 @@ enum Commands {
         /// Save binary 6D table for Faunus lookup (.gz suffix enables gzip compression)
         #[arg(long)]
         savetable: Option<PathBuf>,
-        /// Save a self-contained scan (table, CG bodies, PMF) for import in duello-web
+        /// Save a self-contained session (.duello.zip: table, CG bodies, PMF and
+        /// readable extracts) for duello-web or `duello nbody --scan`
         #[arg(long)]
         savescan: Option<PathBuf>,
         /// Export every table pose to an XTC trajectory, with energies and pose

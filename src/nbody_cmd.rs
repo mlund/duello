@@ -2,7 +2,7 @@
 //! scan, as in the web tool's Manybody tab, but unattended.
 
 use anyhow::{ensure, Context, Result};
-use duello::archive::ScanArchive;
+use duello::bundle::Bundle;
 use duello::nbody::{
     trajectory, MsaOverrides, NBodyRun, Progress, RunSpec, Stage, RESIDUE_FORM_FACTORS,
 };
@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(clap::Args)]
 pub struct NBodyArgs {
-    /// Homo-dimer scan archive from `duello scan --savescan`
+    /// Homo-dimer session (.duello.zip) from `duello scan --savescan`
     #[arg(long)]
     scan: PathBuf,
     /// Number of proteins
@@ -92,7 +92,9 @@ pub fn run_nbody(args: &NBodyArgs) -> Result<()> {
         "--sweeps and --frame-interval must be positive"
     );
     let bytes = std::fs::read(&args.scan).with_context(|| args.scan.display().to_string())?;
-    let archive = ScanArchive::from_bytes(&bytes)?;
+    let archive = Bundle::from_zip(&bytes)?
+        .scan
+        .with_context(|| format!("{} holds no scan", args.scan.display()))?;
     let mut run = NBodyRun::start(&archive, spec(args), RESIDUE_FORM_FACTORS)?;
     let progress = drive(&mut run, args)?;
     if !progress.recording {

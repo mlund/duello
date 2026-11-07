@@ -7,8 +7,8 @@
 use super::trajectory::{TrajectoryHeader, TrajectoryWriter};
 use super::{
     box_length, Criteria, Device, EnergyStats, EnergySummary, Equilibration, Frame, HsyFluid,
-    MoveStats, MsaOverrides, PairCorrelation, PairEnergy, RdfCurve, Sampler, SamplerSpec,
-    Scattering, ScatteringCurve, Status, StepTuner,
+    MoveStats, MsaOverrides, PairCorrelation, PairEnergy, RdfCurve, RunRecord, Sampler,
+    SamplerSpec, Scattering, ScatteringCurve, Status, StepTuner,
 };
 use crate::archive::{CgBody, ScanArchive};
 use anyhow::{ensure, Result};
@@ -61,7 +61,7 @@ impl EnergyTrace {
 }
 
 /// What to run. `RunSpec::new` fills in defaults for everything but the
-/// system. Saved in `.duello` sessions: a field change needs an archive
+/// system. Saved in `.duello.zip` sessions: a field change needs a bundle
 /// `FORMAT_VERSION` bump.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RunSpec {
@@ -160,7 +160,7 @@ pub struct Progress {
 }
 
 /// Production statistics, pooled over copies.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RunStats {
     pub moves: MoveStats,
     pub energy: EnergySummary,
@@ -391,6 +391,10 @@ impl NBodyRun {
         Ok(self.frame_of(copy))
     }
 
+    pub fn spec(&self) -> &RunSpec {
+        &self.spec
+    }
+
     /// The rigid body every pose places; beads follow via `trajectory::expand`.
     pub fn reference(&self) -> &CgBody {
         &self.reference
@@ -595,48 +599,23 @@ impl NBodyRun {
 
     /// Curve and statistics as CSV.
     pub fn report_csv(&self) -> String {
-        let mut csv = self.stats_comments();
-        csv += &self.curve().to_csv();
-        csv
+        self.snapshot(None).report_csv()
     }
 
-    fn stats_comments(&self) -> String {
-        let stats = self.stats();
-        let n = self.spec.n_bodies as f64;
-        let show = |x: Option<f64>| x.map_or("NaN".to_string(), |v| format!("{v:.5}"));
-        let produced = stats.energy.frames > 0;
-        let per_body = |x: f64| show(produced.then_some(x / n));
-        let moves = &stats.moves;
-        [
-            format!("bodies: {}", self.spec.n_bodies),
-            format!("protein molarity: {}", self.spec.molarity),
-            format!("centres only: {}", self.spec.centres_only),
-            format!("equilibrated: {}", self.equilibrated),
-            format!("equilibration sweeps: {}", self.equilibration_sweeps),
-            format!("frames: {}", stats.energy.frames),
-            format!(
-                "translate acceptance: {}",
-                show(moves.translate.acceptance())
-            ),
-            format!("rotate acceptance: {}", show(moves.rotate.acceptance())),
-            format!("translation step/Å: {:.4}", stats.steps.0),
-            format!("rotation step/rad: {:.4}", stats.steps.1),
-            format!(
-                "translate msd/Å²: {}",
-                show(moves.translate.mean_square_displacement())
-            ),
-            format!(
-                "rotate msd/rad²: {}",
-                show(moves.rotate.mean_square_displacement())
-            ),
-            format!("U/N mean: {} kT", per_body(stats.energy.mean)),
-            // Var(U)/(N (kT)²): the excess heat capacity per molecule in k_B.
-            format!("Cv_ex/(N kB): {}", per_body(stats.energy.variance)),
-            self.msa.sphere().describe(),
-        ]
-        .iter()
-        .map(|line| format!("# {line}\n"))
-        .collect()
+    /// Results so far, with `trajectory` attached as given.
+    pub(super) fn snapshot(&self, trajectory: Option<Vec<u8>>) -> RunRecord {
+        RunRecord {
+            spec: self.spec.clone(),
+            curve: self.curve(),
+            rdf: self.pair_correlation(),
+            energy: self.energy_trace().to_vec(),
+            stats: self.stats(),
+            equilibrated: self.equilibrated,
+            equilibration_sweeps: self.equilibration_sweeps,
+            sweeps: self.sweep,
+            sphere: self.msa.sphere().clone(),
+            trajectory,
+        }
     }
 
     /// The trajectory so far, borrowed as it can be large; header only if
@@ -773,15 +752,16 @@ pub(super) fn with_missing_kinds(yaml: &str, kinds: &[String]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::archive::{CgBody, ScanSettings};
     use crate::nbody::test_tables::table;
     use crate::nbody::trajectory::TrajectoryReader;
 
-    const UNIT: &str = "X: { formfactor: !Constant 1.0 }\nCYS: { formfactor: !Constant 1.0 }\n";
+    pub(crate) const UNIT: &str =
+        "X: { formfactor: !Constant 1.0 }\nCYS: { formfactor: !Constant 1.0 }\n";
 
-    fn archive(homo_dimer: bool, kinds: &[&str]) -> ScanArchive {
+    pub(crate) fn archive(homo_dimer: bool, kinds: &[&str]) -> ScanArchive {
         archive_with(homo_dimer, kinds, 0.0)
     }
 
@@ -817,13 +797,12 @@ mod tests {
             points: vec![],
             virial: crate::VirialCoeff::from_raw_parts(0.0, 5.0),
             topology_yaml: String::new(),
-            session: Default::default(),
         }
     }
 
     /// Ten bodies in a 20 Å box (ρ = 1.25e-3 Å⁻³), small test criteria,
     /// recording a trajectory.
-    fn spec() -> RunSpec {
+    pub(crate) fn spec() -> RunSpec {
         let molarity = 10.0 / 8000.0 / (physical_constants::AVOGADRO_CONSTANT * 1e-27);
         let mut spec = RunSpec::new(10, molarity);
         spec.copies = 2;
@@ -851,7 +830,7 @@ mod tests {
         assert!(error.to_string().contains("not recorded"), "{error}");
     }
 
-    fn run_to(run: &mut NBodyRun, stage: fn(&Stage) -> bool) -> Progress {
+    pub(crate) fn run_to(run: &mut NBodyRun, stage: fn(&Stage) -> bool) -> Progress {
         for _ in 0..1000 {
             let progress = run.step(10).unwrap();
             if stage(&progress.stage) {

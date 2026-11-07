@@ -32,7 +32,7 @@ pub struct Frame {
 }
 
 /// Tallies for one move type since the stats were last taken.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MoveCounter {
     pub attempts: u64,
     pub accepted: u64,
@@ -66,7 +66,7 @@ impl MoveCounter {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MoveStats {
     pub translate: MoveCounter,
     pub rotate: MoveCounter,

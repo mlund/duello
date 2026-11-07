@@ -153,7 +153,7 @@ impl TablePose {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::archive::tests::archive;
     use crate::structure::mass_center;
@@ -161,7 +161,7 @@ mod tests {
     use approx::assert_relative_eq;
 
     const PLANTED: f64 = -20.0; // kJ/mol
-    const ISOTROPIC: f64 = -30.0; // kJ/mol
+    pub(crate) const ISOTROPIC: f64 = -30.0; // kJ/mol
 
     /// Smooth energies with one deep state at R = 6 Å, ω-bin 2, vertices (3, 7).
     fn planted_table(archive: &ScanArchive) -> Table6DAdaptive<f32> {
@@ -191,7 +191,7 @@ mod tests {
         builder.build()
     }
 
-    fn planted_archive() -> ScanArchive {
+    pub(crate) fn planted_archive() -> ScanArchive {
         let mut archive = archive();
         archive.table = planted_table(&archive);
         archive

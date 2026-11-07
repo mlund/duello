@@ -1,7 +1,7 @@
 //! Step-8 benchmark: native sampler, pair-energy costs, GPU lookup throughput
 //! and scattering-frame cost on a real table. Not a test; prints numbers.
 //!
-//! `DUELLO_BENCH_ARCHIVE=lysozyme.duello cargo test --release -p duello \
+//! `DUELLO_BENCH_ARCHIVE=lysozyme.duello.zip cargo test --release -p duello \
 //!   --lib bench -- --ignored --nocapture`
 
 use super::{box_length, Device, Frame, PairEnergy, Pose, Sampler, SamplerSpec, Scattering};
@@ -13,7 +13,8 @@ use std::time::Instant;
 
 fn archive() -> Option<ScanArchive> {
     let path = std::env::var("DUELLO_BENCH_ARCHIVE").ok()?;
-    Some(ScanArchive::from_bytes(&std::fs::read(path).ok()?).unwrap())
+    let bundle = crate::bundle::Bundle::from_zip(&std::fs::read(path).ok()?).unwrap();
+    Some(bundle.scan.expect("the benchmark session needs a scan"))
 }
 
 fn random_pose(rng: &mut impl Rng, center: Vector3, spread: f64) -> Pose {

@@ -6,7 +6,7 @@ use super::Frame;
 
 /// g(r) at bin centres; `error` is the jackknife spread over copies, `None`
 /// with fewer than two observed copies.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RdfCurve {
     pub r: Vec<f64>,
     pub g: Vec<f64>,

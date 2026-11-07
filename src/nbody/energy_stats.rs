@@ -9,7 +9,7 @@ use anyhow::{bail, ensure, Result};
 use std::sync::Arc;
 
 /// Mean and population variance of the total energy, in kT and kT².
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EnergySummary {
     pub frames: usize,
     pub mean: f64,

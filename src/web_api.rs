@@ -227,6 +227,19 @@ mod tests {
         }
     }
 
+    /// Through a saved session, as the web app would reopen it.
+    fn reloaded(archive: &ScanArchive) -> ScanArchive {
+        let bundle = crate::bundle::Bundle {
+            scan: Some(archive.clone()),
+            ..Default::default()
+        };
+        let bytes = bundle.to_zip(&Default::default()).unwrap();
+        crate::bundle::Bundle::from_zip(&bytes)
+            .unwrap()
+            .scan
+            .unwrap()
+    }
+
     /// Runs the scan on the CPU so tests need no GPU adapter.
     fn cpu_scan(req: &WebScanRequest) -> ScanArchive {
         let prep = prepare_scan(req).unwrap();
@@ -257,7 +270,7 @@ mod tests {
         // Debye length at 50 mM NaCl, 298.15 K is about 13.6 Å.
         approx::assert_relative_eq!(yukawa.kappa, 1.0 / 13.6, max_relative = 0.02);
 
-        let restored = ScanArchive::from_bytes(&archive.to_bytes().unwrap()).unwrap();
+        let restored = reloaded(&archive);
         assert_eq!(restored.bodies, archive.bodies);
     }
 
@@ -273,7 +286,7 @@ mod tests {
         );
         req.settings.subdivision = Subdivision::Lattice;
         let archive = cpu_scan(&req);
-        let restored = ScanArchive::from_bytes(&archive.to_bytes().unwrap()).unwrap();
+        let restored = reloaded(&archive);
         assert_eq!(restored.settings.subdivision, Subdivision::Lattice);
         // The table must really be built on the lattice, not just labelled so.
         let level = &restored.table.levels[0];

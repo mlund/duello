@@ -47,6 +47,18 @@ impl PmfPoint {
     }
 }
 
+/// PMF points as CSV, for spreadsheets.
+pub fn pmf_csv(points: &[PmfPoint]) -> String {
+    let mut csv = String::from("R/Å,F/kT,U/kT,C/k\n");
+    for p in points {
+        csv += &format!(
+            "{:.2},{:.4},{:.4},{:.4}\n",
+            p.r, p.free_energy, p.mean_energy, p.energy_variance
+        );
+    }
+    csv
+}
+
 /// Compute PMF/virial from samples without writing files.
 pub fn compute_pmf(samples: &[(Vector3, Sample)]) -> anyhow::Result<PmfResult> {
     let points: Vec<PmfPoint> = samples

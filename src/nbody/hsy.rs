@@ -11,16 +11,30 @@ use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 
 /// Charged hard spheres in 1:1 salt; lengths in Å.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HsyFluid {
     pub diameter: f64,
     /// Spheres per Å³.
     pub number_density: f64,
     /// Net charge per sphere, e.
     pub charge: f64,
-    /// κ⁻¹, Å.
+    /// κ⁻¹, Å; infinite without salt.
+    #[serde(with = "infinite_as_null")]
     pub debye_length: f64,
     pub bjerrum_length: f64,
+}
+
+/// JSON has no ∞, and serde_json would write it as a `null` it can't read back.
+mod infinite_as_null {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(x: &f64, s: S) -> Result<S::Ok, S::Error> {
+        x.is_finite().then_some(*x).serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+        Ok(Option::<f64>::deserialize(d)?.unwrap_or(f64::INFINITY))
+    }
 }
 
 /// User choices that replace the derived sphere parameters; `None` keeps

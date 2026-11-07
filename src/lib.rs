@@ -14,6 +14,7 @@
 
 pub mod archive;
 pub mod backend;
+pub mod bundle;
 #[cfg(feature = "cli")]
 pub mod diffusion;
 pub mod energy;

@@ -1,9 +1,9 @@
-//! A CLI scan saved with `--savescan` must load as a self-contained archive.
+//! A CLI scan saved with `--savescan` must load as a self-contained session.
 
 mod common;
 
 use common::{duello, example, run, workdir};
-use duello::archive::ScanArchive;
+use duello::bundle::Bundle;
 
 #[test]
 fn cli_scan_archive_loads_with_its_results() {
@@ -34,17 +34,19 @@ fn cli_scan_archive_loads_with_its_results() {
             "--backend",
             "reference",
         ])
-        .args(["--savescan", "scan.duello"]));
+        .args(["--savescan", "scan.duello.zip"]));
 
-    let bytes = std::fs::read(dir.join("scan.duello")).unwrap();
-    let archive = ScanArchive::from_bytes(&bytes).unwrap();
+    let bytes = std::fs::read(dir.join("scan.duello.zip")).unwrap();
+    let bundle = Bundle::from_zip(&bytes).unwrap();
+    assert_eq!(bundle.session, Default::default());
+    assert!(bundle.run.is_none());
+    let archive = bundle.scan.unwrap();
 
     // Same golden B2 as characterization.rs::scan_homo_dimer_b2.
     let expected = -240356.77888141517;
     assert!(((archive.virial.b2() - expected) / expected).abs() < 1e-9);
     assert!(archive.settings.homo_dimer);
     assert_eq!(archive.settings.ionic_strength, 0.05);
-    assert_eq!(archive.session, Default::default());
     assert_eq!(archive.settings.model, "custom topology");
     assert_eq!(archive.settings.cutoff, 2000.0); // reference backend: full cutoff
     assert!(!archive.bodies[0].kinds.is_empty());

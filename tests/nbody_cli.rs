@@ -33,10 +33,10 @@ fn nbody_runs_from_a_scan_and_expands_to_xtc() {
             "--backend",
             "reference",
         ])
-        .args(["--savescan", "scan.duello"]));
+        .args(["--savescan", "scan.duello.zip"]));
 
     run(duello(&dir)
-        .args(["nbody", "--scan", "scan.duello", "--bodies", "20"])
+        .args(["nbody", "--scan", "scan.duello.zip", "--bodies", "20"])
         .args(["--protein-molarity", "0.001", "--copies", "2"])
         .args(["--sweeps", "100", "--frame-interval", "10", "-o", "run.1"])
         .args(["--fixed-steps", "--translation", "2", "--rotation", "0.1"])
