@@ -124,7 +124,8 @@ impl Titrating {
     }
 }
 
-/// One point of a titration curve.
+/// One point of a titration curve. Moments are root-mean-square: unlike ⟨μ⟩,
+/// √⟨μ²⟩ is exact for Henderson–Hasselbalch too, so the two curves compare.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CurvePoint {
     pub ph: f64,
@@ -132,26 +133,119 @@ pub struct CurvePoint {
     pub charge: f64,
     /// ⟨Z²⟩ − ⟨Z⟩².
     pub capacitance: f64,
+    /// √⟨μ²⟩, e·Å.
+    pub dipole: f64,
+    /// √⟨‖Θ‖²⟩, e·Å².
+    pub quadrupole: f64,
 }
 
-/// Henderson–Hasselbalch net charge over `ph`; fast enough for a whole curve,
-/// which MC is not. `spec.ph` and `spec.mc_sweeps` are ignored.
-pub fn titration_curve(pdb: &[u8], spec: &MoleculeSpec, ph: &[f64]) -> Result<Vec<CurvePoint>> {
-    let beads = coarse_grain(pdb, spec)?;
-    let point = |&ph| {
-        let at_ph = MoleculeSpec {
-            ph,
-            mc_sweeps: 0,
-            ..spec.clone()
-        };
-        let multipole = at_ph.charge_calc().start(&beads, 0).finish().multipole;
-        CurvePoint {
+impl CurvePoint {
+    fn new(ph: f64, multipole: &Multipole) -> Self {
+        Self {
             ph,
             charge: multipole.charge,
             capacitance: multipole.capacitance(),
+            dipole: multipole.dipole_sq.sqrt(),
+            quadrupole: multipole.quadrupole_sq.sqrt(),
         }
+    }
+}
+
+/// An MC titration curve computed one pH at a time, so it can fill in over many
+/// frames; see [`Curve::advance`]. `spec.ph` is ignored.
+pub struct Curve {
+    beads: Vec<Bead>,
+    spec: MoleculeSpec,
+    ph: Vec<f64>,
+    seed: u64,
+    /// At `ph[points.len()]`.
+    running: Option<Titration>,
+    points: Vec<CurvePoint>,
+    /// Henderson–Hasselbalch for the same beads, computed up front as it's cheap.
+    ideal: Vec<CurvePoint>,
+}
+
+impl Curve {
+    /// MC over `ph`, HH over `ideal_ph`.
+    pub fn start(
+        pdb: &[u8],
+        spec: &MoleculeSpec,
+        ph: &[f64],
+        ideal_ph: &[f64],
+        seed: u64,
+    ) -> Result<Self> {
+        let beads = coarse_grain(pdb, spec)?;
+        let ideal = ideal_ph
+            .iter()
+            .map(|&ph| {
+                let result = titrate(&beads, spec, ph, 0, 0).finish();
+                CurvePoint::new(ph, &result.multipole)
+            })
+            .collect();
+        Ok(Self {
+            beads,
+            spec: spec.clone(),
+            ph: ph.to_vec(),
+            seed,
+            running: None,
+            points: Vec::new(),
+            ideal,
+        })
+    }
+
+    /// Runs at most `max_sweeps` more sweeps, across points; true once all are done.
+    pub fn advance(&mut self, max_sweeps: usize) -> bool {
+        let mut left = max_sweeps;
+        while let Some(&ph) = self.ph.get(self.points.len()) {
+            let titration = self.running.get_or_insert_with(|| {
+                titrate(&self.beads, &self.spec, ph, self.spec.mc_sweeps, self.seed)
+            });
+            // A titration runs exactly `mc_sweeps`, so its progress counts them.
+            let remaining = ((1.0 - titration.progress()) * self.spec.mc_sweeps as f64).round();
+            if !titration.advance(left) {
+                return false;
+            }
+            left = left.saturating_sub(remaining as usize);
+            let result = self.running.take().unwrap().finish();
+            self.points.push(CurvePoint::new(ph, &result.multipole));
+            if left == 0 {
+                break;
+            }
+        }
+        self.is_done()
+    }
+
+    /// Finished points, in pH order.
+    pub fn points(&self) -> &[CurvePoint] {
+        &self.points
+    }
+
+    /// Fraction completed, 0–1.
+    pub fn progress(&self) -> f64 {
+        if self.ph.is_empty() {
+            return 1.0;
+        }
+        let current = self.running.as_ref().map_or(0.0, Titration::progress);
+        (self.points.len() as f64 + current) / self.ph.len() as f64
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.points.len() == self.ph.len()
+    }
+
+    /// Henderson–Hasselbalch points, all there from the start.
+    pub fn ideal(&self) -> &[CurvePoint] {
+        &self.ideal
+    }
+}
+
+fn titrate(beads: &[Bead], spec: &MoleculeSpec, ph: f64, mc_sweeps: usize, seed: u64) -> Titration {
+    let at = MoleculeSpec {
+        ph,
+        mc_sweeps,
+        ..spec.clone()
     };
-    Ok(ph.iter().map(point).collect())
+    at.charge_calc().start(beads, seed)
 }
 
 fn coarse_grain(pdb: &[u8], spec: &MoleculeSpec) -> Result<Vec<Bead>> {
@@ -290,11 +384,38 @@ mod tests {
     #[test]
     fn titration_curve_falls_with_ph() {
         let ph = [3.0, 5.0, 7.0, 9.0, 11.0];
-        let curve = titration_curve(&cif(), &MoleculeSpec::default(), &ph).unwrap();
+        let curve = Curve::start(&cif(), &MoleculeSpec::default(), &[], &ph, 0).unwrap();
+        let curve = curve.ideal();
         assert_eq!(curve.iter().map(|p| p.ph).collect::<Vec<_>>(), ph);
         assert!(curve.windows(2).all(|w| w[1].charge < w[0].charge));
         assert!(curve.iter().all(|p| p.capacitance > 0.0));
         assert!((curve[2].charge - hh_molecule().multipole.charge).abs() < 1e-12);
+    }
+
+    /// The browser fills the MC curve a few sweeps a frame, a point at a time.
+    #[test]
+    fn mc_curve_fills_point_by_point() {
+        let spec = MoleculeSpec {
+            mc_sweeps: 100,
+            ..Default::default()
+        };
+        let mut curve = Curve::start(&cif(), &spec, &[4.0, 7.0, 10.0], &[], 3).unwrap();
+        let (mut counts, mut progress) = (vec![], vec![]);
+        while !curve.advance(40) {
+            counts.push(curve.points().len());
+            progress.push(curve.progress());
+        }
+        assert_eq!(curve.points().len(), 3);
+        assert!(counts.windows(2).all(|w| w[0] <= w[1]) && counts.contains(&1));
+        assert!(progress.windows(2).all(|w| w[0] < w[1]));
+        let points = curve.points();
+        assert!(points.windows(2).all(|w| w[1].charge < w[0].charge));
+        // A frame's budget carries past a finished point: 150 = 100 + 50 sweeps.
+        let mut carried = Curve::start(&cif(), &spec, &[4.0, 7.0, 10.0], &[], 3).unwrap();
+        assert!(!carried.advance(150));
+        assert_eq!(carried.points().len(), 1);
+        assert!((carried.progress() - 1.5 / 3.0).abs() < 1e-12);
+        assert!(points.iter().all(|p| p.dipole > 0.0 && p.quadrupole > 0.0));
     }
 
     /// The browser advances in frame-sized chunks; that mustn't change the answer.
