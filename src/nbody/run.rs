@@ -17,6 +17,49 @@ use std::borrow::Cow;
 use std::future::Future;
 use std::sync::Arc;
 
+/// Energy trace points kept; beyond it the trace is thinned.
+const MAX_TRACE: usize = 10_000;
+
+/// (sweep, U/N) samples, evenly thinned: past `MAX_TRACE` points every
+/// other one goes and only every `stride`-th later sample is kept, so old
+/// and new stretches keep the same density.
+#[derive(Default)]
+struct EnergyTrace {
+    points: Vec<[f64; 2]>,
+    /// Samples per kept point, 0 meaning 1.
+    stride: usize,
+    /// Samples since the last kept one.
+    skipped: usize,
+    /// Bumped by `clear`, so a viewer can tell a restarted trace apart.
+    epoch: u64,
+}
+
+impl EnergyTrace {
+    fn push(&mut self, point: [f64; 2]) {
+        self.skipped += 1;
+        if self.skipped < self.stride.max(1) {
+            return;
+        }
+        self.skipped = 0;
+        if self.points.len() >= MAX_TRACE {
+            let mut keep = false;
+            self.points.retain(|_| {
+                keep = !keep;
+                keep
+            });
+            self.stride = 2 * self.stride.max(1);
+        }
+        self.points.push(point);
+    }
+
+    fn clear(&mut self) {
+        *self = Self {
+            epoch: self.epoch + 1,
+            ..Self::default()
+        };
+    }
+}
+
 /// What to run. `RunSpec::new` fills in defaults for everything but the
 /// system. Saved in `.duello` sessions: a field change needs an archive
 /// `FORMAT_VERSION` bump.
@@ -153,7 +196,9 @@ pub struct NBodyRun {
     frames: usize,
     energy_per_body: f64,
     /// (sweep, U/N) at each equilibration check, for plotting convergence.
-    energy_trace: Vec<[f64; 2]>,
+    energy_trace: EnergyTrace,
+    /// Each copy's energy (kT) at its latest check or frame.
+    copy_energies: Vec<f64>,
     /// Translation and rotation tuners; `None` once frozen or when off.
     tuners: Option<[StepTuner; 2]>,
     steps: (f64, f64),
@@ -230,6 +275,7 @@ impl NBodyRun {
             spec.msa,
             scattering.q(),
         );
+        let copies = spec.copies;
         Ok(Self {
             equilibration: Equilibration::new(spec.criteria),
             spec,
@@ -249,7 +295,8 @@ impl NBodyRun {
             equilibration_sweeps: 0,
             frames: 0,
             energy_per_body: 0.0,
-            energy_trace: Vec::new(),
+            energy_trace: EnergyTrace::default(),
+            copy_energies: vec![0.0; copies],
             tuners: spec_tuners,
             steps: (sampler_spec.translation, sampler_spec.rotation),
             converged: false,
@@ -307,9 +354,24 @@ impl NBodyRun {
         self.samplers.iter_mut().for_each(|s| s.advance(sweeps));
     }
 
-    /// (sweep, U/N) at each equilibration check; empty before the first.
+    /// (sweep, U/N) at each equilibration check, then per batch of
+    /// production frames; production starts it afresh. Thinned to at most
+    /// `MAX_TRACE` points, so plotting a long run stays cheap.
     pub fn energy_trace(&self) -> &[[f64; 2]] {
-        &self.energy_trace
+        &self.energy_trace.points
+    }
+
+    /// Changes whenever the energy trace starts afresh.
+    pub fn energy_trace_epoch(&self) -> u64 {
+        self.energy_trace.epoch
+    }
+
+    /// U/N from every copy's latest energy, so staggered production
+    /// frames don't make the trace hop between copies.
+    fn update_energy(&mut self) {
+        self.energy_per_body = mean(&self.copy_energies) / self.spec.n_bodies as f64;
+        self.energy_trace
+            .push([self.sweep as f64, self.energy_per_body]);
     }
 
     /// The latest configuration of every copy, at any stage; for viewers.
@@ -356,9 +418,8 @@ impl NBodyRun {
             .iter()
             .map(|f| self.energy.frame_energy(f))
             .collect::<Result<Vec<_>>>()?;
-        self.energy_per_body = mean(&energies) / self.spec.n_bodies as f64;
-        self.energy_trace
-            .push([self.sweep as f64, self.energy_per_body]);
+        self.copy_energies.clone_from(&energies);
+        self.update_energy();
         let tuned = self.tune_steps()?;
         let status = self.equilibration.push(self.sweep, &energies);
         // The verdict sticks while the tuners finish, so a later noisy
@@ -413,6 +474,7 @@ impl NBodyRun {
         self.stage = Stage::Production { equilibrated };
         self.equilibrated = equilibrated;
         self.equilibration_sweeps = self.sweep;
+        self.energy_trace.clear();
         Ok(())
     }
 
@@ -459,18 +521,17 @@ impl NBodyRun {
     }
 
     fn observe(&mut self, frames: &[Frame]) -> Result<()> {
-        let mut energies = Vec::with_capacity(frames.len());
         for frame in frames {
             self.scattering.observe(frame)?;
             self.pair_correlation.observe(frame);
-            energies.push(self.energy.observe(frame)?);
+            self.copy_energies[frame.copy] = self.energy.observe(frame)?;
             self.record(frame)?;
             // Only up to a copy's latest frame, so moves and frames agree.
             let moves = self.samplers[frame.copy].take_move_stats();
             self.moves.merge(&moves);
         }
         self.frames += frames.len();
-        self.energy_per_body = mean(&energies) / self.spec.n_bodies as f64;
+        self.update_energy();
         Ok(())
     }
 
@@ -570,7 +631,8 @@ impl NBodyRun {
                 show(moves.rotate.mean_square_displacement())
             ),
             format!("U/N mean: {} kT", per_body(stats.energy.mean)),
-            format!("Var(U)/N: {} kT²", per_body(stats.energy.variance)),
+            // Var(U)/(N (kT)²): the excess heat capacity per molecule in k_B.
+            format!("Cv_ex/(N kB): {}", per_body(stats.energy.variance)),
             self.msa.sphere().describe(),
         ]
         .iter()
@@ -935,6 +997,21 @@ mod tests {
         let sweeps: Vec<f64> = trace.iter().map(|p| p[0]).collect();
         assert_eq!(sweeps, [10.0, 20.0]);
         assert_eq!(trace[1][1], progress.energy_per_body);
+    }
+
+    /// Production restarts the trace, so equilibration's drift doesn't set
+    /// its scale, then extends it with every batch of frames.
+    #[test]
+    fn production_restarts_and_extends_the_energy_trace() {
+        let mut run = NBodyRun::start(&archive_with(true, &["X"], -0.5), spec(), UNIT).unwrap();
+        let started = run_to(&mut run, |s| matches!(s, Stage::Production { .. }));
+        assert!(run.energy_trace().is_empty());
+        let progress = run.step(20).unwrap();
+        let trace = run.energy_trace();
+        assert!(trace.len() >= 2, "{trace:?}");
+        assert!(trace.iter().all(|p| p[0] > started.sweep as f64));
+        assert!(trace.windows(2).all(|w| w[0][0] < w[1][0]));
+        assert_eq!(trace.last().unwrap()[1], progress.energy_per_body);
     }
 
     /// Small steps only split the work: the samplers draw the same random
