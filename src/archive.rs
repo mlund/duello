@@ -142,7 +142,7 @@ impl ScanArchive {
 /// Mass, charge and XYZ are derived rather than stored, so they always describe
 /// the beads a simulation will use.
 impl CgBody {
-    fn new(structure: &Structure, kinds: &[AtomKind]) -> Self {
+    pub(crate) fn new(structure: &Structure, kinds: &[AtomKind]) -> Self {
         Self {
             positions: structure.pos.iter().map(|p| [p.x, p.y, p.z]).collect(),
             masses: structure.masses.clone(),

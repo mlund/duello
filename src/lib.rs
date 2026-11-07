@@ -18,6 +18,7 @@ pub mod backend;
 pub mod diffusion;
 pub mod energy;
 pub mod icoscan;
+pub mod molecule;
 pub mod nbody;
 pub mod report;
 mod sample;

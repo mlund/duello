@@ -19,7 +19,7 @@ use crate::energy::PairMatrix;
 use crate::structure::Structure;
 use anyhow::{Context, Result};
 use faunus::energy::NonbondedMatrix;
-use faunus::interatomic::coulomb::Medium;
+use faunus::interatomic::coulomb::{IonicStrength, Medium, Temperature};
 use faunus::topology::{self, Topology};
 use std::borrow::Cow;
 use std::io::{BufReader, Cursor};
@@ -94,7 +94,7 @@ impl PairSystem {
             structures,
             topology,
             origin,
-        } = Loaded::new(&sources, spec.top, &spec.cg)?;
+        } = Loaded::new(&sources, spec.top, &spec.cg, spec.medium)?;
         let mut structures = structures.into_iter();
         let ref_a = structures.next().context("no structure loaded")?;
         let ref_b = structures.next().unwrap_or_else(|| ref_a.clone());
@@ -154,15 +154,20 @@ impl TopologyOrigin {
 
 /// Structures in input order, all indexing one topology. A single topology is what
 /// gives every cross pair a potential: one per molecule would cover only its own kinds.
-struct Loaded {
-    structures: Vec<Structure>,
-    topology: Topology,
+pub(crate) struct Loaded {
+    pub(crate) structures: Vec<Structure>,
+    pub(crate) topology: Topology,
     origin: TopologyOrigin,
 }
 
 impl Loaded {
     /// Checks for mixed input before reading anything.
-    fn new(sources: &[&Source], top: Option<&Path>, cg: &CgOptions) -> Result<Self> {
+    fn new(
+        sources: &[&Source],
+        top: Option<&Path>,
+        cg: &CgOptions,
+        medium: &Medium,
+    ) -> Result<Self> {
         let formats: Vec<_> = sources.iter().map(|s| s.atomistic_format()).collect();
         if formats.iter().all(Option::is_none) {
             // PDB bytes always have a format, so every source here is an XYZ file.
@@ -184,7 +189,7 @@ impl Loaded {
             .zip(formats.into_iter().flatten())
             .map(|(source, is_pdb)| Ok((source.bytes()?, is_pdb)))
             .collect::<Result<Vec<_>>>()?;
-        Self::from_generated(coarse_grain(&inputs, cg)?)
+        Self::from_generated(coarse_grain(&inputs, cg, medium)?)
     }
 
     fn from_xyz_files(xyz: &[&Path], top: Option<&Path>, cg: &CgOptions) -> Result<Self> {
@@ -210,7 +215,7 @@ impl Loaded {
         })
     }
 
-    fn from_generated(cg: cgkitten::CgSystem) -> Result<Self> {
+    pub(crate) fn from_generated(cg: cgkitten::CgSystem) -> Result<Self> {
         // Self-contained, so there is no file to resolve relative paths against.
         let topology = finalized(Topology::from_str_partial(&cg.topology)?, Path::new("."))?;
         let structures = cg
@@ -247,17 +252,19 @@ fn coarse_grain_format(path: &Path) -> Option<bool> {
     }
 }
 
-fn coarse_grain(inputs: &[(Cow<[u8]>, bool)], cg: &CgOptions) -> Result<cgkitten::CgSystem> {
-    let policy: &dyn cgkitten::CoarseGrain = if cg.single_bead {
-        &cgkitten::SingleBead
-    } else {
-        &cgkitten::MultiBead
-    };
+/// Titrates at the medium's salt and temperature, so charges belong to the scanned solution.
+fn coarse_grain(
+    inputs: &[(Cow<[u8]>, bool)],
+    cg: &CgOptions,
+    medium: &Medium,
+) -> Result<cgkitten::CgSystem> {
     let readers = inputs
         .iter()
         .map(|(bytes, is_pdb)| (BufReader::new(Cursor::new(bytes.as_ref())), *is_pdb));
     let calc = cgkitten::ChargeCalc {
         ph: cg.ph,
+        temperature: medium.temperature(),
+        ionic_strength: medium.ionic_strength().unwrap_or(0.0),
         mc: 10000,
         pka_overrides: cg.pka.clone(),
         ..Default::default()
@@ -266,12 +273,23 @@ fn coarse_grain(inputs: &[(Cow<[u8]>, bool)], cg: &CgOptions) -> Result<cgkitten
         readers,
         &calc,
         &cg.model,
-        policy,
-        0.02,
+        cg_policy(cg.single_bead),
+        MERGE_TOLERANCE,
         cg.scale_hydrophobic,
         &cg.chains,
     )
     .map_err(anyhow::Error::msg)
+}
+
+/// Charges within this merge into one atom kind.
+pub(crate) const MERGE_TOLERANCE: f64 = 0.02;
+
+pub(crate) fn cg_policy(single_bead: bool) -> &'static dyn cgkitten::CoarseGrain {
+    if single_bead {
+        &cgkitten::SingleBead
+    } else {
+        &cgkitten::MultiBead
+    }
 }
 
 #[cfg(test)]
@@ -338,6 +356,29 @@ mod tests {
         low.insert("LYS", -10.0).unwrap();
         assert!(lys_charge(PkaOverrides::default()) > 0.9);
         assert!(lys_charge(low).abs() < 0.01);
+    }
+
+    fn net_charge_2cds(ionic_strength: f64) -> f64 {
+        let cif = example("calvados3/2CDS.cif");
+        let system = PairSystem::load(PairSpec {
+            a: Source::File(&cif),
+            b: None,
+            top: None,
+            cg: CgOptions::default(),
+            medium: &Medium::salt_water(298.15, Salt::SodiumChloride, ionic_strength),
+        })
+        .unwrap();
+        system.ref_a.charges.iter().sum()
+    }
+
+    /// Salt screens site–site repulsion, so the cationic 2CDS charges up as I rises.
+    /// Titration used to run at 0.1 M whatever the scan's salt.
+    #[test]
+    fn titration_uses_the_medium() {
+        let (low, high) = (net_charge_2cds(0.005), net_charge_2cds(0.5));
+        assert!(high - low > 0.3, "Z(0.005 M) = {low}, Z(0.5 M) = {high}");
+        // Measured with the old hard-wired 0.1 M; MC noise is ~0.01.
+        assert!((net_charge_2cds(0.1) - 7.76).abs() < 0.1);
     }
 
     /// Mixed input would need two topologies, which can't give cross pairs a potential.
