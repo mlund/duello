@@ -265,7 +265,7 @@ fn coarse_grain(
         ph: cg.ph,
         temperature: medium.temperature(),
         ionic_strength: medium.ionic_strength().unwrap_or(0.0),
-        mc: 10000,
+        mc: TITRATION_SWEEPS,
         pka_overrides: cg.pka.clone(),
         ..Default::default()
     };
@@ -280,6 +280,9 @@ fn coarse_grain(
     )
     .map_err(anyhow::Error::msg)
 }
+
+/// MC titration length of a scan; per-molecule views use it too, so their charges match.
+pub const TITRATION_SWEEPS: usize = 10000;
 
 /// Charges within this merge into one atom kind.
 pub(crate) const MERGE_TOLERANCE: f64 = 0.02;
