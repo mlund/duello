@@ -98,8 +98,34 @@ fn step8_benchmark() {
         sampler_speed(&energy, n, 0.005, "at 5 mM");
         sampler_speed(&energy, n, 0.028, "at 28 mM (φ≈0.3)");
     }
+    for (n, molarity) in [(200, 0.028), (1000, 0.005)] {
+        run_speed(&archive, n, molarity);
+    }
     gpu::lookup_throughput(&archive);
     scattering_cost(&archive, 200, 0.005);
+}
+
+/// A mass-centre run through equilibration, sweeps plus energy checks, per
+/// sweep; the budget ends before production.
+fn run_speed(archive: &ScanArchive, n: usize, molarity: f64) {
+    let mut spec = super::RunSpec::new(n, molarity);
+    spec.copies = 1;
+    spec.centres_only = true;
+    let check = spec.sweeps_per_check;
+    let formfactors = super::RESIDUE_FORM_FACTORS;
+    let Ok(mut run) = super::NBodyRun::start(archive, spec, formfactors) else {
+        println!("run N={n}: could not start");
+        return;
+    };
+    let sweeps = (40_000 / n).max(10) as u64;
+    let start = Instant::now();
+    run.step(sweeps).unwrap();
+    let per_sweep = start.elapsed().as_secs_f64() / sweeps as f64;
+    println!(
+        "equilibrating run N={n:>4} at {:.0} mM, a check every {check} sweeps: {:.2} ms/sweep",
+        molarity * 1e3,
+        per_sweep * 1e3
+    );
 }
 
 /// One I(q) frame for N lysozymes, to compare with a sweep.

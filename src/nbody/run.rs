@@ -413,15 +413,11 @@ impl NBodyRun {
         if !self.sweep.is_multiple_of(check) {
             return Ok(sweeps);
         }
-        let frames = self.frames();
-        let energies = frames
-            .iter()
-            .map(|f| self.energy.frame_energy(f))
-            .collect::<Result<Vec<_>>>()?;
-        self.copy_energies.clone_from(&energies);
+        // Cached by the samplers: no table lookups per check.
+        self.copy_energies = self.samplers.iter().map(Sampler::total_energy).collect();
         self.update_energy();
         let tuned = self.tune_steps()?;
-        let status = self.equilibration.push(self.sweep, &energies);
+        let status = self.equilibration.push(self.sweep, &self.copy_energies);
         // The verdict sticks while the tuners finish, so a later noisy
         // window can't relabel a converged run.
         self.converged |= status == Status::Converged;
@@ -524,7 +520,10 @@ impl NBodyRun {
         for frame in frames {
             self.scattering.observe(frame)?;
             self.pair_correlation.observe(frame);
-            self.copy_energies[frame.copy] = self.energy.observe(frame)?;
+            // The sampler is still at this frame, so its cached total is the frame's.
+            let u = self.samplers[frame.copy].total_energy();
+            self.energy.add(u);
+            self.copy_energies[frame.copy] = u;
             self.record(frame)?;
             // Only up to a copy's latest frame, so moves and frames agree.
             let moves = self.samplers[frame.copy].take_move_stats();

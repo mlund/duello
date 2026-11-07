@@ -53,11 +53,17 @@ impl EnergyStats {
             self.energy.min_box_length()
         );
         let u = self.total_energy(frame)?;
+        self.add(u);
+        Ok(u)
+    }
+
+    /// Adds a frame's total energy `u` (kT) computed elsewhere, e.g. by a
+    /// sampler that caches its pair energies.
+    pub fn add(&mut self, u: f64) {
         self.frames += 1;
         let delta = u - self.mean;
         self.mean += delta / self.frames as f64;
         self.sum_squared_deviation += delta * (u - self.mean);
-        Ok(u)
     }
 
     pub fn summary(&self) -> EnergySummary {

@@ -1,5 +1,6 @@
 //! Native Metropolis sampler: single-body translate and rotate moves.
 
+use super::pair_cache::PairCache;
 use super::{PairEnergy, PairValue, Pose};
 use crate::{UnitQuaternion, Vector3};
 use anyhow::{bail, ensure, Result};
@@ -105,7 +106,9 @@ pub struct Sampler {
     /// Shared, so copies and observers don't each load the table.
     energy: Arc<PairEnergy>,
     spec: SamplerSpec,
+    /// Change only through `accept`, which keeps `pairs` in step.
     poses: Vec<Pose>,
+    pairs: PairCache,
     sweep: u64,
     /// Pcg64 is portable, so a seed gives the same run natively and in WASM.
     rng: Pcg64,
@@ -126,12 +129,17 @@ impl Sampler {
         let mut sampler = Self {
             energy,
             poses: Vec::with_capacity(spec.n_bodies),
+            pairs: PairCache::new(0, |_, _| 0.0),
             spec,
             sweep: 0,
             rng: Pcg64::seed_from_u64(seed),
             stats: MoveStats::default(),
         };
         sampler.insert_all()?;
+        let (poses, l) = (&sampler.poses, sampler.spec.box_length);
+        let pair =
+            |i: usize, j: usize| finite_or_zero(sampler.energy.energy(&poses[i], &poses[j], l), j);
+        sampler.pairs = PairCache::new(poses.len(), pair);
         Ok(sampler)
     }
 
@@ -159,6 +167,12 @@ impl Sampler {
         std::mem::take(&mut self.stats)
     }
 
+    /// Total energy (kT) of the current poses, kept by the pair cache
+    /// instead of N²/2 table lookups.
+    pub fn total_energy(&self) -> f64 {
+        self.pairs.total()
+    }
+
     pub fn frame(&self) -> Frame {
         Frame {
             copy: 0,
@@ -183,6 +197,11 @@ impl Sampler {
         Ok(())
     }
 
+    fn accept(&mut self, i: usize, trial: Pose, du: f64) {
+        self.poses[i] = trial;
+        self.pairs.commit(i, du);
+    }
+
     fn overlaps_any(&self, pose: &Pose) -> bool {
         let l = self.spec.box_length;
         self.poses
@@ -199,9 +218,10 @@ impl Sampler {
         } else {
             self.rotated(&current)
         };
-        let accepted = self.metropolis(i, &trial);
-        if accepted {
-            self.poses[i] = trial;
+        let du = self.energy_change(i, &trial);
+        let accepted = self.metropolis(du);
+        if let (true, Some(du)) = (accepted, du) {
+            self.accept(i, trial, du);
         }
         let counter = match translate {
             true => &mut self.stats.translate,
@@ -218,22 +238,24 @@ impl Sampler {
         }
     }
 
-    fn metropolis(&mut self, i: usize, trial: &Pose) -> bool {
-        match self.energy_change(i, trial) {
+    /// `du` is `None` for an overlap.
+    fn metropolis(&mut self, du: Option<f64>) -> bool {
+        match du {
             None => false, // overlap
             Some(du) => du <= 0.0 || self.rng.gen::<f64>() < (-du).exp(),
         }
     }
 
-    /// Change in kT if body `i` moved to `trial`; `None` if it would overlap.
-    fn energy_change(&self, i: usize, trial: &Pose) -> Option<f64> {
+    /// Change in kT if body `i` moved to `trial`, staged in the pair cache
+    /// for `accept`; `None` if it would overlap.
+    fn energy_change(&mut self, i: usize, trial: &Pose) -> Option<f64> {
         let l = self.spec.box_length;
         let mut du = 0.0;
         for (j, other) in self.poses.iter().enumerate().filter(|&(j, _)| j != i) {
             let PairValue::Finite(new) = self.energy.energy(trial, other, l) else {
                 return None;
             };
-            du += new - finite_or_zero(self.energy.energy(&self.poses[i], other, l), j);
+            du += self.pairs.stage(i, j, new);
         }
         Some(du)
     }
@@ -322,6 +344,27 @@ mod tests {
             rotation: 0.5,
         };
         Sampler::new(energy.into(), spec, 7).unwrap()
+    }
+
+    /// The cached total must be what a full pair sum gives, as energy
+    /// statistics read it instead of recomputing every pair.
+    #[test]
+    fn total_energy_matches_a_full_pair_sum() {
+        // A well that varies with distance, so pairs differ.
+        let energy = Arc::new(PairEnergy::new(table(|r, _, _| r - 9.0)).unwrap());
+        let spec = SamplerSpec {
+            n_bodies: 20,
+            box_length: 20.0,
+            translation: 3.0,
+            rotation: 0.5,
+        };
+        let mut sampler = Sampler::new(energy.clone(), spec, 3).unwrap();
+        sampler.advance(50);
+        let full = crate::nbody::EnergyStats::new(energy)
+            .frame_energy(&sampler.frame())
+            .unwrap();
+        assert!(full.abs() > 1.0, "test needs interacting bodies: {full}");
+        approx::assert_relative_eq!(sampler.total_energy(), full, max_relative = 1e-5);
     }
 
     #[test]
