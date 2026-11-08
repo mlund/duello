@@ -18,6 +18,7 @@ pub const TRAJECTORY: &str = "manybody/trajectory.traj";
 /// `Session` with each structure's contents moved to its own entry.
 #[derive(Serialize, Deserialize)]
 struct SessionJson {
+    inputs: Option<ScanSettings>,
     structures: Vec<StructureRef>,
     scanned: Option<[usize; 2]>,
     estimate: Option<FreeSaltEstimate>,
@@ -48,6 +49,7 @@ pub fn session_entries(session: &Session) -> Result<Vec<Entry<'_>>> {
     let paths = structure_paths(&session.structures);
     let refs = session.structures.iter().zip(&paths);
     let json = SessionJson {
+        inputs: session.inputs.clone(),
         structures: refs
             .clone()
             .map(|(s, path)| StructureRef {
@@ -100,6 +102,7 @@ pub fn read_session(zip: &mut Reader) -> Result<Session> {
         })
         .collect::<Result<_>>()?;
     let session = Session {
+        inputs: json.inputs,
         structures,
         scanned: json.scanned,
         estimate: json.estimate,

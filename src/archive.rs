@@ -69,6 +69,9 @@ pub struct ScanArchive {
 /// inputs only, never results. Empty when the CLI saved it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Session {
+    /// What the tabs showed when saved; None from the CLI, whose scan
+    /// settings then stand in.
+    pub inputs: Option<ScanSettings>,
     /// Input structures as loaded, so Onebody can be restored.
     pub structures: Vec<StructureFile>,
     /// Indices into `structures` of the scanned pair; None if made elsewhere.

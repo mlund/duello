@@ -14,7 +14,10 @@ fn session() -> Session {
     let mut run = RunSpec::new(200, 0.002);
     run.record_trajectory = true;
     run.msa.debye_length = Some(12.0);
+    let mut inputs = archive().settings;
+    inputs.ph = 4.5;
     Session {
+        inputs: Some(inputs),
         structures: vec![file("4lzt.pdb", b"ATOM 1"), file("1ubq.cif", b"data_")],
         scanned: Some([1, 0]),
         estimate: Some(FreeSaltEstimate {
