@@ -91,9 +91,10 @@ pub fn sigma_warning(pmf: &[PmfPoint], sigma: f64) -> Option<String> {
     ))
 }
 
-/// B₂₂ʳᵉᶠ and what is relative to it: B₂₂* and, under net attraction, K_d and ΔA°.
+/// B₂₂ʳᵉᶠ and what is relative to it: B₂₂* and, under net attraction, K_d and
+/// its energetics at `temperature` (K).
 #[cfg(feature = "cli")]
-fn report_reference(result: &PmfResult) {
+fn report_reference(result: &PmfResult, temperature: f64) {
     let virial = &result.virial;
     info!(
         "Steric reference (hard beads), 𝐵₂ʳᵉᶠ = {:.2} Å³, σ_eff = {:.2} Å",
@@ -105,10 +106,14 @@ fn report_reference(result: &PmfResult) {
         virial.reduced()
     );
     if let Some(association) = crate::Association::new(virial, &result.points) {
+        let molar = association.molar(temperature);
         info!(
-            "Dissociation constant, 𝐾𝑑 = {:.2e} mol/l, ΔA° = {:.2} kT (1 M), relative to 𝐵₂ʳᵉᶠ",
-            association.ka.recip(),
-            association.delta_a()
+            "Dissociation constant, 𝐾𝑑 = {:.2e} mol/l, relative to 𝐵₂ʳᵉᶠ",
+            association.ka.recip()
+        );
+        info!(
+            "Association (1 M): ΔA° = {:.2} kJ/mol, ΔU° = {:.2} kJ/mol, ΔS° = {:.1} J/(K·mol)",
+            molar.delta_a, molar.delta_u, molar.delta_s
         );
     }
 }
@@ -118,6 +123,7 @@ fn report_reference(result: &PmfResult) {
 pub fn report_pmf(
     samples: &[(Vector3, Sample)],
     bodies: [&Structure; 2],
+    temperature: f64,
     path: &std::path::PathBuf,
 ) -> anyhow::Result<()> {
     use anyhow::{bail, Context};
@@ -168,7 +174,7 @@ pub fn report_pmf(
     if let Some(warning) = sigma_warning(&result.points, result.virial.sigma()) {
         warn!("{warning}");
     }
-    report_reference(&result);
+    report_reference(&result, temperature);
 
     info!(
         "Plot: {} and {} along mass center separation. In units of kT and angstroms.",

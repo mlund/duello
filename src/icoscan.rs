@@ -470,7 +470,12 @@ pub fn do_icoscan<B: EnergyBackend + Sync>(config: &ScanConfig, backend: &B) -> 
     }
 
     let bodies = [backend.ref_a(), backend.ref_b()];
-    crate::report::report_pmf(&result.samples, bodies, &config.pmf_file)?;
+    crate::report::report_pmf(
+        &result.samples,
+        bodies,
+        config.params.temperature,
+        &config.pmf_file,
+    )?;
 
     // The archive consumes the result, so the trajectory reads its table.
     let table = match &config.save_scan {

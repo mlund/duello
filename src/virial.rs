@@ -193,10 +193,27 @@ impl Association {
         -self.ka.ln()
     }
 
-    /// −TΔS° = ΔA° − ΔU°
-    pub fn minus_t_delta_s(&self) -> f64 {
-        self.delta_a() - self.delta_u
+    /// ΔA°, ΔU° and ΔS° at `temperature` (K), in the units people quote.
+    pub fn molar(&self, temperature: f64) -> MolarAssociation {
+        let kt = crate::thermal_energy(temperature); // kJ/mol
+        MolarAssociation {
+            delta_a: self.delta_a() * kt,
+            delta_u: self.delta_u * kt,
+            // ΔS°/k = ΔU° − ΔA° in kT, so R times it is J/(K·mol).
+            delta_s: (self.delta_u - self.delta_a()) * kt * 1e3 / temperature,
+        }
     }
+}
+
+/// [`Association`] energetics at a 1 M standard state.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MolarAssociation {
+    /// kJ/mol
+    pub delta_a: f64,
+    /// kJ/mol
+    pub delta_u: f64,
+    /// J/(K·mol)
+    pub delta_s: f64,
 }
 
 /// Above this e^{−w/kT} at σ, the pair still meets there, so B₂₂ depends on R_min.
@@ -332,14 +349,23 @@ mod tests {
         assert_relative_eq!(association.ka, ka, max_relative = 1e-6);
         assert_relative_eq!(association.delta_a(), -ka.ln(), max_relative = 1e-6);
         assert_relative_eq!(association.delta_u, delta_u, max_relative = 1e-6);
-        assert_relative_eq!(
-            association.minus_t_delta_s(),
-            -ka.ln() - delta_u,
-            max_relative = 1e-6
-        );
 
         let repulsive: Vec<_> = (10..20).map(|r| point(r as f64, 2.0, 2.0)).collect();
         assert_eq!(Association::new(&virial_of(&repulsive), &repulsive), None);
+    }
+
+    /// K_a = e² 1/M and ΔU° = −5 kT at 300 K, where kT = 2.494339 kJ/mol:
+    /// ΔA° = −2 kT, and ΔS° = (ΔU° − ΔA°)/T = −3R.
+    #[test]
+    fn association_energetics_in_molar_units() {
+        let association = Association {
+            ka: 2f64.exp(),
+            delta_u: -5.0,
+        };
+        let molar = association.molar(300.0);
+        assert_relative_eq!(molar.delta_a, -4.988678, max_relative = 1e-6);
+        assert_relative_eq!(molar.delta_u, -12.471694, max_relative = 1e-6);
+        assert_relative_eq!(molar.delta_s, -24.943388, max_relative = 1e-6);
     }
 
     #[test]
