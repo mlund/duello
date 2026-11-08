@@ -35,7 +35,7 @@ pub mod web_api;
 pub use sample::Sample;
 /// Shown by front-ends so a result can be traced to the library that produced it.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub use virial::{Association, VirialCoeff};
+pub use virial::{open_at_sigma, weight_at_sigma, Association, VirialCoeff, OPEN_AT_SIGMA};
 
 /// Converts number densities in Å⁻³ to and from mol/L.
 pub(crate) const LITER_PER_CUBIC_ANGSTROM: f64 = 1e-27;

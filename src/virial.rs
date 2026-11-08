@@ -78,6 +78,28 @@ impl VirialCoeff {
             .collect()
     }
 
+    /// B₂₂ as if the scan had started at each R′ ≥ σ, with hard spheres below R′.
+    /// A plateau towards σ means R_min is small enough; the first value is [`Self::b2`]
+    /// when σ lies on the grid, as it does by default.
+    pub fn by_start(pmf: &[PmfPoint], sigma: f64) -> Vec<(f64, f64)> {
+        let shells = shells(pmf, |p| p.r.into(), sigma)
+            .into_iter()
+            .flatten()
+            .collect_vec();
+        // tail = Σ_{R≥R′} Mayer shells
+        let mut by_start = shells
+            .iter()
+            .rev()
+            .scan(0.0, |tail, (p, weight)| {
+                *tail += mayer(p.free_energy.into()) * weight;
+                let r = f64::from(p.r);
+                Some((r, hardsphere(r) - *tail))
+            })
+            .collect_vec();
+        by_start.reverse();
+        by_start
+    }
+
     /// T·∂B₂₂/∂T (Å³) at a fixed pair potential, so the T dependence of εᵣ, κ and
     /// titration is left out; `None` below two points.
     pub fn temperature_slope(pmf: &[PmfPoint], sigma: f64) -> Option<f64> {
@@ -162,6 +184,21 @@ impl Association {
     pub fn minus_t_delta_s(&self) -> f64 {
         self.delta_a() - self.delta_u
     }
+}
+
+/// Above this e^{−w/kT} at σ, the pair still meets there, so B₂₂ depends on R_min.
+pub const OPEN_AT_SIGMA: f64 = 0.01;
+
+/// Whether a [`weight_at_sigma`] is large enough that B₂₂ depends on R_min;
+/// the one rule CLI and GUI share.
+pub fn open_at_sigma(weight: f64) -> bool {
+    weight >= OPEN_AT_SIGMA
+}
+
+/// e^{−w/kT} at σ. The hard-sphere fill below σ is exact only if this is ≈ 0.
+pub fn weight_at_sigma(pmf: &[PmfPoint], sigma: f64) -> Option<f64> {
+    let (p, _) = shells(pmf, |p| p.r.into(), sigma)?.next()?;
+    Some(f64::from(p.free_energy).neg().exp())
 }
 
 /// e^{−βw} − 1, with w in kT.
@@ -284,6 +321,39 @@ mod tests {
 
         let repulsive: Vec<_> = (10..20).map(|r| point(r as f64, 2.0, 2.0)).collect();
         assert_eq!(Association::from_pmf(&repulsive, 10.0), None);
+    }
+
+    #[test]
+    fn weight_at_sigma_is_boltzmann_factor_of_first_point() {
+        let pmf = [
+            point(25.5, 0.0, 0.0),
+            point(26.0, 10f64.ln(), 0.0),
+            point(26.5, 0.0, 0.0),
+        ];
+        assert_relative_eq!(
+            weight_at_sigma(&pmf, 26.0).unwrap(),
+            0.1,
+            max_relative = 1e-6
+        );
+    }
+
+    /// Hard core of diameter 10 Å scanned from σ = 5 Å: any start inside the core gives
+    /// the same B₂₂, the hard sphere 2π·10³/3.
+    #[test]
+    fn b2_by_start_plateaus_inside_a_hard_core() {
+        let pmf: Vec<_> = (0..150)
+            .map(|k| point(5.0 + 0.1 * k as f64, if k < 50 { 50.0 } else { 0.0 }, 0.0))
+            .collect();
+        let by_start = VirialCoeff::by_start(&pmf, 5.0);
+
+        let inside: Vec<_> = by_start.iter().filter(|(r, _)| *r <= 10.0).collect();
+        assert_eq!(inside.len(), 51);
+        for (_, b2) in inside {
+            assert_relative_eq!(*b2, 2094.4, max_relative = 0.02);
+        }
+        let pairs = pmf.iter().map(|p| (p.r, p.free_energy));
+        let b2 = VirialCoeff::from_pmf(pairs, Some(5.0)).unwrap().b2();
+        assert_relative_eq!(by_start[0].1, b2, max_relative = 1e-9);
     }
 
     /// 26.3f32 widens to 26.2999992, below σ = 26.3 in f64.

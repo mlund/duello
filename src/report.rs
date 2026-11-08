@@ -69,6 +69,16 @@ pub fn compute_pmf(samples: &[(Vector3, Sample)]) -> anyhow::Result<PmfResult> {
     Ok(PmfResult { points, virial })
 }
 
+/// Advice when the pair still meets at σ, since the hard-sphere fill below σ then biases B₂₂.
+pub fn sigma_warning(pmf: &[PmfPoint], sigma: f64) -> Option<String> {
+    let weight = crate::weight_at_sigma(pmf, sigma).filter(|&w| crate::open_at_sigma(w))?;
+    Some(format!(
+        "e^(−w/kT) = {weight:.2} at σ = {sigma:.1} Å: the pair still meets there, \
+         so B₂₂ depends on --rmin; scan from a smaller --rmin, \
+         or a smaller --dr if closer R overlap"
+    ))
+}
+
 /// Write PMF and mean energy as a function of mass center separation to file
 #[cfg(feature = "cli")]
 pub fn report_pmf(
@@ -118,6 +128,9 @@ pub fn report_pmf(
             result.virial.mol_ml_per_gram2(mw1, mw2)
         );
     }
+    if let Some(warning) = sigma_warning(&result.points, result.virial.sigma()) {
+        warn!("{warning}");
+    }
 
     info!(
         "Reduced second virial coefficient, 𝐵₂ / 𝐵₂hs = {:.2} using σ = {:.2} Å",
@@ -160,6 +173,26 @@ pub fn report_pmf(
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+
+    fn opening(weight: f64) -> [PmfPoint; 2] {
+        let point = |r, w: f64| PmfPoint {
+            r,
+            free_energy: w as f32,
+            mean_energy: 0.0,
+            energy_variance: 0.0,
+        };
+        [point(26.0, -weight.ln()), point(26.5, 0.0)]
+    }
+
+    #[test]
+    fn warns_only_when_pair_still_meets_at_sigma() {
+        let warning = sigma_warning(&opening(0.12), 26.0).unwrap();
+        assert!(
+            warning.contains("0.12") && warning.contains("--rmin"),
+            "{warning}"
+        );
+        assert_eq!(sigma_warning(&opening(0.001), 26.0), None);
+    }
 
     /// Two levels, 0 and ε, with degeneracies 1 and 3: a Bernoulli variable,
     /// so ⟨δU²⟩ = p(1−p)ε² with p the weight of the ε level.
