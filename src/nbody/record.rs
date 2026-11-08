@@ -1,7 +1,7 @@
 //! A many-body run's inputs and results, detached from the running engine so
 //! they can be saved, reloaded and shown without a scan or GPU.
 
-use super::{HsyFluid, NBodyRun, RdfCurve, RunSpec, RunStats, ScatteringCurve};
+use super::{HsyFluid, Progress, RdfCurve, RunSpec, RunStats, ScatteringCurve, Stage};
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 
@@ -12,7 +12,7 @@ pub struct RunRecord {
     pub spec: RunSpec,
     pub curve: ScatteringCurve,
     pub rdf: RdfCurve,
-    /// (sweep, U/N in kT), as [`NBodyRun::energy_trace`].
+    /// (sweep, U/N in kT), as [`super::NBodyRun::energy_trace`].
     pub energy: Vec<[f64; 2]>,
     pub stats: RunStats,
     /// False if the sweep cap was reached first.
@@ -22,20 +22,22 @@ pub struct RunRecord {
     pub sweeps: u64,
     /// The charged sphere behind `curve.s_hsy`.
     pub sphere: HsyFluid,
-    /// Saved apart, as it can reach hundreds of MB.
-    #[serde(skip)]
-    pub trajectory: Option<Vec<u8>>,
+    /// mol/L, of the scan the run used; the session may hold another.
+    pub ionic_strength: f64,
+    /// Recording stopped at its size cap, so the trajectory is cut short.
+    pub trajectory_capped: bool,
 }
 
 impl RunRecord {
-    /// Copies the trajectory too, when the run recorded one.
-    pub fn from_run(run: &NBodyRun) -> Result<Self> {
-        let trajectory = run
-            .spec()
-            .record_trajectory
-            .then(|| run.trajectory_bytes().map(|b| b.into_owned()))
-            .transpose()?;
-        Ok(run.snapshot(trajectory))
+    /// Where the run ended, as its last [`Progress`] read once stopped.
+    pub fn final_progress(&self) -> Progress {
+        Progress {
+            stage: Stage::Stopped,
+            sweep: self.sweeps,
+            energy_per_body: self.energy.last().map_or(0.0, |&[_, u]| u),
+            frames: self.stats.energy.frames,
+            recording: self.spec.record_trajectory && !self.trajectory_capped,
+        }
     }
 
     /// Curve code zips these vectors, so an opened file must agree on lengths.

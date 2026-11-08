@@ -24,14 +24,19 @@ pub struct Bundle {
     pub session: Session,
     pub scan: Option<ScanArchive>,
     pub run: Option<RunRecord>,
+    /// The run's, if it recorded one; apart from `run` so a save can borrow
+    /// it from the running engine instead of copying hundreds of MB.
+    pub trajectory: Option<Vec<u8>>,
 }
 
-/// A session to save, borrowed from wherever its parts live.
+/// A session to save, borrowed from wherever its parts live. A trajectory
+/// is saved only with its run.
 #[derive(Clone, Copy)]
 pub struct BundleRef<'a> {
     pub session: &'a Session,
     pub scan: Option<&'a ScanArchive>,
     pub run: Option<&'a RunRecord>,
+    pub trajectory: Option<&'a [u8]>,
 }
 
 /// Results written for readers but never read back, because they can be
@@ -60,6 +65,7 @@ impl Bundle {
             session: &self.session,
             scan: self.scan.as_ref(),
             run: self.run.as_ref(),
+            trajectory: self.trajectory.as_deref(),
         }
     }
 
@@ -74,7 +80,10 @@ impl Bundle {
                 .then(|| canonical::read_scan(&mut zip))
                 .transpose()?,
             run: has(Part::Manybody)
-                .then(|| canonical::read_run(&mut zip, has(Part::Trajectory)))
+                .then(|| canonical::read_run(&mut zip))
+                .transpose()?,
+            trajectory: has(Part::Trajectory)
+                .then(|| zip.bytes(canonical::TRAJECTORY))
                 .transpose()?,
         })
     }
@@ -88,7 +97,7 @@ impl BundleRef<'_> {
             entries.extend(extracts::twobody(scan));
         }
         if let Some(run) = self.run {
-            entries.extend(canonical::run_entries(run)?);
+            entries.extend(canonical::run_entries(run, self.trajectory)?);
             entries.extend(extracts::manybody(run));
         }
         entries.extend(onebody::entries(&extracts.molecules));
@@ -101,7 +110,7 @@ impl BundleRef<'_> {
 
     /// The session itself is always present, so it isn't listed.
     fn parts(&self) -> Vec<Part> {
-        let trajectory = self.run.is_some_and(|r| r.trajectory.is_some());
+        let trajectory = self.run.is_some() && self.trajectory.is_some();
         [
             (Part::Twobody, self.scan.is_some()),
             (Part::Manybody, self.run.is_some()),

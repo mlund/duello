@@ -505,6 +505,7 @@ fn save_archive<B: EnergyBackend>(
         session: &Default::default(),
         scan: Some(&archive),
         run: None,
+        trajectory: None,
     };
     std::fs::write(&save.path, bundle.to_zip(&Default::default())?)?;
     Ok(archive)

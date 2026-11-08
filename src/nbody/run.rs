@@ -599,11 +599,12 @@ impl NBodyRun {
 
     /// Curve and statistics as CSV.
     pub fn report_csv(&self) -> String {
-        self.snapshot(None).report_csv()
+        self.results().report_csv()
     }
 
-    /// Results so far, with `trajectory` attached as given.
-    pub(super) fn snapshot(&self, trajectory: Option<Vec<u8>>) -> RunRecord {
+    /// Results so far; the trajectory, which can be large, is
+    /// [`Self::trajectory_bytes`].
+    pub fn results(&self) -> RunRecord {
         RunRecord {
             spec: self.spec.clone(),
             curve: self.curve(),
@@ -614,7 +615,8 @@ impl NBodyRun {
             equilibration_sweeps: self.equilibration_sweeps,
             sweeps: self.sweep,
             sphere: self.msa.sphere().clone(),
-            trajectory,
+            ionic_strength: self.archive_settings.ionic_strength,
+            trajectory_capped: self.capped,
         }
     }
 

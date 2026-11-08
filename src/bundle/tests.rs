@@ -28,21 +28,23 @@ fn session() -> Session {
     }
 }
 
-/// A short real run into production, recording a trajectory, so the
-/// record holds what a saved run would.
-fn run_record() -> RunRecord {
+/// A short real run into production and its trajectory, so the record
+/// holds what a saved run would.
+fn run_record() -> (RunRecord, Vec<u8>) {
     use crate::nbody::run_tests::{archive, run_to, spec, UNIT};
     let mut run = NBodyRun::start(&archive(true, &["X"]), spec(), UNIT).unwrap();
     run_to(&mut run, |s| matches!(s, Stage::Production { .. }));
     run.step(10).unwrap();
-    RunRecord::from_run(&run).unwrap()
+    (run.results(), run.trajectory_bytes().unwrap().into_owned())
 }
 
 fn full() -> Bundle {
+    let (run, trajectory) = run_record();
     Bundle {
         session: session(),
         scan: Some(archive()),
-        run: Some(run_record()),
+        run: Some(run),
+        trajectory: Some(trajectory),
     }
 }
 
@@ -80,7 +82,8 @@ fn a_session_with_a_scan_and_a_run_round_trips() {
         original.scan.as_ref().unwrap(),
     );
     let run = original.run.as_ref().unwrap();
-    assert!(run.trajectory.as_ref().is_some_and(|t| !t.is_empty()));
+    assert!(original.trajectory.as_ref().is_some_and(|t| t.len() > 100));
+    assert_eq!(restored.trajectory, original.trajectory);
     assert!(
         run.curve.frames > 0,
         "the fixture should have production frames"
@@ -422,7 +425,7 @@ fn the_ro_crate_describes_every_entry_in_the_zip() {
 /// Salt-free runs have an unscreened sphere, which JSON can't write as a number.
 #[test]
 fn an_infinite_debye_length_round_trips() {
-    let mut run = run_record();
+    let (mut run, _) = run_record();
     run.sphere.debye_length = f64::INFINITY;
     let bundle = Bundle {
         run: Some(run.clone()),
@@ -435,7 +438,7 @@ fn an_infinite_debye_length_round_trips() {
 #[test]
 fn a_run_with_mismatched_curve_lengths_is_refused() {
     let bundle = Bundle {
-        run: Some(run_record()),
+        run: Some(run_record().0),
         ..Default::default()
     };
     let zip = bundle.to_zip(&Extracts::default()).unwrap();

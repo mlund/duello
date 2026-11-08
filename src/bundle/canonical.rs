@@ -172,17 +172,17 @@ fn check_scan(scan: &ScanArchive) -> Result<()> {
     Ok(())
 }
 
-pub fn run_entries(run: &RunRecord) -> Result<Vec<Entry<'_>>> {
+pub fn run_entries<'a>(run: &RunRecord, trajectory: Option<&'a [u8]>) -> Result<Vec<Entry<'a>>> {
     let mut entries = vec![Entry::json(
         RUN,
         run,
         "Many-body inputs and results: S(q), g(r), energy trace, move statistics",
     )?];
-    if let Some(trajectory) = &run.trajectory {
+    if let Some(trajectory) = trajectory {
         entries.push(
             Entry::new(
                 TRAJECTORY,
-                trajectory.as_slice(),
+                trajectory,
                 "application/octet-stream",
                 "Many-body trajectory; `duello nbody-expand` turns it into XTC",
             )
@@ -192,11 +192,8 @@ pub fn run_entries(run: &RunRecord) -> Result<Vec<Entry<'_>>> {
     Ok(entries)
 }
 
-pub fn read_run(zip: &mut Reader, with_trajectory: bool) -> Result<RunRecord> {
-    let mut run: RunRecord = zip.json(RUN)?;
+pub fn read_run(zip: &mut Reader) -> Result<RunRecord> {
+    let run: RunRecord = zip.json(RUN)?;
     run.check_consistency()?;
-    if with_trajectory {
-        run.trajectory = Some(zip.bytes(TRAJECTORY)?);
-    }
     Ok(run)
 }
