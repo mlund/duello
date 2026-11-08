@@ -14,9 +14,7 @@ pub struct Steric {
 
 impl Steric {
     pub fn new(a: &Structure, b: &Structure) -> Self {
-        let covered: Vec<_> = orientations()
-            .map(|(n, q)| overlap_intervals(a, &rotated(b, &q), &b.radii, &n))
-            .collect();
+        let covered = covered(a, b, 1.0);
         let volume: f64 = covered
             .iter()
             .flatten()
@@ -37,6 +35,62 @@ impl Steric {
     pub fn overlap(&self) -> &[(f64, f64)] {
         &self.profile
     }
+}
+
+/// Radii scale for the core: soft beads at full contact cost only ~ε, so the pair
+/// is excluded only well inside it.
+pub const CORE_RADIUS_SCALE: f64 = 0.85;
+
+/// Largest R at which every sampled orientation overlaps, with radii scaled by
+/// [`CORE_RADIUS_SCALE`] (Å). Below it e^{−w/kT} ≈ 0, so a scan may start there.
+pub fn core_distance(a: &Structure, b: &Structure) -> f64 {
+    covered(a, b, CORE_RADIUS_SCALE)
+        .iter()
+        .map(|spans| match spans.first() {
+            Some(&(0.0, hi)) => hi,
+            _ => 0.0, // open at R = 0, e.g. B's centre in a cavity of A
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// Scan start: [`core_distance`] snapped down onto the `dr` grid, so σ is a round grid value.
+pub fn auto_rmin(a: &Structure, b: &Structure, dr: f64) -> f64 {
+    // The epsilon keeps a core on a grid value from dropping a bin to rounding.
+    (core_distance(a, b) / dr + 1e-9).floor() * dr
+}
+
+/// The scan's R_min: `rmin` if given, else [`auto_rmin`]. The one rule CLI and web share.
+pub fn resolve_rmin(
+    rmin: Option<f64>,
+    [a, b]: [&Structure; 2],
+    dr: f64,
+    rmax: f64,
+) -> anyhow::Result<f64> {
+    anyhow::ensure!(dr > 0.0, "ΔR must be positive, not {dr}");
+    let rmin = match rmin {
+        Some(rmin) => rmin,
+        None => {
+            let auto = auto_rmin(a, b, dr);
+            anyhow::ensure!(
+                auto > 0.0,
+                "No R at which every orientation overlaps, e.g. an open or hollow shape; set R_min by hand"
+            );
+            log::info!("R_min = {auto:.1} Å from bead overlap");
+            auto
+        }
+    };
+    anyhow::ensure!(
+        rmin < rmax,
+        "R_min ({rmin:.1} Å) must be below R_max ({rmax:.1} Å)"
+    );
+    Ok(rmin)
+}
+
+/// Each orientation's overlap intervals, radii scaled by `scale`.
+fn covered(a: &Structure, b: &Structure, scale: f64) -> Vec<Vec<(f64, f64)>> {
+    orientations()
+        .map(|(n, q)| overlap_intervals(a, &rotated(b, &q), &b.radii, &n, scale))
+        .collect()
 }
 
 /// Grid of the overlap profile (Å); B₂₂ʳᵉᶠ itself is exact per orientation.
@@ -87,6 +141,7 @@ fn overlap_intervals(
     b_pos: &[Vector3],
     b_radii: &[f64],
     n: &Vector3,
+    scale: f64,
 ) -> Vec<(f64, f64)> {
     let mut spans: Vec<(f64, f64)> = a
         .pos
@@ -96,7 +151,7 @@ fn overlap_intervals(
             b_pos.iter().zip(b_radii).filter_map(move |(pb, rb)| {
                 let d = pa - pb;
                 let along = n.dot(&d);
-                let disc = along * along - d.norm_squared() + (ra + rb).powi(2);
+                let disc = along * along - d.norm_squared() + (scale * (ra + rb)).powi(2);
                 let half = (disc > 0.0).then(|| disc.sqrt())?;
                 let hi = along + half;
                 (hi > 0.0).then_some(((along - half).max(0.0), hi))
@@ -142,6 +197,12 @@ mod tests {
         assert_relative_eq!(steric.b2(), 2.0 * PI * 125.0 / 3.0, max_relative = 0.01);
     }
 
+    #[test]
+    fn core_of_two_spheres_is_the_scaled_contact() {
+        let core = core_distance(&beads(&[([0.0; 3], 2.0)]), &beads(&[([0.0; 3], 3.0)]));
+        assert_relative_eq!(core, 0.85 * 5.0, epsilon = 0.25);
+    }
+
     /// Tangent dimer (beads d/2 at ±d/2) against a bead d/2, d = 4 Å.
     fn dimer_and_sphere() -> (Structure, Structure) {
         let dimer = beads(&[([0.0, 0.0, 2.0], 2.0), ([0.0, 0.0, -2.0], 2.0)]);
@@ -155,6 +216,22 @@ mod tests {
         let (dimer, sphere) = dimer_and_sphere();
         let b2 = 9.0 * PI * 64.0 / 8.0;
         assert_relative_eq!(Steric::new(&dimer, &sphere).b2(), b2, max_relative = 0.02);
+    }
+
+    /// Core 4.25 Å snaps down to the 0.5 Å grid.
+    #[test]
+    fn auto_rmin_snaps_down_onto_the_dr_grid() {
+        let (a, b) = (beads(&[([0.0; 3], 2.0)]), beads(&[([0.0; 3], 3.0)]));
+        assert_eq!(auto_rmin(&a, &b, 0.5), 4.0);
+    }
+
+    /// Side-on is the worst direction: every orientation overlaps while
+    /// √(R² + d²/4) < 0.85d, so the core is d·√(0.85² − ¼); end-on alone would give 0.85d + d/2.
+    #[test]
+    fn core_of_a_tangent_dimer_is_set_side_on() {
+        let (dimer, sphere) = dimer_and_sphere();
+        let side_on = 4.0 * (0.85f64.powi(2) - 0.25).sqrt();
+        assert_relative_eq!(core_distance(&dimer, &sphere), side_on, epsilon = 0.01);
     }
 
     /// Every orientation overlaps while √(R² + d²/4) < d (side-on), none from 3d/2 (end-on).

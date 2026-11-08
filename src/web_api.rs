@@ -33,6 +33,8 @@ struct PreparedScan {
     sr_splines: SplinedPotentials,
     system: PairSystem,
     medium: Medium,
+    /// The request's, with R_min settled: an auto one needs the bodies.
+    settings: ScanSettings,
 }
 
 fn prepare_scan(req: &WebScanRequest) -> anyhow::Result<PreparedScan> {
@@ -69,15 +71,25 @@ fn prepare_scan(req: &WebScanRequest) -> anyhow::Result<PreparedScan> {
         .pair_matrix
         .create_sr_splines(settings.cutoff, spline_config);
 
+    let rmin = crate::steric::resolve_rmin(
+        (!settings.rmin_auto).then_some(settings.rmin),
+        [&system.ref_a, &system.ref_b],
+        settings.dr,
+        settings.rmax,
+    )?;
     Ok(PreparedScan {
         sr_splines,
         system,
         medium,
+        settings: ScanSettings {
+            rmin,
+            ..settings.clone()
+        },
     })
 }
 
-fn build_scan_params(req: &WebScanRequest, prep: &PreparedScan) -> ScanParams {
-    let settings = &req.settings;
+fn build_scan_params(prep: &PreparedScan) -> ScanParams {
+    let settings = &prep.settings;
     ScanParams {
         rmin: settings.rmin,
         rmax: settings.rmax,
@@ -101,7 +113,6 @@ fn build_scan_params(req: &WebScanRequest, prep: &PreparedScan) -> ScanParams {
 }
 
 fn build_result(
-    req: &WebScanRequest,
     prep: &PreparedScan,
     params: &ScanParams,
     scan: ScanResult,
@@ -109,7 +120,7 @@ fn build_result(
     let system = &prep.system;
     let topology_yaml = system.generated.as_ref().map(|cg| cg.topology.clone());
     ScanArchive::from_scan(
-        req.settings.clone(),
+        prep.settings.clone(),
         params,
         scan,
         [&system.ref_a, &system.ref_b],
@@ -120,16 +131,15 @@ fn build_result(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn finish_scan(
-    req: &WebScanRequest,
     prep: &PreparedScan,
     backend: &(impl EnergyBackend + Sync),
     progress: OnProgress,
 ) -> anyhow::Result<WebScanResult> {
-    let scan_params = build_scan_params(req, prep);
+    let scan_params = build_scan_params(prep);
 
     log::info!("Running 6D scan...");
     let scan_result = compute_scan(&scan_params, backend, progress)?;
-    build_result(req, prep, &scan_params, scan_result)
+    build_result(prep, &scan_params, scan_result)
 }
 
 /// Run the complete scan pipeline asynchronously (required for WASM).
@@ -148,11 +158,11 @@ pub async fn run_scan_async(
     )
     .await?;
 
-    let scan_params = build_scan_params(&req, &prep);
+    let scan_params = build_scan_params(&prep);
 
     log::info!("Running 6D scan (async)...");
     let scan_result = compute_scan_async(&scan_params, &backend, progress).await?;
-    build_result(&req, &prep, &scan_params, scan_result)
+    build_result(&prep, &scan_params, scan_result)
 }
 
 /// Run the complete scan pipeline from PDB bytes to PMF results.
@@ -170,7 +180,7 @@ pub fn run_scan(req: WebScanRequest, progress: OnProgress) -> anyhow::Result<Web
         prep.system.pair_matrix.coulomb_params(),
     )?;
 
-    finish_scan(&req, &prep, &backend, progress)
+    finish_scan(&prep, &backend, progress)
 }
 
 #[cfg(test)]
@@ -213,6 +223,7 @@ mod tests {
                 model: "calvados3".into(),
                 single_bead: true,
                 rmin: 20.0,
+                rmin_auto: false,
                 rmax: 24.0,
                 dr: 2.0,
                 ionic_strength: 0.05,
@@ -246,7 +257,7 @@ mod tests {
         let energy = prepare_scan(req).unwrap().system;
         let backend =
             crate::backend::cpu::CpuBackend::new(energy.ref_a, energy.ref_b, energy.pair_matrix);
-        finish_scan(req, &prep, &backend, None).unwrap()
+        finish_scan(&prep, &backend, None).unwrap()
     }
 
     #[test]

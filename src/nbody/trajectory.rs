@@ -320,6 +320,7 @@ mod tests {
                 model: "calvados3".into(),
                 single_bead: true,
                 rmin: 20.0,
+                rmin_auto: false,
                 rmax: 60.0,
                 dr: 0.5,
                 ionic_strength: 0.05,

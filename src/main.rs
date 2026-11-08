@@ -340,9 +340,9 @@ enum Commands {
         /// Path to second structure file (XYZ, PDB, or mmCIF)
         #[arg(short = '2', long)]
         mol2: PathBuf,
-        /// Minimum mass center distance
+        /// Minimum mass center distance; by default where every orientation overlaps
         #[arg(long)]
-        rmin: f64,
+        rmin: Option<f64>,
         /// Maximum mass center distance
         #[arg(long)]
         rmax: f64,
@@ -480,11 +480,11 @@ fn save_generated(inputs: &[&PathBuf], generated: Option<&CgSystem>) -> Result<(
 fn save_scan_request(
     cmd: &Commands,
     path: PathBuf,
+    (rmin, rmin_auto): (f64, bool),
     homo_dimer: bool,
     generated: Option<&cgkitten::CgSystem>,
 ) -> Result<icoscan::SaveScan> {
     let Commands::Scan {
-        rmin,
         rmax,
         dr,
         topology: top_file,
@@ -518,7 +518,8 @@ fn save_scan_request(
         ph: cg.ph,
         model,
         single_bead: cg.single_bead,
-        rmin: *rmin,
+        rmin,
+        rmin_auto,
         rmax: *rmax,
         dr: *dr,
         ionic_strength: *ionic_strength,
@@ -572,7 +573,12 @@ fn do_scan(cmd: &Commands) -> Result<()> {
     else {
         bail!("Unknown command");
     };
-    assert!(rmin < rmax);
+    // Explicit ranges fail before coarse-graining, so `--check` catches them.
+    anyhow::ensure!(
+        rmin.is_none_or(|rmin| rmin < *rmax),
+        "R_min ({:.1} Å) must be below R_max ({rmax:.1} Å)",
+        rmin.unwrap_or_default()
+    );
 
     // Canonical paths, so `x.cif` and `./x.cif` count as the same molecule.
     let canonical = |p: &PathBuf| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
@@ -611,6 +617,8 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         return input_ok();
     }
     save_generated(loaded, generated.as_ref())?;
+    let rmin_auto = rmin.is_none();
+    let rmin = duello::steric::resolve_rmin(*rmin, [&ref_a, &ref_b], *dr, *rmax)?;
 
     info!("{medium}");
     info!(
@@ -650,7 +658,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
 
     let scan_config = icoscan::ScanConfig {
         params: icoscan::ScanParams {
-            rmin: *rmin,
+            rmin,
             rmax: *rmax,
             dr: *dr,
             temperature: *temperature,
@@ -669,7 +677,9 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         atom_kinds: topology.atomkinds().to_vec(),
         save_scan: savescan
             .clone()
-            .map(|path| save_scan_request(cmd, path, homo_dimer, generated.as_ref()))
+            .map(|path| {
+                save_scan_request(cmd, path, (rmin, rmin_auto), homo_dimer, generated.as_ref())
+            })
             .transpose()?,
     };
 

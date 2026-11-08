@@ -27,6 +27,10 @@ pub struct ScanSettings {
     pub model: String,
     pub single_bead: bool,
     pub rmin: f64,
+    /// `rmin` came from bead overlap ([`crate::steric::auto_rmin`]) at scan start.
+    /// Defaulted, as older trajectory headers had an explicit one.
+    #[serde(default)]
+    pub rmin_auto: bool,
     pub rmax: f64,
     pub dr: f64,
     #[serde(alias = "molarity")]
@@ -276,6 +280,7 @@ pub(crate) mod tests {
                 model: "calvados3".into(),
                 single_bead: true,
                 rmin: 5.0,
+                rmin_auto: false,
                 rmax: 7.0,
                 dr: 1.0,
                 ionic_strength: 0.5,
