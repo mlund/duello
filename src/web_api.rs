@@ -22,6 +22,8 @@ use faunus::interatomic::twobody::SplineConfig;
 pub struct WebScanRequest {
     pub mol1_pdb: Vec<u8>,
     pub mol2_pdb: Vec<u8>,
+    /// Chain IDs each molecule keeps; empty keeps all.
+    pub chains: [Vec<String>; 2],
     pub settings: ScanSettings,
 }
 
@@ -52,6 +54,7 @@ fn prepare_scan(req: &WebScanRequest) -> anyhow::Result<PreparedScan> {
         a: Source::PdbBytes(&req.mol1_pdb),
         b: (!settings.homo_dimer).then_some(Source::PdbBytes(&req.mol2_pdb)),
         top: None,
+        chains: req.chains.each_ref().map(Vec::as_slice),
         cg: CgOptions {
             ph: settings.ph,
             model: settings.model.clone(),
@@ -184,12 +187,23 @@ pub fn run_scan(req: WebScanRequest, progress: OnProgress) -> anyhow::Result<Web
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::Subdivision;
 
-    /// Fixed-column PDB with backbone + CB per residue; residues are spaced along x.
+    /// One chain A; see [`pdb_chains`].
     fn pdb(residues: &[&str]) -> Vec<u8> {
+        pdb_chains(&[("A", residues)])
+    }
+
+    /// Chain A: ALA GLY SER; chain B: ALA GLY.
+    pub(crate) fn two_chains() -> Vec<u8> {
+        pdb_chains(&[("A", &["ALA", "GLY", "SER"]), ("B", &["ALA", "GLY"])])
+    }
+
+    /// Fixed-column PDB with backbone + CB per residue; residues are spaced along x,
+    /// chains along z so they don't overlap.
+    fn pdb_chains(chains: &[(&str, &[&str])]) -> Vec<u8> {
         let atoms = [
             ("N", -1.2),
             ("CA", 0.0),
@@ -199,16 +213,18 @@ mod tests {
         ];
         let mut out = String::new();
         let mut serial = 1;
-        for (i, res) in residues.iter().enumerate() {
-            for (name, dx) in atoms {
-                let (x, y) = (3.8 * i as f64 + dx, if name == "CB" { 1.5 } else { 0.0 });
-                let element = &name[..1];
-                out += &format!(
-                    "ATOM  {serial:>5}  {name:<3} {res:>3} A{seq:>4}    {x:>8.3}{y:>8.3}{z:>8.3}  1.00  0.00          {element:>2}\n",
-                    seq = i + 1,
-                    z = 0.0,
-                );
-                serial += 1;
+        for (c, (chain, residues)) in chains.iter().enumerate() {
+            for (i, res) in residues.iter().enumerate() {
+                for (name, dx) in atoms {
+                    let (x, y) = (3.8 * i as f64 + dx, if name == "CB" { 1.5 } else { 0.0 });
+                    let element = &name[..1];
+                    out += &format!(
+                        "ATOM  {serial:>5}  {name:<3} {res:>3} {chain}{seq:>4}    {x:>8.3}{y:>8.3}{z:>8.3}  1.00  0.00          {element:>2}\n",
+                        seq = i + 1,
+                        z = 10.0 * c as f64,
+                    );
+                    serial += 1;
+                }
             }
         }
         out.into_bytes()
@@ -218,6 +234,7 @@ mod tests {
         WebScanRequest {
             mol1_pdb: pdb(mol1),
             mol2_pdb: pdb(mol2),
+            chains: Default::default(),
             settings: ScanSettings {
                 ph: 7.0,
                 model: "calvados3".into(),

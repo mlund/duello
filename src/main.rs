@@ -88,7 +88,6 @@ impl CgArgs {
             model: self.model.clone(),
             single_bead: matches!(self.cg, CgPolicy::Single),
             scale_hydrophobic,
-            chains: self.chain.clone(),
             pka,
         })
     }
@@ -610,6 +609,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         a: Source::File(mol1),
         b: (!homo_dimer).then_some(Source::File(mol2)),
         top: top_file.as_deref(),
+        chains: [&cg.chain, &cg.chain],
         cg: cg.options()?,
         medium: &medium,
     })?;
@@ -765,6 +765,7 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
         a: Source::File(mol1),
         b: None,
         top: top_file.as_deref(),
+        chains: [&cg.chain, &cg.chain],
         cg: cg.options()?,
         medium: &medium,
     })?;

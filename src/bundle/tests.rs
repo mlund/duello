@@ -7,9 +7,10 @@ use icotable::lookup::Lookup6D;
 /// Two loaded structures, both scanned, a free-salt estimate and the
 /// many-body inputs.
 fn session() -> Session {
-    let file = |name: &str, contents: &[u8]| StructureFile {
+    let file = |name: &str, contents: &[u8], chains: &[&str]| StructureFile {
         name: name.into(),
         contents: contents.to_vec(),
+        chains: chains.iter().map(|c| c.to_string()).collect(),
     };
     let mut run = RunSpec::new(200, 0.002);
     run.record_trajectory = true;
@@ -18,7 +19,10 @@ fn session() -> Session {
     inputs.ph = 4.5;
     Session {
         inputs: Some(inputs),
-        structures: vec![file("4lzt.pdb", b"ATOM 1"), file("1ubq.cif", b"data_")],
+        structures: vec![
+            file("4lzt.pdb", b"ATOM 1", &["A", "B"]),
+            file("1ubq.cif", b"data_", &[]),
+        ],
         scanned: Some([1, 0]),
         estimate: Some(FreeSaltEstimate {
             reservoir: 0.02,

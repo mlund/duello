@@ -1,13 +1,14 @@
 //! One structure, coarse-grained and titrated on its own, for per-molecule analysis.
 //! Titration is incremental so a single-threaded front-end can stay responsive.
-//! Kinds and parameters come from the same topology step as a scan; pKa overrides,
-//! chain filters and hydrophobic scaling aren't offered here.
+//! Kinds and parameters come from the same topology step as a scan; pKa overrides
+//! and hydrophobic scaling aren't offered here.
 
 use crate::archive::CgBody;
-use crate::system::{cg_policy, Loaded, MERGE_TOLERANCE};
+use crate::system::{cg_policy, keep_chains, Loaded, MERGE_TOLERANCE};
 use anyhow::{Context, Result};
 use cgkitten::forcefield::{self, HydrophobicScaling};
-use cgkitten::{Bead, ChargeCalc, ChargeResult, Multipole, Titration};
+use cgkitten::{Bead, ChargeCalc, ChargeResult, Multipole, ResidueKey, Titration};
+use std::collections::HashSet;
 
 /// What to build and under which conditions.
 #[derive(Clone, Debug, PartialEq)]
@@ -22,6 +23,8 @@ pub struct MoleculeSpec {
     pub temperature: f64,
     /// Monte Carlo sweeps; 0 = Henderson–Hasselbalch.
     pub mc_sweeps: usize,
+    /// Chain IDs to keep; empty keeps all.
+    pub chains: Vec<String>,
 }
 
 impl Default for MoleculeSpec {
@@ -33,6 +36,7 @@ impl Default for MoleculeSpec {
             ionic_strength: 0.1,
             temperature: 298.15,
             mc_sweeps: 0,
+            chains: Vec::new(),
         }
     }
 }
@@ -47,6 +51,29 @@ impl MoleculeSpec {
             ..Default::default()
         }
     }
+}
+
+/// Chains in file order with their residue counts, for choosing which to keep.
+/// Counts what the parser keeps (no water), so ligands count but get no bead.
+pub fn chains(contents: &[u8]) -> Vec<(String, usize)> {
+    let mut seen = HashSet::new();
+    let mut found: Vec<(String, usize)> = Vec::new();
+    for atom in cgkitten::atoms_bytes(contents) {
+        let residue = ResidueKey {
+            chain_id: atom.chain_id,
+            res_seq: atom.res_seq,
+            i_code: atom.i_code,
+        };
+        if seen.contains(&residue) {
+            continue;
+        }
+        match found.iter_mut().find(|(id, _)| *id == residue.chain_id) {
+            Some((_, count)) => *count += 1,
+            None => found.push((residue.chain_id.clone(), 1)),
+        }
+        seen.insert(residue);
+    }
+    found
 }
 
 /// A titrated molecule.
@@ -258,8 +285,7 @@ fn titrate(beads: &[Bead], spec: &MoleculeSpec, ph: f64, mc_sweeps: usize, seed:
 
 fn coarse_grain(pdb: &[u8], spec: &MoleculeSpec) -> Result<Vec<Bead>> {
     let beads = cgkitten::coarse_grain_bytes(pdb, cg_policy(spec.single_bead));
-    anyhow::ensure!(!beads.is_empty(), "no residues to coarse-grain");
-    Ok(beads)
+    keep_chains(beads, &spec.chains)
 }
 
 /// Goes through the scan's YAML → faunus topology route, so σ, ε, λ and merged
@@ -347,12 +373,31 @@ mod tests {
     }
 
     #[test]
+    fn chains_are_listed_in_file_order_with_residue_counts() {
+        let found = chains(&crate::web_api::tests::two_chains());
+        assert_eq!(found, [("A".to_string(), 3), ("B".to_string(), 2)]);
+    }
+
+    #[test]
+    fn only_the_chosen_chains_are_coarse_grained() {
+        let spec = MoleculeSpec {
+            chains: vec!["B".into()],
+            ..Default::default()
+        };
+        let molecule =
+            finish(Titrating::start(&crate::web_api::tests::two_chains(), spec, 1).unwrap());
+        let chains: Vec<_> = molecule.beads.iter().map(|b| b.chain.as_str()).collect();
+        assert_eq!(chains, ["B"; 4]);
+    }
+
+    #[test]
     fn hh_molecule_matches_a_scan() {
         let molecule = hh_molecule();
         let scan = PairSystem::load(PairSpec {
             a: Source::File(&cif_path()),
             b: None,
             top: None,
+            chains: [&[], &[]],
             cg: CgOptions::default(),
             medium: &Medium::salt_water(298.15, Salt::SodiumChloride, 0.1),
         })

@@ -31,6 +31,8 @@ struct StructureRef {
     name: String,
     /// Entry holding the file.
     path: String,
+    /// Kept chains; empty keeps all.
+    chains: Vec<String>,
 }
 
 /// The scan apart from its table and topology, which are files of their own.
@@ -57,6 +59,7 @@ pub fn session_entries(session: &Session) -> Result<Vec<Entry<'_>>> {
             .map(|(s, path)| StructureRef {
                 name: s.name.clone(),
                 path: path.clone(),
+                chains: s.chains.clone(),
             })
             .collect(),
         scanned: session.scanned,
@@ -100,6 +103,7 @@ pub fn read_session(zip: &mut Reader) -> Result<Session> {
             Ok(StructureFile {
                 contents: zip.bytes(&r.path)?,
                 name: r.name,
+                chains: r.chains,
             })
         })
         .collect::<Result<_>>()?;

@@ -87,10 +87,13 @@ pub struct Session {
 }
 
 /// A structure file as loaded, e.g. a PDB or mmCIF.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct StructureFile {
     pub name: String,
     pub contents: Vec<u8>,
+    /// Chain IDs to keep when coarse-graining; empty keeps all, so a file
+    /// saved that way keeps meaning "all chains".
+    pub chains: Vec<String>,
 }
 
 /// Inputs to [`crate::solution::free_salt`]; the charge and volume come from

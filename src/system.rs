@@ -36,8 +36,6 @@ pub struct CgOptions {
     pub single_bead: bool,
     /// Hydrophobic scaling (default: no scaling).
     pub scale_hydrophobic: cgkitten::forcefield::HydrophobicScaling,
-    /// Chain IDs to keep (empty = all chains).
-    pub chains: Vec<String>,
     /// pKa overrides (default: cgkitten's table).
     pub pka: cgkitten::residue::PkaOverrides,
 }
@@ -49,7 +47,6 @@ impl Default for CgOptions {
             model: "calvados3".to_string(),
             single_bead: true,
             scale_hydrophobic: cgkitten::forcefield::HydrophobicScaling::NoScale,
-            chains: Vec::new(),
             pka: Default::default(),
         }
     }
@@ -71,6 +68,8 @@ pub struct PairSpec<'a> {
     pub b: Option<Source<'a>>,
     /// Topology for XYZ input.
     pub top: Option<&'a Path>,
+    /// Chain IDs each molecule keeps (empty = all); `b: None` uses the first.
+    pub chains: [&'a [String]; 2],
     pub cg: CgOptions,
     pub medium: &'a Medium,
 }
@@ -94,7 +93,7 @@ impl PairSystem {
             structures,
             topology,
             origin,
-        } = Loaded::new(&sources, spec.top, &spec.cg, spec.medium)?;
+        } = Loaded::new(&sources, spec.chains, spec.top, &spec.cg, spec.medium)?;
         let mut structures = structures.into_iter();
         let ref_a = structures.next().context("no structure loaded")?;
         let ref_b = structures.next().unwrap_or_else(|| ref_a.clone());
@@ -164,6 +163,7 @@ impl Loaded {
     /// Checks for mixed input before reading anything.
     fn new(
         sources: &[&Source],
+        chains: [&[String]; 2],
         top: Option<&Path>,
         cg: &CgOptions,
         medium: &Medium,
@@ -178,6 +178,10 @@ impl Loaded {
                     Source::PdbBytes(_) => None,
                 })
                 .collect();
+            anyhow::ensure!(
+                chains.iter().take(sources.len()).all(|c| c.is_empty()),
+                "--chain is only supported for PDB/CIF input, not XYZ"
+            );
             return Self::from_xyz_files(&paths, top, cg);
         }
         anyhow::ensure!(
@@ -187,16 +191,19 @@ impl Loaded {
         let inputs = sources
             .iter()
             .zip(formats.into_iter().flatten())
-            .map(|(source, is_pdb)| Ok((source.bytes()?, is_pdb)))
+            .zip(chains)
+            .map(|((source, is_pdb), chains)| {
+                Ok(Input {
+                    bytes: source.bytes()?,
+                    is_pdb,
+                    chains,
+                })
+            })
             .collect::<Result<Vec<_>>>()?;
         Self::from_generated(coarse_grain(&inputs, cg, medium)?)
     }
 
     fn from_xyz_files(xyz: &[&Path], top: Option<&Path>, cg: &CgOptions) -> Result<Self> {
-        anyhow::ensure!(
-            cg.chains.is_empty(),
-            "--chain is only supported for PDB/CIF input, not XYZ"
-        );
         // XYZ charges come fixed from the topology, so an override would be silently ignored.
         anyhow::ensure!(
             cg.pka.is_empty(),
@@ -252,15 +259,29 @@ fn coarse_grain_format(path: &Path) -> Option<bool> {
     }
 }
 
+/// One molecule to coarse-grain.
+struct Input<'a> {
+    bytes: Cow<'a, [u8]>,
+    is_pdb: bool,
+    /// Kept chains; empty keeps all.
+    chains: &'a [String],
+}
+
+impl Input<'_> {
+    fn beads(&self, policy: &dyn cgkitten::CoarseGrain) -> Result<Vec<cgkitten::Bead>> {
+        let reader = BufReader::new(Cursor::new(self.bytes.as_ref()));
+        let beads = if self.is_pdb {
+            cgkitten::coarse_grain_pdb_with(reader, policy)
+        } else {
+            cgkitten::coarse_grain_with(reader, policy)
+        };
+        keep_chains(beads, self.chains)
+    }
+}
+
 /// Titrates at the medium's salt and temperature, so charges belong to the scanned solution.
-fn coarse_grain(
-    inputs: &[(Cow<[u8]>, bool)],
-    cg: &CgOptions,
-    medium: &Medium,
-) -> Result<cgkitten::CgSystem> {
-    let readers = inputs
-        .iter()
-        .map(|(bytes, is_pdb)| (BufReader::new(Cursor::new(bytes.as_ref())), *is_pdb));
+/// Mirrors `cgkitten::coarse_grain_jointly`, which takes one chain list for all inputs.
+fn coarse_grain(inputs: &[Input], cg: &CgOptions, medium: &Medium) -> Result<cgkitten::CgSystem> {
     let calc = cgkitten::ChargeCalc {
         ph: cg.ph,
         temperature: medium.temperature(),
@@ -269,16 +290,34 @@ fn coarse_grain(
         pka_overrides: cg.pka.clone(),
         ..Default::default()
     };
-    cgkitten::coarse_grain_jointly(
-        readers,
-        &calc,
-        &cg.model,
-        cg_policy(cg.single_bead),
-        MERGE_TOLERANCE,
-        cg.scale_hydrophobic,
-        &cg.chains,
-    )
-    .map_err(anyhow::Error::msg)
+    let ff = cgkitten::forcefield::from_name(&cg.model, cg.scale_hydrophobic)
+        .map_err(anyhow::Error::msg)?;
+    calc.log_conditions();
+    let policy = cg_policy(cg.single_bead);
+    let molecules = inputs
+        .iter()
+        .enumerate()
+        .map(|(i, input)| {
+            let beads = input
+                .beads(policy)
+                .with_context(|| format!("molecule {}", i + 1))?;
+            Ok(calc.run(&beads).apply(&beads))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    cgkitten::assemble_system(&molecules, ff.as_deref(), MERGE_TOLERANCE)
+        .map_err(anyhow::Error::msg)
+}
+
+/// `beads` of `chains` only (empty keeps all). An empty result fails here, naming
+/// file or selection, rather than later as an empty pair matrix.
+pub(crate) fn keep_chains(
+    beads: Vec<cgkitten::Bead>,
+    chains: &[String],
+) -> Result<Vec<cgkitten::Bead>> {
+    anyhow::ensure!(!beads.is_empty(), "no residues to coarse-grain");
+    let kept = cgkitten::filter_chains(beads, chains);
+    anyhow::ensure!(!kept.is_empty(), "the chain selection keeps no residues");
+    Ok(kept)
 }
 
 /// MC titration length of a scan; per-molecule views use it too, so their charges match.
@@ -320,6 +359,7 @@ mod tests {
                 a: Source::File(&xyz),
                 b: None,
                 top: Some(&top),
+                chains: [&[], &[]],
                 cg: CgOptions::default(),
                 medium: &Medium::salt_water(298.15, Salt::SodiumChloride, 0.1),
             });
@@ -341,6 +381,7 @@ mod tests {
                 a: Source::File(&cif),
                 b: None,
                 top: None,
+                chains: [&[], &[]],
                 cg: CgOptions {
                     pka,
                     ..Default::default()
@@ -367,6 +408,7 @@ mod tests {
             a: Source::File(&cif),
             b: None,
             top: None,
+            chains: [&[], &[]],
             cg: CgOptions::default(),
             medium: &Medium::salt_water(298.15, Salt::SodiumChloride, ionic_strength),
         })
@@ -384,6 +426,25 @@ mod tests {
         assert!((net_charge_2cds(0.1) - 7.76).abs() < 0.1);
     }
 
+    /// Each molecule keeps its own chains, so one file can give both partners.
+    #[test]
+    fn each_molecule_keeps_its_own_chains() {
+        let pdb = crate::web_api::tests::two_chains();
+        let (a, b) = (["A".to_string()], ["B".to_string()]);
+        let system = PairSystem::load(PairSpec {
+            a: Source::PdbBytes(&pdb),
+            b: Some(Source::PdbBytes(&pdb)),
+            top: None,
+            chains: [&a, &b],
+            cg: CgOptions::default(),
+            medium: &Medium::salt_water(298.15, Salt::SodiumChloride, 0.1),
+        })
+        .unwrap();
+        // Single-bead: one per residue plus NTR and CTR.
+        assert_eq!(system.ref_a.pos.len(), 3 + 2);
+        assert_eq!(system.ref_b.pos.len(), 2 + 2);
+    }
+
     /// Mixed input would need two topologies, which can't give cross pairs a potential.
     #[test]
     fn mixed_xyz_and_atomistic_input_is_rejected() {
@@ -392,6 +453,7 @@ mod tests {
             a: Source::File(&xyz),
             b: Some(Source::PdbBytes(b"")),
             top: Some(&top),
+            chains: [&[], &[]],
             cg: CgOptions::default(),
             medium: &Medium::salt_water(298.15, Salt::SodiumChloride, 0.1),
         });
