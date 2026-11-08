@@ -110,7 +110,7 @@ impl ScanArchive {
         kinds: &[AtomKind],
         topology_yaml: String,
     ) -> Result<Self> {
-        let pmf = compute_pmf(&scan.samples)?;
+        let pmf = compute_pmf(&scan.samples, bodies)?;
         if scan.table.metadata.is_none() {
             scan.table.metadata = Some(table_metadata(params, &scan));
         }

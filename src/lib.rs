@@ -25,6 +25,7 @@ pub mod poses;
 pub mod report;
 mod sample;
 pub mod solution;
+pub mod steric;
 pub mod structure;
 pub mod system;
 #[cfg(feature = "cli")]
@@ -43,6 +44,20 @@ pub(crate) const LITER_PER_CUBIC_ANGSTROM: f64 = 1e-27;
 /// Particles per Å³ at `molarity` mol/L.
 pub(crate) fn number_density(molarity: f64) -> f64 {
     molarity * physical_constants::AVOGADRO_CONSTANT * LITER_PER_CUBIC_ANGSTROM
+}
+
+/// Shoemake's method: uniform on SO(3).
+pub(crate) fn random_orientation(rng: &mut impl rand::Rng) -> UnitQuaternion {
+    use std::f64::consts::TAU;
+    let (u1, u2, u3): (f64, f64, f64) = (rng.gen(), rng.gen(), rng.gen());
+    let (a, b) = ((1.0 - u1).sqrt(), u1.sqrt());
+    let q = nalgebra::Quaternion::new(
+        b * (TAU * u3).cos(),
+        a * (TAU * u2).sin(),
+        a * (TAU * u2).cos(),
+        b * (TAU * u3).sin(),
+    );
+    UnitQuaternion::new_normalize(q)
 }
 
 /// kT in kJ/mol, the energy unit of all tables.

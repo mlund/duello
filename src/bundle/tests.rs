@@ -42,10 +42,17 @@ fn full() -> Bundle {
     let (run, trajectory) = run_record();
     Bundle {
         session: session(),
-        scan: Some(archive()),
+        scan: Some(steric_archive()),
         run: Some(run),
         trajectory: Some(trajectory),
     }
+}
+
+/// A reference unlike σ's hard sphere, which loading could rebuild without storing it.
+fn steric_archive() -> ScanArchive {
+    let mut scan = archive();
+    scan.virial = scan.virial.clone().with_reference(1234.5);
+    scan
 }
 
 fn round_trip(bundle: &Bundle) -> Bundle {
@@ -58,6 +65,7 @@ fn assert_same_scan(restored: &ScanArchive, original: &ScanArchive) {
     assert_eq!(restored.topology_yaml, original.topology_yaml);
     assert_eq!(restored.virial.b2(), original.virial.b2());
     assert_eq!(restored.virial.sigma(), original.virial.sigma());
+    assert_eq!(restored.virial.reference(), original.virial.reference());
     let point =
         |p: &crate::report::PmfPoint| (p.r, p.free_energy, p.mean_energy, p.energy_variance);
     let points = |a: &ScanArchive| a.points.iter().map(point).collect::<Vec<_>>();
@@ -182,6 +190,17 @@ fn an_old_format_file_is_refused_and_told_to_rescan() {
     let mut old = b"DUELLO-SCAN\0\x04\0\0\0".to_vec();
     old.extend([0; 64]);
     let error = load_error(&old);
+    assert!(error.contains("re-run the scan"), "{error}");
+}
+
+#[test]
+fn a_version_5_file_without_a_steric_reference_is_refused() {
+    let manifest = r#"{"format":"duello-session","version":5,"parts":[]}"#;
+    let error = load_error(&with_entry_replaced(
+        &session_zip(),
+        "manifest.json",
+        manifest.as_bytes(),
+    ));
     assert!(error.contains("re-run the scan"), "{error}");
 }
 

@@ -27,6 +27,8 @@ pub struct VirialCoeff {
     b2: f64,
     /// Distance of closest approach, σ (Å)
     sigma: f64,
+    /// Steric B₂₂ʳᵉᶠ (Å³) that B₂₂* and K_a are relative to; 2πσ³/3 until replaced.
+    reference: f64,
 }
 
 impl VirialCoeff {
@@ -60,10 +62,7 @@ impl VirialCoeff {
             .expect("two points checked above")
             .map(|((_, w), weight)| mayer(*w) * weight)
             .sum::<f64>();
-        Ok(Self {
-            b2: hardsphere(sigma) - b2,
-            sigma,
-        })
+        Ok(Self::from_raw_parts(hardsphere(sigma) - b2, sigma))
     }
 
     /// B₂₂ integrated out to each R ≥ σ, to judge convergence; the last value is [`Self::b2`].
@@ -110,9 +109,21 @@ impl VirialCoeff {
         Some(-sum)
     }
 
-    /// Constructs a new VirialCoeff from raw parts
-    pub const fn from_raw_parts(b2: f64, sigma: f64) -> Self {
-        Self { b2, sigma }
+    /// Constructs a new VirialCoeff from raw parts, with the hard-sphere reference at σ
+    pub fn from_raw_parts(b2: f64, sigma: f64) -> Self {
+        Self {
+            b2,
+            sigma,
+            reference: hardsphere(sigma),
+        }
+    }
+
+    /// Takes B₂₂* and K_a relative to `b2_ref` (Å³), e.g. from [`crate::steric::Steric`].
+    pub fn with_reference(self, b2_ref: f64) -> Self {
+        Self {
+            reference: b2_ref,
+            ..self
+        }
     }
 
     /// Virial coefficient, B2 (Å³)
@@ -123,21 +134,23 @@ impl VirialCoeff {
     pub const fn sigma(&self) -> f64 {
         self.sigma
     }
-    /// Hard sphere contribution to second virial coefficient, B2hs (Å³)
-    pub fn hardsphere(&self) -> f64 {
-        hardsphere(self.sigma)
+    /// Reference B₂₂ʳᵉᶠ (Å³)
+    pub const fn reference(&self) -> f64 {
+        self.reference
     }
-    /// Reduced second virial coefficient, B2 / B2hs
+    /// Diameter of hard spheres with the reference's B₂₂, (3B₂₂ʳᵉᶠ/2π)^⅓ (Å)
+    pub fn sigma_eff(&self) -> f64 {
+        (3.0 * self.reference / (2.0 * PI)).cbrt()
+    }
+    /// Reduced second virial coefficient, B2 / B2ref
     pub fn reduced(&self) -> f64 {
-        self.b2 / self.hardsphere()
+        self.b2 / self.reference
     }
-    /// Association constant, 𝐾𝑑⁻¹ = -2(𝐵₂ - 𝐵₂hs)
+    /// Association constant, 𝐾𝑑⁻¹ = -2(𝐵₂ - 𝐵₂ʳᵉᶠ)
     /// See "Colloidal Domain" by Evans and Wennerström, 2nd Ed, p. 408
     pub fn association_const(&self) -> Option<f64> {
         Some(
-            -2.0 * (self.b2 - self.hardsphere())
-                * crate::LITER_PER_CUBIC_ANGSTROM
-                * AVOGADRO_CONSTANT,
+            -2.0 * (self.b2 - self.reference) * crate::LITER_PER_CUBIC_ANGSTROM * AVOGADRO_CONSTANT,
         )
         .filter(|x| x.is_sign_positive())
     }
@@ -153,7 +166,7 @@ impl VirialCoeff {
     }
 }
 
-/// Association defined from B₂₂ alone, K_a = −2(B₂₂ − B₂₂ʰˢ), so it needs no
+/// Association defined from B₂₂ alone, K_a = −2(B₂₂ − B₂₂ʳᵉᶠ), so it needs no
 /// contact criterion. Energies are in kT at a 1 M standard state.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Association {
@@ -164,14 +177,14 @@ pub struct Association {
 }
 
 impl Association {
-    /// `None` where K_a ≤ 0, i.e. no net attraction beyond hard spheres.
-    pub fn from_pmf(pmf: &[PmfPoint], sigma: f64) -> Option<Self> {
-        let pairs = pmf.iter().map(|p| (p.r, p.free_energy));
-        let virial = VirialCoeff::from_pmf(pairs, Some(sigma)).ok()?;
+    /// `None` where K_a ≤ 0, i.e. no net attraction beyond the reference.
+    /// `pmf` is the one `virial` was computed from.
+    pub fn new(virial: &VirialCoeff, pmf: &[PmfPoint]) -> Option<Self> {
         let ka = virial.association_const().filter(|&ka| ka > 0.0)?;
-        // K_a ∝ B₂₂ʰˢ − B₂₂, so −∂ln K_a/∂β = T·∂B₂₂/∂T / (B₂₂ − B₂₂ʰˢ) in kT.
-        let excess = virial.b2() - virial.hardsphere();
-        let delta_u = VirialCoeff::temperature_slope(pmf, sigma)? / excess;
+        // K_a ∝ B₂₂ʳᵉᶠ − B₂₂, and hard beads don't depend on T, so
+        // −∂ln K_a/∂β = T·∂B₂₂/∂T / (B₂₂ − B₂₂ʳᵉᶠ) in kT.
+        let excess = virial.b2() - virial.reference();
+        let delta_u = VirialCoeff::temperature_slope(pmf, virial.sigma())? / excess;
         Some(Self { ka, delta_u })
     }
 
@@ -238,9 +251,10 @@ fn shells<P>(
 // Implement serialize which writes B2, hardsphere, and dissociation constant
 impl serde::Serialize for VirialCoeff {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("VirialCoeff", 4)?;
+        let mut state = serializer.serialize_struct("VirialCoeff", 6)?;
         state.serialize_field("B2", &self.b2)?;
-        state.serialize_field("B2_hs", &self.hardsphere())?;
+        state.serialize_field("B2_ref", &self.reference)?;
+        state.serialize_field("sigma_eff", &self.sigma_eff())?;
         state.serialize_field("B2_reduced", &self.reduced())?;
         state.serialize_field("sigma", &self.sigma())?;
         if let Some(kd) = self.dissociation_const() {
@@ -280,6 +294,10 @@ mod tests {
             .collect()
     }
 
+    fn virial_of(pmf: &[PmfPoint]) -> VirialCoeff {
+        VirialCoeff::from_pmf(pmf.iter().map(|p| (p.r, p.free_energy)), Some(10.0)).unwrap()
+    }
+
     #[test]
     fn temperature_slope_of_a_square_well() {
         let epsilon = 1.5;
@@ -303,7 +321,8 @@ mod tests {
     #[test]
     fn association_of_a_square_well_and_none_when_repulsive() {
         let epsilon = 1.5;
-        let association = Association::from_pmf(&square_well(epsilon), 10.0).unwrap();
+        let pmf = square_well(epsilon);
+        let association = Association::new(&virial_of(&pmf), &pmf).unwrap();
 
         let shells = 100.0 + 121.0 + 144.0;
         let ka_cubic_angstrom = 4.0 * PI * (epsilon.exp() - 1.0) * shells;
@@ -320,7 +339,7 @@ mod tests {
         );
 
         let repulsive: Vec<_> = (10..20).map(|r| point(r as f64, 2.0, 2.0)).collect();
-        assert_eq!(Association::from_pmf(&repulsive, 10.0), None);
+        assert_eq!(Association::new(&virial_of(&repulsive), &repulsive), None);
     }
 
     #[test]
@@ -354,6 +373,20 @@ mod tests {
         let pairs = pmf.iter().map(|p| (p.r, p.free_energy));
         let b2 = VirialCoeff::from_pmf(pairs, Some(5.0)).unwrap().b2();
         assert_relative_eq!(by_start[0].1, b2, max_relative = 1e-9);
+    }
+
+    /// σ = 10 Å would give a hard-sphere value of 2094 Å³; the reference replaces it.
+    #[test]
+    fn ratios_use_the_reference_not_sigma() {
+        let virial = VirialCoeff::from_raw_parts(-1000.0, 10.0).with_reference(500.0);
+        assert_eq!(virial.reference(), 500.0);
+        assert_relative_eq!(virial.reduced(), -2.0);
+        let ka = 3000.0 * 1e-27 * AVOGADRO_CONSTANT;
+        assert_relative_eq!(
+            virial.association_const().unwrap(),
+            ka,
+            max_relative = 1e-12
+        );
     }
 
     /// 26.3f32 widens to 26.2999992, below σ = 26.3 in f64.
@@ -404,14 +437,14 @@ mod tests {
         ];
         let virial = VirialCoeff::from_pmf(pmf.iter().cloned(), None).unwrap();
         assert_relative_eq!(virial.b2(), 87041.72463623626, epsilon = 1e-3);
-        assert_relative_eq!(virial.hardsphere(), 106087.39512152252);
+        assert_relative_eq!(virial.reference(), 106087.39512152252);
         assert_relative_eq!(virial.sigma(), 37.0);
         assert_relative_eq!(virial.reduced(), 0.820471881098885);
         assert_relative_eq!(virial.dissociation_const().unwrap(), 0.04359361011881143);
 
         let virial = VirialCoeff::from_pmf(pmf.iter().cloned(), Some(40.0)).unwrap();
         assert_relative_eq!(virial.b2(), 87837.30466559599);
-        assert_relative_eq!(virial.hardsphere(), 134041.2865531645);
+        assert_relative_eq!(virial.reference(), 134041.2865531645);
         assert_relative_eq!(virial.sigma(), 40.0);
         assert_relative_eq!(virial.reduced(), 0.6553003699405502);
         assert_relative_eq!(virial.dissociation_const().unwrap(), 0.017969653256450453);

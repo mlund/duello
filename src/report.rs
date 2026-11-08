@@ -12,8 +12,9 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
+use crate::structure::Structure;
 use crate::Vector3;
-use crate::{Sample, VirialCoeff};
+use crate::{steric::Steric, Sample, VirialCoeff};
 
 /// Computed PMF results for programmatic consumption.
 pub struct PmfResult {
@@ -59,13 +60,24 @@ pub fn pmf_csv(points: &[PmfPoint]) -> String {
     csv
 }
 
-/// Compute PMF/virial from samples without writing files.
-pub fn compute_pmf(samples: &[(Vector3, Sample)]) -> anyhow::Result<PmfResult> {
+/// Compute PMF/virial from samples without writing files; B₂₂* and K_a are
+/// relative to the bodies' steric B₂₂ʳᵉᶠ.
+pub fn compute_pmf(
+    samples: &[(Vector3, Sample)],
+    [a, b]: [&Structure; 2],
+) -> anyhow::Result<PmfResult> {
     let points: Vec<PmfPoint> = samples
         .iter()
         .filter_map(|(r, sample)| PmfPoint::new(r.norm(), sample))
         .collect();
     let virial = VirialCoeff::from_pmf(points.iter().map(|p| (p.r, p.free_energy)), None)?;
+    let b2_ref = Steric::new(a, b).b2();
+    let virial = if b2_ref > 0.0 {
+        virial.with_reference(b2_ref)
+    } else {
+        warn!("Topology gives no bead radii, so B₂₂* and K_d use hard spheres at σ");
+        virial
+    };
     Ok(PmfResult { points, virial })
 }
 
@@ -79,12 +91,34 @@ pub fn sigma_warning(pmf: &[PmfPoint], sigma: f64) -> Option<String> {
     ))
 }
 
+/// B₂₂ʳᵉᶠ and what is relative to it: B₂₂* and, under net attraction, K_d and ΔA°.
+#[cfg(feature = "cli")]
+fn report_reference(result: &PmfResult) {
+    let virial = &result.virial;
+    info!(
+        "Steric reference (hard beads), 𝐵₂ʳᵉᶠ = {:.2} Å³, σ_eff = {:.2} Å",
+        virial.reference(),
+        virial.sigma_eff()
+    );
+    info!(
+        "Reduced second virial coefficient, 𝐵₂ / 𝐵₂ʳᵉᶠ = {:.2}",
+        virial.reduced()
+    );
+    if let Some(association) = crate::Association::new(virial, &result.points) {
+        info!(
+            "Dissociation constant, 𝐾𝑑 = {:.2e} mol/l, ΔA° = {:.2} kT (1 M), relative to 𝐵₂ʳᵉᶠ",
+            association.ka.recip(),
+            association.delta_a()
+        );
+    }
+}
+
 /// Write PMF and mean energy as a function of mass center separation to file
 #[cfg(feature = "cli")]
 pub fn report_pmf(
     samples: &[(Vector3, Sample)],
+    bodies: [&Structure; 2],
     path: &std::path::PathBuf,
-    masses: Option<(f64, f64)>,
 ) -> anyhow::Result<()> {
     use anyhow::{bail, Context};
     use nu_ansi_term::Color::{Red, Yellow};
@@ -92,7 +126,8 @@ pub fn report_pmf(
     use std::{fs::File, io::Write};
     use textplots::{Chart, ColorPlot, Shape};
 
-    let result = compute_pmf(samples)?;
+    let result = compute_pmf(samples, bodies)?;
+    let [a, b] = bodies;
 
     // File with F(R) and U(R)
     let mut pmf_file = File::create(path).context("Cannot create pmf file")?;
@@ -122,7 +157,9 @@ pub fn report_pmf(
         "Second virial coefficient, 𝐵₂ = {:.2} Å³",
         f64::from(result.virial.clone())
     );
-    if let Some((mw1, mw2)) = masses {
+    // A test atom may be massless.
+    let (mw1, mw2) = (a.total_mass(), b.total_mass());
+    if mw1 > 0.0 && mw2 > 0.0 {
         info!(
             "                              = {:.2e} mol⋅ml/g²",
             result.virial.mol_ml_per_gram2(mw1, mw2)
@@ -131,20 +168,7 @@ pub fn report_pmf(
     if let Some(warning) = sigma_warning(&result.points, result.virial.sigma()) {
         warn!("{warning}");
     }
-
-    info!(
-        "Reduced second virial coefficient, 𝐵₂ / 𝐵₂hs = {:.2} using σ = {:.2} Å",
-        result.virial.reduced(),
-        result.virial.sigma()
-    );
-
-    if let Some(kd) = result.virial.dissociation_const() {
-        info!(
-            "Dissociation constant, 𝐾𝑑 = {:.2e} mol/l using σ = {:.2} Å",
-            kd,
-            result.virial.sigma()
-        );
-    }
+    report_reference(&result);
 
     info!(
         "Plot: {} and {} along mass center separation. In units of kT and angstroms.",

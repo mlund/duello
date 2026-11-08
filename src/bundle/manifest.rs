@@ -9,7 +9,7 @@ use zip::DateTime;
 const PATH: &str = "manifest.json";
 const FORMAT: &str = "duello-session";
 /// Bumped on any layout or JSON shape change; readers refuse other versions.
-pub const FORMAT_VERSION: u32 = 5;
+pub const FORMAT_VERSION: u32 = 6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

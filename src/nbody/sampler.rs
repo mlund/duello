@@ -6,7 +6,6 @@ use crate::{UnitQuaternion, Vector3};
 use anyhow::{bail, ensure, Result};
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64;
-use std::f64::consts::TAU;
 use std::sync::Arc;
 
 /// What to simulate and how far each move reaches.
@@ -293,22 +292,13 @@ impl Sampler {
 
     fn random_unit_vector(&mut self) -> Vector3 {
         let z: f64 = self.rng.gen_range(-1.0..1.0);
-        let phi = self.rng.gen_range(0.0..TAU);
+        let phi = self.rng.gen_range(0.0..std::f64::consts::TAU);
         let s = (1.0 - z * z).sqrt();
         Vector3::new(s * phi.cos(), s * phi.sin(), z)
     }
 
-    /// Shoemake's method: uniform on SO(3).
     fn random_orientation(&mut self) -> UnitQuaternion {
-        let (u1, u2, u3): (f64, f64, f64) = (self.rng.gen(), self.rng.gen(), self.rng.gen());
-        let (a, b) = ((1.0 - u1).sqrt(), u1.sqrt());
-        let q = nalgebra::Quaternion::new(
-            b * (TAU * u3).cos(),
-            a * (TAU * u2).sin(),
-            a * (TAU * u2).cos(),
-            b * (TAU * u3).sin(),
-        );
-        UnitQuaternion::new_normalize(q)
+        crate::random_orientation(&mut self.rng)
     }
 }
 

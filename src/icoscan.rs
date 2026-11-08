@@ -469,8 +469,8 @@ pub fn do_icoscan<B: EnergyBackend + Sync>(config: &ScanConfig, backend: &B) -> 
         result.table.save(path)?;
     }
 
-    let masses = (backend.ref_a().total_mass(), backend.ref_b().total_mass());
-    crate::report::report_pmf(&result.samples, &config.pmf_file, Some(masses))?;
+    let bodies = [backend.ref_a(), backend.ref_b()];
+    crate::report::report_pmf(&result.samples, bodies, &config.pmf_file)?;
 
     // The archive consumes the result, so the trajectory reads its table.
     let table = match &config.save_scan {
@@ -824,7 +824,8 @@ mod tests {
             ControlFlow::Continue(())
         };
         let result = compute_scan(&params(1), &backend, Some(&on_progress)).unwrap();
-        let pmf = crate::report::compute_pmf(&result.samples).unwrap();
+        let pmf = crate::report::compute_pmf(&result.samples, [backend.ref_a(), backend.ref_b()])
+            .unwrap();
 
         let streamed = streamed.into_inner();
         let n = result.samples.len();
@@ -838,6 +839,26 @@ mod tests {
             points.iter().map(key).collect::<Vec<_>>(),
             pmf.points.iter().map(key).collect::<Vec<_>>()
         );
+    }
+
+    /// Stub beads are radius 1, so the steric reference is two touching unit
+    /// spheres, 2π·2³/3, far below the hard sphere at σ = R_min = 20 Å.
+    #[test]
+    fn a_saved_scan_carries_the_steric_reference() {
+        let backend = StubBackend::new();
+        let result = compute_scan(&params(1), &backend, None).unwrap();
+        let scan = crate::archive::ScanArchive::from_scan(
+            crate::archive::tests::archive().settings,
+            &params(1),
+            result,
+            [backend.ref_a(), backend.ref_b()],
+            &[Default::default()],
+            String::new(),
+        )
+        .unwrap();
+        let b2_ref = 2.0 * std::f64::consts::PI * 8.0 / 3.0;
+        assert_relative_eq!(scan.virial.reference(), b2_ref, max_relative = 1e-6);
+        assert_relative_eq!(scan.virial.sigma_eff(), 2.0, max_relative = 1e-6);
     }
 
     /// `Break` from the callback stops the scan after that bin.

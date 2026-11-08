@@ -43,6 +43,8 @@ struct ScanJson {
     b2: f64,
     /// Å
     sigma: f64,
+    /// Steric B₂₂ʳᵉᶠ (Å³); needs the structures, so it is stored rather than rebuilt.
+    b2_ref: f64,
 }
 
 pub fn session_entries(session: &Session) -> Result<Vec<Entry<'_>>> {
@@ -119,6 +121,7 @@ pub fn scan_entries(scan: &ScanArchive) -> Result<Vec<Entry<'static>>> {
         points: scan.points.clone(),
         b2: scan.virial.b2(),
         sigma: scan.virial.sigma(),
+        b2_ref: scan.virial.reference(),
     };
     Ok(vec![
         Entry::json(
@@ -150,7 +153,7 @@ pub fn read_scan(zip: &mut Reader) -> Result<ScanArchive> {
         settings: json.settings,
         bodies: json.bodies,
         points: json.points,
-        virial: VirialCoeff::from_raw_parts(json.b2, json.sigma),
+        virial: VirialCoeff::from_raw_parts(json.b2, json.sigma).with_reference(json.b2_ref),
     };
     check_scan(&scan)?;
     Ok(scan)

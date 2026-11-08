@@ -835,7 +835,8 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
         output.display()
     );
 
-    report::report_pmf(&samples, pmf_file, None)?;
+    let test_atom = Structure::single_bead(&topology.atomkinds()[test_atom_id]);
+    report::report_pmf(&samples, [&ref_a, &test_atom], pmf_file)?;
     Ok(())
 }
 
