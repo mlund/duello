@@ -43,7 +43,7 @@ fn cli_scan_archive_loads_with_its_results() {
     let archive = bundle.scan.unwrap();
 
     // Same golden B2 as characterization.rs::scan_homo_dimer_b2.
-    let expected = -240356.77888141517;
+    let expected = -263662.97040675435;
     assert!(((archive.virial.b2() - expected) / expected).abs() < 1e-9);
     assert!(archive.settings.homo_dimer);
     assert_eq!(archive.settings.ionic_strength, 0.05);

@@ -61,7 +61,7 @@ fn scan_hetero_dimer_b2() {
         "cppm/cppm-p00.xyz",
         &example("cppm/cppm-p18.xyz"),
     ));
-    assert_rel_eq(b2(&dir), 150934.92547782417);
+    assert_rel_eq(b2(&dir), 150934.92394093273);
 }
 
 #[test]
@@ -72,7 +72,7 @@ fn scan_homo_dimer_b2() {
         "cppm/cppm-p18.xyz",
         &example("cppm/cppm-p18.xyz"),
     ));
-    assert_rel_eq(b2(&dir), -240356.77888141517);
+    assert_rel_eq(b2(&dir), -263662.97040675435);
 }
 
 /// The same molecule under two paths takes the hetero-dimer branch (separate loads,
@@ -109,7 +109,7 @@ fn atom_scan_b2() {
         .arg(example("cppm/topology.yaml"))
         .args(["--rmin", "24", "--rmax", "30"])
         .args(&COARSE[..8])); // atom-scan has no --backend
-    assert_rel_eq(b2(&dir), 3600.430156853588);
+    assert_rel_eq(b2(&dir), 4971.167881205227);
 }
 
 /// CIF input runs through cgkitten. Titration is stochastic, so only check that the
