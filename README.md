@@ -40,6 +40,8 @@
   - [`duello scan` -- Two-Body Scan](#duello-scan----two-body-scan)
     - [Trajectory Output](#trajectory-output)
   - [`duello atom-scan` -- Atom Scan](#duello-atom-scan----atom-scan)
+  - [`duello nbody` -- Many-Body Monte Carlo](#duello-nbody----many-body-monte-carlo)
+    - [`duello nbody-expand` -- Bead Trajectory](#duello-nbody-expand----bead-trajectory)
   - [`duello diffusion` -- Rotational Diffusion](#duello-diffusion----rotational-diffusion)
 - [Input Formats](#input-formats)
   - [PDB / mmCIF (recommended)](#pdb--mmcif-recommended)
@@ -134,13 +136,15 @@ From _w(R)_, duello derives the osmotic second virial coefficient _B2_ and, for 
 
 # Commands
 
-Duello provides three subcommands:
+Main subcommands:
 
-| Command           | Purpose                                                     |
-|-------------------|-------------------------------------------------------------|
-| `duello scan`     | 6D scan between two rigid bodies; computes _w(R)_, _B2_, _Kd_ |
-| `duello atom-scan`| 3D scan between a rigid body and a single atom type         |
-| `duello diffusion`| Rotational diffusion analysis from a saved 6D energy table  |
+| Command              | Purpose                                                       |
+|----------------------|---------------------------------------------------------------|
+| `duello scan`        | 6D scan between two rigid bodies; computes _w(R)_, _B2_, _Kd_ |
+| `duello atom-scan`   | 3D scan between a rigid body and a single atom type           |
+| `duello nbody`       | Monte Carlo of N rigid proteins on a saved scan; _I(q)_, _S(q)_, _g(r)_ |
+| `duello nbody-expand`| Convert an `nbody` trajectory to bead XTC for viewers         |
+| `duello diffusion`   | Rotational diffusion analysis from a saved 6D energy table    |
 
 ## `duello scan` -- Two-Body Scan
 
@@ -188,6 +192,8 @@ duello scan \
 | `--grid`                 | (see below)   | Spline grid settings (see [Spline Grid](#spline-grid)) |
 | `--pmf`                  | pmf.dat       | Output PMF file                                       |
 | `--savetable`            | --            | Save 6D binary table (`.bin.gz` for compression)      |
+| `--savescan`             | --            | Save a self-contained session (`.duello.zip`: table, bodies, PMF) for [duello-web](https://mlund.github.io/duello-web/) or [`duello nbody`](#duello-nbody----many-body-monte-carlo) |
+| `--locator`              | geodesic      | Angular mesh: `geodesic` (near-uniform, search) or `lattice` (closed-form lookup) |
 | `--xtcfile`              | --            | Export all table poses as an XTC trajectory (see [Trajectory Output](#trajectory-output)) |
 | `--fixed-dielectric`     | --            | Override dielectric constant                          |
 
@@ -252,6 +258,74 @@ The output is a flat binary table (`Table3DFlat`) with barycentric interpolation
 | `--pmf`         | pmf.dat            | Output PMF file                          |
 
 All other radial, topology, backend, and PDB/CIF flags are shared with `duello scan`.
+
+## `duello nbody` -- Many-Body Monte Carlo
+
+Metropolis Monte Carlo of _N_ rigid copies of a protein in a periodic box, using the pair energies of a
+homo-dimer scan. It gives the scattering intensity _I(q)_, the structure factor _S(q)_ and the
+mass-centre _g(r)_ at a chosen protein concentration, where _B2_ alone describes only the dilute limit.
+
+Save the scan as a session, then run on it:
+
+```sh
+duello scan \
+    --mol1 4lzt.pdb --mol2 4lzt.pdb \
+    --rmin 24 --rmax 80 --dr 0.5 \
+    --ionic-strength 0.05 \
+    --savescan lys.duello.zip
+
+duello nbody --scan lys.duello.zip --bodies 200 --protein-molarity 0.001
+```
+
+Scattering needs a form factor for every bead kind; these exist for amino-acid residues, so start
+from PDB/CIF input (or an XYZ with residue beads). Salt, temperature and the force field come from
+the scan; the box follows from `--bodies` and
+`--protein-molarity`. Each copy equilibrates (tuning its move steps) and then runs `--sweeps`
+production sweeps. The copies are independent runs, which the error columns compare.
+
+| Flag                   | Default        | Description                                                 |
+|------------------------|----------------|-------------------------------------------------------------|
+| `--scan`               | (required)     | Homo-dimer session from `duello scan --savescan`            |
+| `-n, --bodies`         | (required)     | Number of proteins                                          |
+| `--protein-molarity`   | (required)     | Protein concentration (mol/L)                               |
+| `--copies`             | 4              | Independent copies, for error bars                          |
+| `--sweeps`             | 10000          | Production sweeps per copy                                  |
+| `--frame-interval`     | 50             | Sweeps between _I(q)_ frames (10 with `--centres-only`)     |
+| `--qmax`               | 0.5            | Largest _q_ (Å⁻¹)                                           |
+| `--vectors-per-bin`    | 16             | Lattice _q_-vectors per \|_q_\| bin; more give smoother _I(q)_ at more cost |
+| `--centres-only`       | --             | Mass-centre _S(q)_ only, far cheaper per frame              |
+| `--translation`, `--rotation` | 3 Å, 0.2 rad | Starting move steps                                   |
+| `--fixed-steps`        | --             | Keep the move steps instead of tuning them                  |
+| `--msa-diameter`, `--msa-debye-length` | from the scan | Charged-sphere (MSA) reference for `S_HSY`     |
+| `--seed`               | 1              | Random seed                                                 |
+| `-o, --output`         | nbody          | Output prefix                                               |
+
+| File               | Contents |
+|--------------------|----------|
+| `PREFIX.csv`       | `#` lines with run and move statistics, then `q/Å⁻¹,I,P,S_eff,S_eff_error,S_com,S_com_error,S_HSY` |
+| `PREFIX.rdf.csv`   | Mass-centre radial distribution, `r/Å,g,g_error`  |
+| `PREFIX.traj`      | Poses of all copies (compact; see `nbody-expand`)  |
+
+`I` and the form factor `P` are per molecule and averaged over frames; `S_eff` = `I`/`P` is the
+effective structure factor an experiment measures, `S_com` the mass-centre structure factor, and
+`S_HSY` the charged-sphere reference. Errors are jackknife estimates over copies (NaN with one copy).
+The `.duello.zip` format may change between releases; sessions from older versions are refused.
+
+### `duello nbody-expand` -- Bead Trajectory
+
+Expands an `nbody` trajectory to bead coordinates: an XTC file plus an XYZ topology written next to it.
+
+```sh
+duello nbody-expand nbody.traj -o nbody.xtc   # copy 0; also writes nbody.xyz
+vmd nbody.xyz nbody.xtc
+```
+
+| Flag            | Default    | Description                                              |
+|-----------------|------------|----------------------------------------------------------|
+| `<TRAJECTORY>`  | (required) | Trajectory from `duello nbody`                           |
+| `-o, --output`  | nbody.xtc  | Bead XTC; must end in `.xtc` and differ from the input   |
+| `--copy`        | 0          | Copy to keep; copies are independent runs                |
+| `--all-copies`  | --         | Keep every copy (frames interleave), e.g. for averaging  |
 
 ## `duello diffusion` -- Rotational Diffusion
 
