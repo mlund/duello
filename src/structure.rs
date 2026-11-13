@@ -75,7 +75,7 @@ impl Structure {
             .map(|(name, _)| {
                 atomkinds
                     .find_name(name)
-                    .map(|i| i.sigma().unwrap_or(0.0) * 0.5)
+                    .map(bead_radius)
                     .context(format!("Unknown atom name in XYZ file: {name}"))
             })
             .try_collect()?;
@@ -151,6 +151,18 @@ impl Structure {
         let center = structure.mass_center();
         structure.translate(&-center); // translate to 0,0,0
         Ok(structure)
+    }
+
+    /// One bead of `kind` at the origin. Not centred, so a massless kind
+    /// (a ghost or test atom) can't divide by zero.
+    pub fn single_bead(kind: &AtomKind) -> Self {
+        Self {
+            pos: vec![Vector3::zeros()],
+            masses: vec![kind.mass()],
+            charges: vec![kind.charge()],
+            radii: vec![bead_radius(kind)],
+            atom_ids: vec![kind.id()],
+        }
     }
 
     /// Returns the center of mass of the structure
@@ -382,4 +394,9 @@ impl AminoAcidModelRecord {
             radius: radius.parse()?,
         })
     }
+}
+
+/// Half the topology σ; 0 where the kind has none.
+fn bead_radius(kind: &AtomKind) -> f64 {
+    kind.sigma().unwrap_or(0.0) * 0.5
 }

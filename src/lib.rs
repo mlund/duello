@@ -12,13 +12,20 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
+pub mod archive;
 pub mod backend;
+pub mod bundle;
 #[cfg(feature = "cli")]
 pub mod diffusion;
 pub mod energy;
 pub mod icoscan;
+pub mod molecule;
+pub mod nbody;
+pub mod poses;
 pub mod report;
 mod sample;
+pub mod solution;
+pub mod steric;
 pub mod structure;
 pub mod system;
 #[cfg(feature = "cli")]
@@ -29,7 +36,36 @@ pub mod web_api;
 pub use sample::Sample;
 /// Shown by front-ends so a result can be traced to the library that produced it.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub use virial::VirialCoeff;
+pub use virial::{
+    open_at_sigma, weight_at_sigma, Association, MolarAssociation, VirialCoeff, OPEN_AT_SIGMA,
+};
+
+/// Converts number densities in Å⁻³ to and from mol/L.
+pub(crate) const LITER_PER_CUBIC_ANGSTROM: f64 = 1e-27;
+
+/// Particles per Å³ at `molarity` mol/L.
+pub(crate) fn number_density(molarity: f64) -> f64 {
+    molarity * physical_constants::AVOGADRO_CONSTANT * LITER_PER_CUBIC_ANGSTROM
+}
+
+/// Shoemake's method: uniform on SO(3).
+pub(crate) fn random_orientation(rng: &mut impl rand::Rng) -> UnitQuaternion {
+    use std::f64::consts::TAU;
+    let (u1, u2, u3): (f64, f64, f64) = (rng.gen(), rng.gen(), rng.gen());
+    let (a, b) = ((1.0 - u1).sqrt(), u1.sqrt());
+    let q = nalgebra::Quaternion::new(
+        b * (TAU * u3).cos(),
+        a * (TAU * u2).sin(),
+        a * (TAU * u2).cos(),
+        b * (TAU * u3).sin(),
+    );
+    UnitQuaternion::new_normalize(q)
+}
+
+/// kT in kJ/mol, the energy unit of all tables.
+pub fn thermal_energy(temperature: f64) -> f64 {
+    physical_constants::MOLAR_GAS_CONSTANT * temperature * 1e-3
+}
 
 #[macro_use]
 extern crate log;
@@ -38,5 +74,6 @@ extern crate log;
 // the shared `icotable` crate to avoid duplication with Faunus.
 pub use icotable::{
     make_icosphere_vertices, Adaptive3DBuilder, AdaptiveBuilder, IcoTable2D, PaddedTable,
-    SphericalCoord, Table3DAdaptive, Table6D, Table6DAdaptive, UnitQuaternion, Vector3,
+    PointGroup, SphericalCoord, Subdivision, Table3DAdaptive, Table6D, Table6DAdaptive,
+    UnitQuaternion, Vector3,
 };

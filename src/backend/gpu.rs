@@ -107,6 +107,14 @@ unsafe impl Send for GpuBackend {}
 #[cfg(target_arch = "wasm32")]
 unsafe impl Sync for GpuBackend {}
 
+/// Headless compute: no surface, prefer the discrete GPU.
+fn adapter_options() -> wgpu::RequestAdapterOptions<'static, 'static> {
+    wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        ..Default::default()
+    }
+}
+
 impl GpuBackend {
     /// Check if a GPU is available for compute (not available on WASM — use async path).
     #[cfg(not(target_arch = "wasm32"))]
@@ -114,12 +122,7 @@ impl GpuBackend {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
 
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        }))
-        .is_ok()
+        pollster::block_on(instance.request_adapter(&adapter_options())).is_ok()
     }
 
     /// Create a new GPU backend, auto-detecting grid type from the splined matrix (not available on WASM).
@@ -132,11 +135,7 @@ impl GpuBackend {
     ) -> anyhow::Result<Self> {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        }))?;
+        let adapter = pollster::block_on(instance.request_adapter(&adapter_options()))?;
 
         log::info!("Using GPU adapter: {:?}", adapter.get_info().name);
 
@@ -169,13 +168,7 @@ impl GpuBackend {
     ) -> anyhow::Result<Self> {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-            })
-            .await?;
+        let adapter = instance.request_adapter(&adapter_options()).await?;
 
         log::info!("Using GPU adapter: {:?}", adapter.get_info().name);
 
@@ -512,7 +505,11 @@ impl GpuBackend {
 
     /// Read back energies from a mapped staging buffer.
     fn read_staging(staging_buffer: &wgpu::Buffer) -> Vec<f32> {
-        let data = staging_buffer.slice(..).get_mapped_range();
+        // Callers have already checked the map succeeded, so a failed view is a bug.
+        let data = staging_buffer
+            .slice(..)
+            .get_mapped_range()
+            .expect("staging buffer is mapped");
         let energies: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
         drop(data);
         staging_buffer.unmap();
@@ -529,13 +526,20 @@ impl GpuBackend {
 
         // Synchronous readback
         let slice = staging_buffer.slice(..);
-        slice.map_async(wgpu::MapMode::Read, |_| {});
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
         self.device
             .poll(wgpu::PollType::Wait {
                 submission_index: None,
                 timeout: None,
             })
             .unwrap();
+        receiver
+            .recv()
+            .unwrap()
+            .expect("GPU staging buffer map failed");
 
         Self::read_staging(&staging_buffer)
     }

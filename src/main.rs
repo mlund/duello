@@ -12,6 +12,8 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
+mod nbody_cmd;
+
 use anyhow::{anyhow, bail, Context, Result};
 use cgkitten::{residue::PkaOverrides, CgSystem};
 use clap::{Parser, Subcommand};
@@ -86,7 +88,6 @@ impl CgArgs {
             model: self.model.clone(),
             single_bead: matches!(self.cg, CgPolicy::Single),
             scale_hydrophobic,
-            chains: self.chain.clone(),
             pka,
         })
     }
@@ -266,9 +267,10 @@ enum Commands {
         /// YAML file with atom definitions (names, charges, etc.)
         #[arg(short = 'p', long = "top")]
         topology: PathBuf,
-        /// 1:1 salt molarity in mol/l
-        #[arg(short = 'M', long, default_value = "0.1")]
-        molarity: f64,
+        /// Ionic strength (mol/L) setting the Debye length for titration, the
+        /// pair energy and the HSY reference; estimate it yourself, e.g. from free salt.
+        #[arg(short = 'M', long, visible_alias = "molarity", default_value = "0.1")]
+        ionic_strength: f64,
         /// Cutoff distance for pair-wise interactions (angstroms)
         #[arg(long, default_value = "30.0")]
         cutoff: f64,
@@ -306,9 +308,10 @@ enum Commands {
         /// YAML file with atom definitions (required for XYZ input, generated for PDB/CIF; inputs must not mix the two)
         #[arg(short = 'a', long = "top")]
         topology: Option<PathBuf>,
-        /// 1:1 salt molarity in mol/l
-        #[arg(short = 'M', long, default_value = "0.1")]
-        molarity: f64,
+        /// Ionic strength (mol/L) setting the Debye length for titration, the
+        /// pair energy and the HSY reference; estimate it yourself, e.g. from free salt.
+        #[arg(short = 'M', long, visible_alias = "molarity", default_value = "0.1")]
+        ionic_strength: f64,
         /// Cutoff distance for pair-wise interactions (angstroms)
         #[arg(long, default_value = "30.0")]
         cutoff: f64,
@@ -336,9 +339,9 @@ enum Commands {
         /// Path to second structure file (XYZ, PDB, or mmCIF)
         #[arg(short = '2', long)]
         mol2: PathBuf,
-        /// Minimum mass center distance
+        /// Minimum mass center distance; by default where every orientation overlaps
         #[arg(long)]
-        rmin: f64,
+        rmin: Option<f64>,
         /// Maximum mass center distance
         #[arg(long)]
         rmax: f64,
@@ -348,9 +351,10 @@ enum Commands {
         /// YAML file with atom definitions (required for XYZ input, generated for PDB/CIF; inputs must not mix the two)
         #[arg(short = 'a', long = "top")]
         topology: Option<PathBuf>,
-        /// 1:1 salt molarity in mol/l
-        #[arg(short = 'M', long, default_value = "0.1")]
-        molarity: f64,
+        /// Ionic strength (mol/L) setting the Debye length for titration, the
+        /// pair energy and the HSY reference; estimate it yourself, e.g. from free salt.
+        #[arg(short = 'M', long, visible_alias = "molarity", default_value = "0.1")]
+        ionic_strength: f64,
         /// Cutoff distance for pair-wise interactions (angstroms)
         #[arg(long, default_value = "30.0")]
         cutoff: f64,
@@ -366,6 +370,10 @@ enum Commands {
         /// Save binary 6D table for Faunus lookup (.gz suffix enables gzip compression)
         #[arg(long)]
         savetable: Option<PathBuf>,
+        /// Save a self-contained session (.duello.zip: table, CG bodies, PMF and
+        /// readable extracts) for duello-web or `duello nbody --scan`
+        #[arg(long)]
+        savescan: Option<PathBuf>,
         /// Export every table pose to an XTC trajectory, with energies and pose
         /// indices in a companion .energy.csv.gz and atom names in a .xyz
         #[arg(long)]
@@ -428,6 +436,11 @@ enum Commands {
         #[arg(short = 'j', long, default_value = "0")]
         threads: usize,
     },
+    /// Metropolis MC of N rigid proteins from a homo-dimer scan; writes I(q),
+    /// MC statistics and a pose trajectory
+    Nbody(nbody_cmd::NBodyArgs),
+    /// Expand an nbody trajectory to bead coordinates (XTC plus XYZ topology)
+    NbodyExpand(nbody_cmd::ExpandArgs),
 }
 
 /// Mirrors faunus `--check`, so scripts can validate inputs cheaply.
@@ -462,6 +475,74 @@ fn save_generated(inputs: &[&PathBuf], generated: Option<&CgSystem>) -> Result<(
     Ok(())
 }
 
+/// Archive contents for `--savescan`; see `ScanSettings` for what isn't recorded.
+fn save_scan_request(
+    cmd: &Commands,
+    path: PathBuf,
+    (rmin, rmin_auto): (f64, bool),
+    homo_dimer: bool,
+    generated: Option<&cgkitten::CgSystem>,
+) -> Result<icoscan::SaveScan> {
+    let Commands::Scan {
+        rmax,
+        dr,
+        topology: top_file,
+        ionic_strength,
+        cutoff,
+        temperature,
+        max_ndiv,
+        gradient_threshold,
+        backend,
+        grid,
+        sr_cutoff,
+        cg,
+        locator,
+        ..
+    } = cmd
+    else {
+        bail!("Unknown command");
+    };
+    let cg = cg.options()?;
+    // Mirrors do_scan: only the reference backend splines the full cutoff.
+    let spline_cutoff = match backend {
+        Backend::Reference => *cutoff,
+        _ => sr_cutoff.unwrap_or(*cutoff),
+    };
+    // Without generated CG, a --top file defined the system, not cg.model.
+    let model = match generated {
+        Some(_) => cg.model,
+        None => "custom topology".to_string(),
+    };
+    let settings = duello::archive::ScanSettings {
+        ph: cg.ph,
+        model,
+        single_bead: cg.single_bead,
+        rmin,
+        rmin_auto,
+        rmax: *rmax,
+        dr: *dr,
+        ionic_strength: *ionic_strength,
+        temperature: *temperature,
+        max_ndiv: *max_ndiv,
+        gradient_threshold: *gradient_threshold,
+        cutoff: spline_cutoff,
+        grid_size: grid.size,
+        homo_dimer,
+        subdivision: (*locator).into(),
+    };
+    // A given --top file replaces CG generation, so it is the topology to keep.
+    let topology_yaml = match (generated, top_file) {
+        (Some(cg), _) => cg.topology.clone(),
+        (None, Some(file)) => std::fs::read_to_string(file)?,
+        (None, None) => String::new(),
+    };
+    Ok(icoscan::SaveScan {
+        path,
+        settings,
+        topology_yaml,
+    })
+}
+
 /// Calculate energy of all two-body poses
 fn do_scan(cmd: &Commands) -> Result<()> {
     let Commands::Scan {
@@ -471,12 +552,13 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         rmax,
         dr,
         topology: top_file,
-        molarity,
+        ionic_strength,
         cutoff,
         temperature,
         fixed_dielectric,
         pmf_file,
         savetable,
+        savescan,
         xtcfile,
         max_ndiv,
         gradient_threshold,
@@ -490,7 +572,12 @@ fn do_scan(cmd: &Commands) -> Result<()> {
     else {
         bail!("Unknown command");
     };
-    assert!(rmin < rmax);
+    // Explicit ranges fail before coarse-graining, so `--check` catches them.
+    anyhow::ensure!(
+        rmin.is_none_or(|rmin| rmin < *rmax),
+        "R_min ({:.1} Å) must be below R_max ({rmax:.1} Å)",
+        rmin.unwrap_or_default()
+    );
 
     // Canonical paths, so `x.cif` and `./x.cif` count as the same molecule.
     let canonical = |p: &PathBuf| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
@@ -502,12 +589,12 @@ fn do_scan(cmd: &Commands) -> Result<()> {
 
     // Either use fixed dielectric constant or calculate it from the medium
     let medium = fixed_dielectric.map_or_else(
-        || Medium::salt_water(*temperature, Salt::SodiumChloride, *molarity),
+        || Medium::salt_water(*temperature, Salt::SodiumChloride, *ionic_strength),
         |dielectric_const| {
             Medium::new(
                 *temperature,
                 permittivity::Permittivity::Fixed(dielectric_const),
-                Some((Salt::SodiumChloride, *molarity)),
+                Some((Salt::SodiumChloride, *ionic_strength)),
             )
         },
     );
@@ -522,6 +609,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         a: Source::File(mol1),
         b: (!homo_dimer).then_some(Source::File(mol2)),
         top: top_file.as_deref(),
+        chains: [&cg.chain, &cg.chain],
         cg: cg.options()?,
         medium: &medium,
     })?;
@@ -529,6 +617,8 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         return input_ok();
     }
     save_generated(loaded, generated.as_ref())?;
+    let rmin_auto = rmin.is_none();
+    let rmin = duello::steric::resolve_rmin(*rmin, [&ref_a, &ref_b], *dr, *rmax)?;
 
     info!("{medium}");
     info!(
@@ -568,7 +658,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
 
     let scan_config = icoscan::ScanConfig {
         params: icoscan::ScanParams {
-            rmin: *rmin,
+            rmin,
             rmax: *rmax,
             dr: *dr,
             temperature: *temperature,
@@ -585,6 +675,12 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         save_table: savetable.clone(),
         trajectory: xtcfile.clone(),
         atom_kinds: topology.atomkinds().to_vec(),
+        save_scan: savescan
+            .clone()
+            .map(|path| {
+                save_scan_request(cmd, path, (rmin, rmin_auto), homo_dimer, generated.as_ref())
+            })
+            .transpose()?,
     };
 
     // energy_cap only applies to SR-only splines (GPU/SIMD split path).
@@ -645,7 +741,7 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
         rmax,
         dr,
         topology: top_file,
-        molarity,
+        ionic_strength,
         cutoff: _,
         temperature,
         output,
@@ -658,7 +754,7 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
     };
     anyhow::ensure!(rmin < rmax, "rmin ({rmin}) must be less than rmax ({rmax})");
 
-    let medium = Medium::salt_water(*temperature, Salt::SodiumChloride, *molarity);
+    let medium = Medium::salt_water(*temperature, Salt::SodiumChloride, *ionic_strength);
     let PairSystem {
         ref_a,
         topology,
@@ -669,6 +765,7 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
         a: Source::File(mol1),
         b: None,
         top: top_file.as_deref(),
+        chains: [&cg.chain, &cg.chain],
         cg: cg.options()?,
         medium: &medium,
     })?;
@@ -689,7 +786,7 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
 
     // β = 1/kT in mol/kJ — needed by the adaptive builder to detect
     // repulsive slabs where all Boltzmann weights are negligible
-    let thermal_energy = physical_constants::MOLAR_GAS_CONSTANT * temperature * 1e-3;
+    let thermal_energy = duello::thermal_energy(*temperature);
     let beta = 1.0 / thermal_energy;
 
     let subdivision: icotable::Subdivision = (*locator).into();
@@ -749,7 +846,8 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
         output.display()
     );
 
-    report::report_pmf(&samples, pmf_file, None)?;
+    let test_atom = Structure::single_bead(&topology.atomkinds()[test_atom_id]);
+    report::report_pmf(&samples, [&ref_a, &test_atom], *temperature, pmf_file)?;
     Ok(())
 }
 
@@ -848,7 +946,7 @@ fn do_potential(cmd: &Commands) -> Result<()> {
         resolution,
         radius,
         topology,
-        molarity,
+        ionic_strength,
         cutoff: _,
         temperature,
     } = cmd
@@ -871,7 +969,7 @@ fn do_potential(cmd: &Commands) -> Result<()> {
     );
 
     // Electrolyte background
-    let medium = Medium::salt_water(*temperature, Salt::SodiumChloride, *molarity);
+    let medium = Medium::salt_water(*temperature, Salt::SodiumChloride, *ionic_strength);
     let multipole = Plain::new(f64::INFINITY, medium.debye_length());
 
     let icotable = IcoTable2D::<f64>::from_min_points(n_points)?;
@@ -944,7 +1042,7 @@ fn do_diffusion(cmd: &Commands) -> Result<()> {
 
     let temp = *temperature;
 
-    let beta = 1.0 / (physical_constants::MOLAR_GAS_CONSTANT * 1e-3 * temp);
+    let beta = 1.0 / duello::thermal_energy(temp);
     info!(
         "T = {temp:.2} K, β = {beta:.4} mol/kJ, R range = {:.1}–{:.1} Å, dr = {:.2} Å",
         table.rmin, table.rmax, table.dr
@@ -1083,6 +1181,8 @@ fn do_main() -> Result<()> {
             Commands::Dipole { .. } => do_dipole(&cmd)?,
             Commands::Scan { .. } => do_scan(&cmd)?,
             Commands::Potential { .. } => do_potential(&cmd)?,
+            Commands::Nbody(args) => nbody_cmd::run_nbody(&args)?,
+            Commands::NbodyExpand(args) => nbody_cmd::run_expand(&args)?,
         },
         None => {
             bail!("No command given");
@@ -1097,5 +1197,35 @@ fn main() -> ExitCode {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--molarity` stays as an alias, so old scripts scan at the same salt.
+    #[test]
+    fn molarity_is_the_ionic_strength_by_its_old_name() {
+        for flag in ["--molarity", "--ionic-strength"] {
+            let args = [
+                "duello",
+                "potential",
+                "-1",
+                "a.xyz",
+                "--radius",
+                "5",
+                "--top",
+                "t.yaml",
+                flag,
+                "0.03",
+            ];
+            let Some(Commands::Potential { ionic_strength, .. }) =
+                Cli::try_parse_from(args).unwrap().command
+            else {
+                unreachable!()
+            };
+            assert_eq!(ionic_strength, 0.03, "{flag}");
+        }
     }
 }

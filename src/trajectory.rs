@@ -32,8 +32,7 @@ use std::path::{Path, PathBuf};
 
 const CSV_HEADER: &str = "frame,r_angstrom,omega_rad,n_div,vi,vj,resolution,energy_kjmol";
 
-/// Gromacs default, i.e. 0.001 nm coordinate resolution.
-const XTC_PRECISION: f32 = 1000.0;
+use crate::nbody::trajectory::{cubic_boxvec, XTC_PRECISION};
 
 /// Enough to absorb molly's handful of small writes per frame.
 const IO_BUFFER: usize = 1 << 20;
@@ -144,8 +143,7 @@ impl<X: Write, E: Write> TrajectoryWriter<X, E> {
     /// Poses are not wrapped into it; it exists because tools such as
     /// `gmx trjconv -pbc` reject an all-zero box.
     fn set_cubic_box(&mut self, side: f64) {
-        let side = (side * ANGSTROM_TO_NM) as f32;
-        self.frame.boxvec = [side, 0.0, 0.0, 0.0, side, 0.0, 0.0, 0.0, side];
+        self.frame.boxvec = cubic_boxvec(side);
     }
 }
 

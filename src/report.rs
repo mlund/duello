@@ -12,8 +12,9 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
+use crate::structure::Structure;
 use crate::Vector3;
-use crate::{Sample, VirialCoeff};
+use crate::{steric::Steric, Sample, VirialCoeff};
 
 /// Computed PMF results for programmatic consumption.
 pub struct PmfResult {
@@ -23,11 +24,13 @@ pub struct PmfResult {
 }
 
 /// One point of the PMF and mean energy curves, in kT.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PmfPoint {
     pub r: f32,
     pub free_energy: f32,
     pub mean_energy: f32,
+    /// ⟨δU²⟩ over orientations at R in kT², which equals the orientational heat capacity C(R)/k.
+    pub energy_variance: f32,
 }
 
 impl PmfPoint {
@@ -40,26 +43,88 @@ impl PmfPoint {
             r: r as f32,
             free_energy: free_energy as f32,
             mean_energy: mean_energy as f32,
+            energy_variance: sample.heat_capacity() as f32,
         })
     }
 }
 
-/// Compute PMF/virial from samples without writing files.
-pub fn compute_pmf(samples: &[(Vector3, Sample)]) -> anyhow::Result<PmfResult> {
+/// PMF points as CSV, for spreadsheets.
+pub fn pmf_csv(points: &[PmfPoint]) -> String {
+    let mut csv = String::from("R/Å,F/kT,U/kT,C/k\n");
+    for p in points {
+        csv += &format!(
+            "{:.2},{:.4},{:.4},{:.4}\n",
+            p.r, p.free_energy, p.mean_energy, p.energy_variance
+        );
+    }
+    csv
+}
+
+/// Compute PMF/virial from samples without writing files; B₂₂* and K_a are
+/// relative to the bodies' steric B₂₂ʳᵉᶠ.
+pub fn compute_pmf(
+    samples: &[(Vector3, Sample)],
+    [a, b]: [&Structure; 2],
+) -> anyhow::Result<PmfResult> {
     let points: Vec<PmfPoint> = samples
         .iter()
         .filter_map(|(r, sample)| PmfPoint::new(r.norm(), sample))
         .collect();
     let virial = VirialCoeff::from_pmf(points.iter().map(|p| (p.r, p.free_energy)), None)?;
+    let b2_ref = Steric::new(a, b).b2();
+    let virial = if b2_ref > 0.0 {
+        virial.with_reference(b2_ref)
+    } else {
+        warn!("Topology gives no bead radii, so B₂₂* and K_d use hard spheres at σ");
+        virial
+    };
     Ok(PmfResult { points, virial })
+}
+
+/// Advice when the pair still meets at σ, since the hard-sphere fill below σ then biases B₂₂.
+pub fn sigma_warning(pmf: &[PmfPoint], sigma: f64) -> Option<String> {
+    let weight = crate::weight_at_sigma(pmf, sigma).filter(|&w| crate::open_at_sigma(w))?;
+    Some(format!(
+        "e^(−w/kT) = {weight:.2} at σ = {sigma:.1} Å: the pair still meets there, \
+         so B₂₂ depends on --rmin; scan from a smaller --rmin, \
+         or a smaller --dr if closer R overlap"
+    ))
+}
+
+/// B₂₂ʳᵉᶠ and what is relative to it: B₂₂* and, under net attraction, K_d and
+/// its energetics at `temperature` (K).
+#[cfg(feature = "cli")]
+fn report_reference(result: &PmfResult, temperature: f64) {
+    let virial = &result.virial;
+    info!(
+        "Steric reference (hard beads), 𝐵₂ʳᵉᶠ = {:.2} Å³, σ_eff = {:.2} Å",
+        virial.reference(),
+        virial.sigma_eff()
+    );
+    info!(
+        "Reduced second virial coefficient, 𝐵₂ / 𝐵₂ʳᵉᶠ = {:.2}",
+        virial.reduced()
+    );
+    if let Some(association) = crate::Association::new(virial, &result.points) {
+        let molar = association.molar(temperature);
+        info!(
+            "Dissociation constant, 𝐾𝑑 = {:.2e} mol/l, relative to 𝐵₂ʳᵉᶠ",
+            association.ka.recip()
+        );
+        info!(
+            "Association (1 M): ΔA° = {:.2} kJ/mol, ΔU° = {:.2} kJ/mol, ΔS° = {:.1} J/(K·mol)",
+            molar.delta_a, molar.delta_u, molar.delta_s
+        );
+    }
 }
 
 /// Write PMF and mean energy as a function of mass center separation to file
 #[cfg(feature = "cli")]
 pub fn report_pmf(
     samples: &[(Vector3, Sample)],
+    bodies: [&Structure; 2],
+    temperature: f64,
     path: &std::path::PathBuf,
-    masses: Option<(f64, f64)>,
 ) -> anyhow::Result<()> {
     use anyhow::{bail, Context};
     use nu_ansi_term::Color::{Red, Yellow};
@@ -67,7 +132,8 @@ pub fn report_pmf(
     use std::{fs::File, io::Write};
     use textplots::{Chart, ColorPlot, Shape};
 
-    let result = compute_pmf(samples)?;
+    let result = compute_pmf(samples, bodies)?;
+    let [a, b] = bodies;
 
     // File with F(R) and U(R)
     let mut pmf_file = File::create(path).context("Cannot create pmf file")?;
@@ -97,26 +163,18 @@ pub fn report_pmf(
         "Second virial coefficient, 𝐵₂ = {:.2} Å³",
         f64::from(result.virial.clone())
     );
-    if let Some((mw1, mw2)) = masses {
+    // A test atom may be massless.
+    let (mw1, mw2) = (a.total_mass(), b.total_mass());
+    if mw1 > 0.0 && mw2 > 0.0 {
         info!(
             "                              = {:.2e} mol⋅ml/g²",
             result.virial.mol_ml_per_gram2(mw1, mw2)
         );
     }
-
-    info!(
-        "Reduced second virial coefficient, 𝐵₂ / 𝐵₂hs = {:.2} using σ = {:.2} Å",
-        result.virial.reduced(),
-        result.virial.sigma()
-    );
-
-    if let Some(kd) = result.virial.dissociation_const() {
-        info!(
-            "Dissociation constant, 𝐾𝑑 = {:.2e} mol/l using σ = {:.2} Å",
-            kd,
-            result.virial.sigma()
-        );
+    if let Some(warning) = sigma_warning(&result.points, result.virial.sigma()) {
+        warn!("{warning}");
     }
+    report_reference(&result, temperature);
 
     info!(
         "Plot: {} and {} along mass center separation. In units of kT and angstroms.",
@@ -139,4 +197,49 @@ pub fn report_pmf(
             .nice();
     };
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    fn opening(weight: f64) -> [PmfPoint; 2] {
+        let point = |r, w: f64| PmfPoint {
+            r,
+            free_energy: w as f32,
+            mean_energy: 0.0,
+            energy_variance: 0.0,
+        };
+        [point(26.0, -weight.ln()), point(26.5, 0.0)]
+    }
+
+    #[test]
+    fn warns_only_when_pair_still_meets_at_sigma() {
+        let warning = sigma_warning(&opening(0.12), 26.0).unwrap();
+        assert!(
+            warning.contains("0.12") && warning.contains("--rmin"),
+            "{warning}"
+        );
+        assert_eq!(sigma_warning(&opening(0.001), 26.0), None);
+    }
+
+    /// Two levels, 0 and ε, with degeneracies 1 and 3: a Bernoulli variable,
+    /// so ⟨δU²⟩ = p(1−p)ε² with p the weight of the ε level.
+    #[test]
+    fn energy_variance_of_a_two_level_system() {
+        let temperature = 298.15;
+        let kt = crate::thermal_energy(temperature);
+        let epsilon = 2.0;
+        let sample =
+            Sample::new(0.0, temperature, 1.0) + Sample::new(epsilon * kt, temperature, 3.0);
+        let point = PmfPoint::new(4.0, &sample).unwrap();
+
+        let p = 3.0 * (-epsilon).exp() / (1.0 + 3.0 * (-epsilon).exp());
+        assert_relative_eq!(
+            point.energy_variance as f64,
+            p * (1.0 - p) * epsilon * epsilon,
+            max_relative = 1e-6
+        );
+    }
 }

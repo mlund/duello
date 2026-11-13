@@ -19,10 +19,9 @@ use crate::{
     Sample, Vector3,
 };
 use icotable::{AdaptiveBuilder, Subdivision, Table6DAdaptive};
+use icotable::{TableMetadata, TailCorrectionTerm};
 use std::ops::ControlFlow;
 
-#[cfg(feature = "cli")]
-use icotable::{TableMetadata, TailCorrectionTerm};
 #[cfg(feature = "cli")]
 use std::path::PathBuf;
 
@@ -61,6 +60,16 @@ pub struct ScanConfig {
     pub trajectory: Option<PathBuf>,
     /// Atom names for the trajectory's topology file; XTC stores none.
     pub atom_kinds: Vec<faunus::topology::AtomKind>,
+    /// Save a self-contained scan archive, e.g. for the web tool.
+    pub save_scan: Option<SaveScan>,
+}
+
+/// What an archive records beyond the scan itself.
+#[cfg(feature = "cli")]
+pub struct SaveScan {
+    pub path: PathBuf,
+    pub settings: crate::archive::ScanSettings,
+    pub topology_yaml: String,
 }
 
 /// Progress of a running scan, reported after each R-bin.
@@ -124,8 +133,8 @@ pub struct Pose {
 /// Derived from the finest icosphere mesh so that the ω resolution matches the
 /// angular vertex spacing. The generated table keeps only the resulting bin
 /// count, so after-analysis has to rederive the step from here.
-pub(crate) fn omega_step(params: &ScanParams) -> f64 {
-    params.subdivision.angular_resolution(params.max_n_div)
+pub(crate) fn omega_step(subdivision: Subdivision, max_n_div: usize) -> f64 {
+    subdivision.angular_resolution(max_n_div)
 }
 
 /// Build the adaptive 6D table builder for `params` and log its resolution.
@@ -133,14 +142,14 @@ pub(crate) fn omega_step(params: &ScanParams) -> f64 {
 /// entry points so the scheme-aware ω/vertex derivation stays single-sourced.
 fn make_6d_builder(params: &ScanParams) -> AdaptiveBuilder {
     let max_n_vertices = params.subdivision.n_vertices(params.max_n_div);
-    let beta = 1.0 / (physical_constants::MOLAR_GAS_CONSTANT * params.temperature * 1e-3); // 1/(kJ/mol)
+    let beta = 1.0 / crate::thermal_energy(params.temperature); // 1/(kJ/mol)
 
     let builder = AdaptiveBuilder::with_subdivision(
         params.subdivision,
         params.rmin,
         params.rmax,
         params.dr,
-        omega_step(params),
+        omega_step(params.subdivision, params.max_n_div),
         params.max_n_div,
         params.gradient_threshold,
         beta,
@@ -407,6 +416,38 @@ fn compute_slab_serial<B: EnergyBackend + Sync>(
     }
 }
 
+/// Tail fit and generation conditions, so table users can extend energies
+/// beyond `rmax` and check the temperature the table was made at.
+pub(crate) fn table_metadata(params: &ScanParams, result: &ScanResult) -> TableMetadata {
+    let free_energies: Vec<f64> = result
+        .samples
+        .iter()
+        .map(|(_, s)| s.free_energy())
+        .collect();
+    let electric_prefactor = faunus::interatomic::ELECTRIC_PREFACTOR / params.permittivity;
+    let tail_terms = fit_tail_correction(
+        &result.distances,
+        &free_energies,
+        params.charges,
+        params.dipole_moments,
+        params.kappa,
+        electric_prefactor,
+    );
+    let point_group = if params.homo_dimer {
+        icotable::PointGroup::Exchange
+    } else {
+        icotable::PointGroup::Asymmetric
+    };
+    TableMetadata {
+        tail_terms,
+        charges: Some(params.charges),
+        dipole_moments: Some(params.dipole_moments),
+        temperature: Some(params.temperature),
+        electric_prefactor: Some(electric_prefactor),
+        point_group,
+    }
+}
+
 /// CLI wrapper: runs compute_scan + file I/O + reporting.
 #[cfg(feature = "cli")]
 pub fn do_icoscan<B: EnergyBackend + Sync>(config: &ScanConfig, backend: &B) -> anyhow::Result<()> {
@@ -419,48 +460,60 @@ pub fn do_icoscan<B: EnergyBackend + Sync>(config: &ScanConfig, backend: &B) -> 
         elapsed.as_secs_f64()
     );
 
+    // Fitted once, and only if saved: both the table file and the archive carry it.
+    if config.save_table.is_some() || config.save_scan.is_some() {
+        result.table.metadata = Some(table_metadata(&config.params, &result));
+    }
     if let Some(path) = &config.save_table {
         log::info!("Saving adaptive 6D table to {}", path.display());
-        let free_energies: Vec<f64> = result
-            .samples
-            .iter()
-            .map(|(_, s)| s.free_energy())
-            .collect();
-        let electric_prefactor =
-            faunus::interatomic::ELECTRIC_PREFACTOR / config.params.permittivity;
-        let tail_terms = fit_tail_correction(
-            &result.distances,
-            &free_energies,
-            config.params.charges,
-            config.params.dipole_moments,
-            config.params.kappa,
-            electric_prefactor,
-        );
-        let point_group = if config.params.homo_dimer {
-            icotable::PointGroup::Exchange
-        } else {
-            icotable::PointGroup::Asymmetric
-        };
-        result.table.metadata = Some(TableMetadata {
-            tail_terms,
-            charges: Some(config.params.charges),
-            dipole_moments: Some(config.params.dipole_moments),
-            temperature: Some(config.params.temperature),
-            electric_prefactor: Some(electric_prefactor),
-            point_group,
-        });
         result.table.save(path)?;
     }
 
-    let masses = (backend.ref_a().total_mass(), backend.ref_b().total_mass());
-    crate::report::report_pmf(&result.samples, &config.pmf_file, Some(masses))?;
+    let bodies = [backend.ref_a(), backend.ref_b()];
+    crate::report::report_pmf(
+        &result.samples,
+        bodies,
+        config.params.temperature,
+        &config.pmf_file,
+    )?;
 
-    // After the PMF: the trajectory can run to tens of GB, and losing the
-    // primary result to a full disk would waste the whole scan.
+    // The archive consumes the result, so the trajectory reads its table.
+    let table = match &config.save_scan {
+        Some(save) => save_archive(save, config, result, backend)?.table,
+        None => result.table,
+    };
+    // Last: the trajectory can run to tens of GB, and losing the primary
+    // results to a full disk would waste the whole scan.
     if let Some(path) = &config.trajectory {
-        write_trajectory(path, &result.table, config, backend)?;
+        write_trajectory(path, &table, config, backend)?;
     }
     Ok(())
+}
+
+#[cfg(feature = "cli")]
+fn save_archive<B: EnergyBackend>(
+    save: &SaveScan,
+    config: &ScanConfig,
+    result: ScanResult,
+    backend: &B,
+) -> anyhow::Result<crate::archive::ScanArchive> {
+    log::info!("Saving scan session to {}", save.path.display());
+    let archive = crate::archive::ScanArchive::from_scan(
+        save.settings.clone(),
+        &config.params,
+        result,
+        [backend.ref_a(), backend.ref_b()],
+        &config.atom_kinds,
+        save.topology_yaml.clone(),
+    )?;
+    let bundle = crate::bundle::BundleRef {
+        session: &Default::default(),
+        scan: Some(&archive),
+        run: None,
+        trajectory: None,
+    };
+    std::fs::write(&save.path, bundle.to_zip(&Default::default())?)?;
+    Ok(archive)
 }
 
 /// Write the pose trajectory and its two sidecars.
@@ -476,7 +529,7 @@ fn write_trajectory<B: EnergyBackend>(
 ) -> anyhow::Result<()> {
     use crate::trajectory::{write_table_poses, write_topology, TrajectoryPaths};
     let paths = TrajectoryPaths::derive(path);
-    let omega_step = omega_step(&config.params);
+    let omega_step = omega_step(config.params.subdivision, config.params.max_n_div);
     let (ref_a, ref_b) = (backend.ref_a(), backend.ref_b());
 
     write_topology(&paths, table, omega_step, ref_a, ref_b, &config.atom_kinds)?;
@@ -507,7 +560,6 @@ pub(crate) fn orient_structures(
 /// The ion-ion (Yukawa) coefficient is the charge product `z₁·z₂`; the Coulomb
 /// prefactor `e²/(4��ε₀εᵣ)` is stored separately in [`TableMetadata::electric_prefactor`].
 /// Higher-order terms are fitted from the residual using log-space linear regression.
-#[cfg(feature = "cli")]
 fn fit_tail_correction(
     distances: &[f64],
     free_energies: &[f64],
@@ -569,7 +621,6 @@ fn fit_tail_correction(
 ///
 /// Linearizes `ln|u(R)·R^power| = ln|C| - κ·R` and fits slope/intercept.
 /// Only uses bins with the majority sign to avoid fitting across zero crossings.
-#[cfg(feature = "cli")]
 fn fit_screened_term(
     distances: &[f64],
     energies: &[f64],
@@ -732,7 +783,7 @@ mod tests {
             let builder = make_6d_builder(&params);
             for oi in 0..builder.n_omega() {
                 assert_relative_eq!(
-                    oi as f64 * omega_step(&params),
+                    oi as f64 * omega_step(params.subdivision, params.max_n_div),
                     builder.omega_value(oi),
                     epsilon = 1e-12
                 );
@@ -778,7 +829,8 @@ mod tests {
             ControlFlow::Continue(())
         };
         let result = compute_scan(&params(1), &backend, Some(&on_progress)).unwrap();
-        let pmf = crate::report::compute_pmf(&result.samples).unwrap();
+        let pmf = crate::report::compute_pmf(&result.samples, [backend.ref_a(), backend.ref_b()])
+            .unwrap();
 
         let streamed = streamed.into_inner();
         let n = result.samples.len();
@@ -792,6 +844,26 @@ mod tests {
             points.iter().map(key).collect::<Vec<_>>(),
             pmf.points.iter().map(key).collect::<Vec<_>>()
         );
+    }
+
+    /// Stub beads are radius 1, so the steric reference is two touching unit
+    /// spheres, 2π·2³/3, far below the hard sphere at σ = R_min = 20 Å.
+    #[test]
+    fn a_saved_scan_carries_the_steric_reference() {
+        let backend = StubBackend::new();
+        let result = compute_scan(&params(1), &backend, None).unwrap();
+        let scan = crate::archive::ScanArchive::from_scan(
+            crate::archive::tests::archive().settings,
+            &params(1),
+            result,
+            [backend.ref_a(), backend.ref_b()],
+            &[Default::default()],
+            String::new(),
+        )
+        .unwrap();
+        let b2_ref = 2.0 * std::f64::consts::PI * 8.0 / 3.0;
+        assert_relative_eq!(scan.virial.reference(), b2_ref, max_relative = 1e-6);
+        assert_relative_eq!(scan.virial.sigma_eff(), 2.0, max_relative = 1e-6);
     }
 
     /// `Break` from the callback stops the scan after that bin.
