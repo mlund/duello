@@ -1,7 +1,9 @@
 //! The entries the app reads back, and their JSON shapes.
 
 use super::zipio::{Entry, Packing, Reader};
-use crate::archive::{CgBody, FreeSaltEstimate, ScanArchive, ScanSettings, Session, StructureFile};
+use crate::archive::{
+    CgBody, FreeSaltEstimate, ScanArchive, ScanBackend, ScanSettings, Session, StructureFile,
+};
 use crate::nbody::{RunRecord, RunSpec};
 use crate::report::PmfPoint;
 use crate::{Table6DAdaptive, VirialCoeff};
@@ -39,6 +41,7 @@ struct StructureRef {
 #[derive(Serialize, Deserialize)]
 struct ScanJson {
     settings: ScanSettings,
+    backend: ScanBackend,
     bodies: [CgBody; 2],
     points: Vec<PmfPoint>,
     /// Å³
@@ -121,6 +124,7 @@ pub fn read_session(zip: &mut Reader) -> Result<Session> {
 pub fn scan_entries(scan: &ScanArchive) -> Result<Vec<Entry<'static>>> {
     let json = ScanJson {
         settings: scan.settings.clone(),
+        backend: scan.backend,
         bodies: scan.bodies.clone(),
         points: scan.points.clone(),
         b2: scan.virial.b2(),
@@ -155,6 +159,7 @@ pub fn read_scan(zip: &mut Reader) -> Result<ScanArchive> {
         table: Table6DAdaptive::from_bytes(&zip.bytes(TABLE)?)?,
         topology_yaml: zip.text(TOPOLOGY)?,
         settings: json.settings,
+        backend: json.backend,
         bodies: json.bodies,
         points: json.points,
         virial: VirialCoeff::from_raw_parts(json.b2, json.sigma).with_reference(json.b2_ref),

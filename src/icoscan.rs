@@ -111,6 +111,8 @@ pub struct ScanResult {
     pub samples: Vec<(Vector3, Sample)>,
     pub distances: Vec<f64>,
     pub table: Table6DAdaptive<f32>,
+    /// The backend that filled `table`, for the session to record.
+    pub backend: crate::backend::ScanBackend,
 }
 
 /// Identifies one row of a trajectory's energy sidecar.
@@ -242,6 +244,7 @@ pub fn compute_scan<B: EnergyBackend + Sync>(
         samples,
         distances,
         table,
+        backend: backend.kind(),
     })
 }
 
@@ -293,6 +296,7 @@ pub async fn compute_scan_async(
         samples,
         distances,
         table,
+        backend: backend.kind(),
     })
 }
 
@@ -815,6 +819,9 @@ mod tests {
         }
         fn ref_b(&self) -> &Structure {
             &self.0
+        }
+        fn kind(&self) -> crate::backend::ScanBackend {
+            crate::backend::ScanBackend::Reference
         }
     }
 

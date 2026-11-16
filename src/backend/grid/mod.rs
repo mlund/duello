@@ -31,18 +31,23 @@ pub use domain::GridDomain;
 use super::gpu::{pack_positions, PoseKernel};
 use super::gpu_context::{Binding, GpuContext, Limits};
 use super::{EnergyBackend, PoseParams};
+use crate::archive::ScanBackend;
 use crate::energy::{CoulombParams, SplinedPotentials};
 use crate::structure::Structure;
 use bytemuck::{Pod, Zeroable};
 use maps::{build_maps, Maps};
 use tables::{charged_beads, effective_range, SlotTable};
 
+/// Map spacing (Å) when none is given: B₂ within ~0.3% of the pair kernel on
+/// the lysozyme benchmark at about half the time of 0.5 Å.
+pub const DEFAULT_GRID_SPACING: f64 = 1.0;
+
 /// Wall height when none is given. A pose touching the wall counts at least
 /// this much, so it only needs to be many kT; results match from ~30 kJ/mol up.
 pub const DEFAULT_ENERGY_CAP: f64 = 1000.0;
 
-/// Map resolution and wall height.
-#[derive(Clone, Copy, Debug)]
+/// Map resolution and wall height; recorded in scan sessions as is.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GridSpec {
     /// Node spacing (Å).
     pub spacing: f64,
@@ -53,7 +58,7 @@ pub struct GridSpec {
 impl Default for GridSpec {
     fn default() -> Self {
         Self {
-            spacing: 0.5,
+            spacing: DEFAULT_GRID_SPACING,
             energy_cap: DEFAULT_ENERGY_CAP,
         }
     }
@@ -96,6 +101,7 @@ pub struct GridBackend {
     electrostatic: [wgpu::Buffer; 3],
     /// Pose-independent part of the batch uniform.
     batch: BatchUniform,
+    spec: GridSpec,
     ref_a: Structure,
     ref_b: Structure,
 }
@@ -159,6 +165,7 @@ impl GridBackend {
             beads_b,
             electrostatic,
             batch,
+            spec,
             ref_a,
             ref_b,
         })
@@ -251,6 +258,10 @@ impl EnergyBackend for GridBackend {
 
     fn prefers_batch(&self) -> bool {
         true
+    }
+
+    fn kind(&self) -> ScanBackend {
+        ScanBackend::Grid(self.spec)
     }
 
     fn ref_a(&self) -> &Structure {

@@ -20,10 +20,11 @@ use clap::{Parser, Subcommand};
 use duello::{
     backend::{
         self,
-        grid::{GridBackend, GridSpec, DEFAULT_ENERGY_CAP},
+        grid::{GridBackend, GridSpec, DEFAULT_ENERGY_CAP, DEFAULT_GRID_SPACING},
         GpuBackend, SimdBackend,
     },
-    energy, icoscan, report,
+    energy::{self, CoulombParams, SplinedPotentials},
+    icoscan, report,
     structure::{pqr_write_atom, Structure},
     system::{CgOptions, PairSpec, PairSystem, Source},
     Adaptive3DBuilder, IcoTable2D, Sample, SphericalCoord, UnitQuaternion, Vector3,
@@ -198,7 +199,7 @@ impl std::str::FromStr for GridOptions {
 /// Compute backend selection
 #[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
 pub enum Backend {
-    /// Auto-detect: GPU if available, otherwise SIMD
+    /// Auto-detect: grid if a GPU is available, otherwise SIMD
     #[default]
     Auto,
     /// Reference backend using exact (non-splined) pair potentials
@@ -407,10 +408,11 @@ enum Commands {
         /// Defaults to --cutoff if not set. Set to SR potential range for best accuracy.
         #[arg(long)]
         sr_cutoff: Option<f64>,
-        /// Map node spacing for --backend grid (angstroms); error scales as its square
-        #[arg(long, default_value = "0.5")]
+        /// Map node spacing of the grid backend (used by `auto` on a GPU), in
+        /// angstroms; its error scales as the square. Ignored by gpu/simd/reference
+        #[arg(long, default_value_t = DEFAULT_GRID_SPACING)]
         grid_spacing: f64,
-        /// Map wall height for --backend grid (kJ/mol); poses touching it count
+        /// Map wall height of the grid backend (kJ/mol); poses touching it count
         /// at least this much, so it need only be many kT
         #[arg(long, default_value_t = DEFAULT_ENERGY_CAP)]
         grid_cap: f64,
@@ -658,20 +660,6 @@ fn do_scan(cmd: &Commands) -> Result<()> {
 
     info!("COM range: [{rmin:.1}, {rmax:.1}) in {dr:.1} Å steps 🐾");
 
-    // Auto-detect backend: try GPU first, fall back to SIMD
-    let backend_type = match backend_type {
-        Backend::Auto => {
-            if GpuBackend::is_available() {
-                info!("Auto-detected GPU backend");
-                Backend::Gpu
-            } else {
-                info!("No GPU available, using SIMD backend");
-                Backend::Simd
-            }
-        }
-        other => *other,
-    };
-
     let scan_config = icoscan::ScanConfig {
         params: icoscan::ScanParams {
             rmin,
@@ -714,40 +702,73 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         ..Default::default()
     };
 
-    match backend_type {
-        Backend::Auto => unreachable!(), // Already resolved above
-        Backend::Reference => {
-            let backend = backend::cpu::CpuBackend::new(ref_a, ref_b, pair_matrix);
-            icoscan::do_icoscan(&scan_config, &backend)
-        }
-        Backend::Gpu | Backend::Simd | Backend::Grid => {
-            let sr_cut = sr_cutoff.unwrap_or(*cutoff);
-            info!("Split path: SR spline (cutoff={sr_cut:.1} Å) + analytical Coulomb");
-            let sr_spline_config = SplineConfig {
-                grid_trim: sr_grid_trim,
-                ..base_spline_config
-            };
-            let splined = pair_matrix.create_sr_splines(sr_cut, sr_spline_config);
-            let coulomb = pair_matrix.coulomb_params();
+    if let Backend::Reference = backend_type {
+        let backend = backend::cpu::CpuBackend::new(ref_a, ref_b, pair_matrix);
+        return icoscan::do_icoscan(&scan_config, &backend);
+    }
+    let sr_cut = sr_cutoff.unwrap_or(*cutoff);
+    info!("Split path: SR spline (cutoff={sr_cut:.1} Å) + analytical Coulomb");
+    let sr_spline_config = SplineConfig {
+        grid_trim: sr_grid_trim,
+        ..base_spline_config
+    };
+    let splined = pair_matrix.create_sr_splines(sr_cut, sr_spline_config);
+    let split = SplitPath {
+        ref_a,
+        ref_b,
+        splined: &splined,
+        coulomb: pair_matrix.coulomb_params(),
+        grid: GridSpec {
+            spacing: *grid_spacing,
+            energy_cap: *grid_cap,
+        },
+    };
+    split.scan(&scan_config, *backend_type)
+}
 
-            match backend_type {
-                Backend::Gpu => {
-                    let gpu_backend = GpuBackend::new(ref_a, ref_b, &splined, coulomb)?;
-                    icoscan::do_icoscan(&scan_config, &gpu_backend)
-                }
-                Backend::Simd => {
-                    let simd_backend = SimdBackend::new(ref_a, ref_b, &splined, coulomb);
-                    icoscan::do_icoscan(&scan_config, &simd_backend)
-                }
-                Backend::Grid => {
-                    let spec = GridSpec {
-                        spacing: *grid_spacing,
-                        energy_cap: *grid_cap,
-                    };
-                    let grid_backend = GridBackend::new(ref_a, ref_b, &splined, coulomb, spec)?;
-                    icoscan::do_icoscan(&scan_config, &grid_backend)
-                }
-                _ => unreachable!(),
+/// Inputs of the backends that spline short range and sum Yukawa exactly.
+struct SplitPath<'a> {
+    ref_a: Structure,
+    ref_b: Structure,
+    splined: &'a SplinedPotentials,
+    coulomb: &'a CoulombParams,
+    grid: GridSpec,
+}
+
+impl SplitPath<'_> {
+    fn scan(self, config: &icoscan::ScanConfig, backend: Backend) -> Result<()> {
+        let (a, b, splined, coulomb) = (self.ref_a, self.ref_b, self.splined, self.coulomb);
+        match backend {
+            Backend::Gpu => icoscan::do_icoscan(config, &GpuBackend::new(a, b, splined, coulomb)?),
+            Backend::Simd => icoscan::do_icoscan(config, &SimdBackend::new(a, b, splined, coulomb)),
+            Backend::Grid => {
+                let grid = GridBackend::new(a, b, splined, coulomb, self.grid)?;
+                icoscan::do_icoscan(config, &grid)
+            }
+            Backend::Auto => SplitPath {
+                ref_a: a,
+                ref_b: b,
+                ..self
+            }
+            .scan_auto(config),
+            Backend::Reference => unreachable!("exact potentials aren't splined"),
+        }
+    }
+
+    /// The grid on a GPU, the GPU pair kernel if its maps don't fit, else SIMD:
+    /// auto promises a scan, so it doesn't fail where a slower backend works.
+    fn scan_auto(self, config: &icoscan::ScanConfig) -> Result<()> {
+        if !GpuBackend::is_available() {
+            info!("No GPU available, using SIMD backend");
+            return self.scan(config, Backend::Simd);
+        }
+        info!("Auto-detected GPU; using the grid backend");
+        let (a, b) = (self.ref_a.clone(), self.ref_b.clone());
+        match GridBackend::new(a, b, self.splined, self.coulomb, self.grid) {
+            Ok(grid) => icoscan::do_icoscan(config, &grid),
+            Err(err) => {
+                warn!("Grid backend unavailable ({err:#}); using the GPU pair kernel");
+                self.scan(config, Backend::Gpu)
             }
         }
     }
