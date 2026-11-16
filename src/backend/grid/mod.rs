@@ -232,9 +232,11 @@ fn validate(ref_a: &Structure, ref_b: &Structure, spec: GridSpec) -> anyhow::Res
         "grid spacing must be positive, got {}",
         spec.spacing
     );
+    // Maps hold f16, whose largest finite value bounds the cap.
     anyhow::ensure!(
-        spec.energy_cap > 0.0 && spec.energy_cap.is_finite(),
-        "grid energy cap must be positive, got {} kJ/mol",
+        spec.energy_cap > 0.0 && spec.energy_cap <= maps::F16_MAX,
+        "grid energy cap must be in (0, {}] kJ/mol, got {}",
+        maps::F16_MAX,
         spec.energy_cap
     );
     anyhow::ensure!(
@@ -268,7 +270,8 @@ fn electrostatics(
 
 fn energy_source() -> String {
     format!(
-        "{}\n{}\n{}",
+        "{}{}\n{}\n{}",
+        maps::layout_consts(),
         include_str!("../../shaders/common.wgsl"),
         include_str!("../../shaders/grid_common.wgsl"),
         include_str!("../../shaders/grid_energy.wgsl")
@@ -348,7 +351,8 @@ mod tests {
             u_exact.abs() > 0.05,
             "pick a pair that interacts at 7 Å: {u_exact}"
         );
-        approx::assert_relative_eq!(u_grid, u_exact, max_relative = 1e-4);
+        // f16 maps resolve ~5e-4 relative; spline error is far below that here.
+        approx::assert_relative_eq!(u_grid, u_exact, max_relative = 1e-3);
     }
 
     /// Largest |u''| over [lo, hi] along x, by central differences on `u`.
@@ -371,6 +375,7 @@ mod tests {
             (f64::NAN, 1e3),
             (0.5, 0.0),
             (0.5, f64::INFINITY),
+            (0.5, 1e5),
         ] {
             let spec = GridSpec {
                 spacing,
