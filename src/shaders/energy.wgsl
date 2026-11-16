@@ -176,7 +176,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let q2 = quat_from_axis_angle(zaxis, pose.omega);
     let q3 = quat_rotation_between(zaxis, vertex_i);
 
-    // B bead j lands at q3·(q1·q2·b + r·ẑ) = Q·b + c. Composing once per pose
+    // B bead j lands at q3·(q1·q2·b + (0,0,R)) = Q·b + c; the exact z, not the
+    // offset `zaxis`, matching CPU/SIMD. Composing once per pose
     // and transforming each B bead once keeps rotations at N_B, not N_A·N_B.
     let q = quat_mul(q3, quat_mul(q1, q2));
     let c = quat_rotate(q3, vec3<f32>(0.0, 0.0, pose.r));

@@ -51,7 +51,7 @@ pub fn lysozyme() -> Lysozyme {
     }
 }
 
-/// About 20 poses spanning contact (30 Å), mid (40 Å) and tail (55 Å) separations.
+/// 21 poses (3 R × 7 orientations) spanning contact (30 Å), mid (40 Å) and tail (55 Å) separations.
 pub fn pose_list() -> Vec<PoseParams> {
     let orientations = [
         ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0.0),
