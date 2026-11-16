@@ -398,15 +398,7 @@ fn compute_slab_serial<B: EnergyBackend + Sync>(
         data
     };
 
-    #[cfg(feature = "cli")]
-    {
-        use rayon::iter::{IntoParallelIterator, ParallelIterator};
-        (0..n_omega).into_par_iter().map(compute_one).collect()
-    }
-    #[cfg(not(feature = "cli"))]
-    {
-        (0..n_omega).map(compute_one).collect()
-    }
+    crate::par_map((0..n_omega).collect(), compute_one)
 }
 
 /// Tail fit and generation conditions, so table users can extend energies

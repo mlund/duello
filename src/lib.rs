@@ -62,6 +62,20 @@ pub(crate) fn random_orientation(rng: &mut impl rand::Rng) -> UnitQuaternion {
     UnitQuaternion::new_normalize(q)
 }
 
+/// `items.map(f)` in order: threaded in the CLI build, serial otherwise
+/// (WASM has no threads here).
+pub(crate) fn par_map<T: Send, R: Send>(items: Vec<T>, f: impl Fn(T) -> R + Sync + Send) -> Vec<R> {
+    #[cfg(feature = "cli")]
+    {
+        use rayon::iter::{IntoParallelIterator, ParallelIterator};
+        items.into_par_iter().map(f).collect()
+    }
+    #[cfg(not(feature = "cli"))]
+    {
+        items.into_iter().map(f).collect()
+    }
+}
+
 /// kT in kJ/mol, the energy unit of all tables.
 pub fn thermal_energy(temperature: f64) -> f64 {
     physical_constants::MOLAR_GAS_CONSTANT * temperature * 1e-3
