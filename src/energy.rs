@@ -145,6 +145,22 @@ impl SplinedPotentials {
         &self.potentials[i * self.n_types + j]
     }
 
+    /// Distance beyond which the `(i, j)` energy is negligible (< 1 µJ/mol).
+    ///
+    /// The spline cutoff can sit far past the potential's own range (e.g.
+    /// `--cutoff 150` with a 20 Å Ashbaugh–Hatch), so callers that size or cull
+    /// by range should use this rather than `r_max`.
+    pub fn vanishes_beyond(&self, i: usize, j: usize) -> f64 {
+        const STEP: f64 = 0.05;
+        const NEGLIGIBLE: f64 = 1e-6; // kJ/mol
+        let spline = self.get(i, j);
+        let mut r = spline.r_max();
+        while r > STEP && spline.isotropic_twobody_energy(r * r).abs() < NEGLIGIBLE {
+            r -= STEP;
+        }
+        r + STEP
+    }
+
     /// Iterate over all splined potentials in row-major order.
     pub fn iter(&self) -> impl Iterator<Item = &SplinedPotential> {
         self.potentials.iter()

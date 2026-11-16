@@ -20,6 +20,8 @@
 /// Used internally by the Reference backend for exact (non-splined) evaluation.
 pub mod cpu;
 mod gpu;
+mod gpu_context;
+pub mod grid;
 mod simd;
 #[cfg(test)]
 mod test_support;

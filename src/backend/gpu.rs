@@ -14,14 +14,13 @@
 
 //! GPU backend using wgpu compute shaders.
 
+use super::gpu_context::{Binding, GpuContext, Limits};
 use super::{EnergyBackend, PoseParams};
 use crate::energy::{CoulombParams, SplinedPotentials};
 use crate::structure::Structure;
 use bytemuck::{Pod, Zeroable};
 use faunus::interatomic::gpu::{GpuGridType, GpuSplineData, InverseRsq, PowerLaw2};
 use faunus::interatomic::twobody::GridType;
-use std::sync::{Arc, Mutex};
-use wgpu::util::DeviceExt;
 
 /// GPU-compatible pose parameters.
 /// Note: WGSL struct alignment requires vec4 to be 16-byte aligned,
@@ -38,24 +37,132 @@ pub struct GpuPoseParams {
 
 impl From<&PoseParams> for GpuPoseParams {
     fn from(p: &PoseParams) -> Self {
+        let v = |v: &crate::Vector3| [v.x as f32, v.y as f32, v.z as f32, 0.0];
         Self {
             r: p.r as f32,
             omega: p.omega as f32,
             _pad: [0.0, 0.0],
-            vertex_i: [
-                p.vertex_i.x as f32,
-                p.vertex_i.y as f32,
-                p.vertex_i.z as f32,
-                0.0,
-            ],
-            vertex_j: [
-                p.vertex_j.x as f32,
-                p.vertex_j.y as f32,
-                p.vertex_j.z as f32,
-                0.0,
-            ],
+            vertex_i: v(&p.vertex_i),
+            vertex_j: v(&p.vertex_j),
         }
     }
+}
+
+/// Poses per dispatch; bounds the pose and output buffers.
+const MAX_BATCH: usize = 100_000;
+
+/// A one-thread-per-pose pipeline. Owns batching, the pose and output buffers
+/// and readback, so a backend supplies only its bind group.
+pub(crate) struct PoseKernel {
+    pipeline: wgpu::ComputePipeline,
+    pub layout: wgpu::BindGroupLayout,
+}
+
+impl PoseKernel {
+    pub fn new(gpu: &GpuContext, label: &str, source: &str, bindings: &[Binding]) -> Self {
+        let (pipeline, layout) = gpu.pipeline(label, source, bindings);
+        Self { pipeline, layout }
+    }
+
+    /// `bind(poses, energies, n_poses)` builds one batch's bind group.
+    pub fn energies<B>(&self, gpu: &GpuContext, poses: &[PoseParams], bind: B) -> Vec<f64>
+    where
+        B: Fn(&wgpu::Buffer, &wgpu::Buffer, u32) -> wgpu::BindGroup,
+    {
+        poses
+            .chunks(MAX_BATCH)
+            .flat_map(|chunk| {
+                let (group, output) = Self::prepare(gpu, chunk, &bind);
+                gpu.dispatch_read(&self.pipeline, &group, workgroups(chunk.len()), &output)
+            })
+            .map(f64::from)
+            .collect()
+    }
+
+    /// As [`Self::energies`], for WASM.
+    pub async fn energies_async<B>(
+        &self,
+        gpu: &GpuContext,
+        poses: &[PoseParams],
+        bind: B,
+    ) -> Vec<f64>
+    where
+        B: Fn(&wgpu::Buffer, &wgpu::Buffer, u32) -> wgpu::BindGroup,
+    {
+        let mut energies = Vec::with_capacity(poses.len());
+        for chunk in poses.chunks(MAX_BATCH) {
+            let (group, output) = Self::prepare(gpu, chunk, &bind);
+            let batch = gpu
+                .dispatch_read_async(&self.pipeline, &group, workgroups(chunk.len()), &output)
+                .await;
+            energies.extend(batch.into_iter().map(f64::from));
+        }
+        energies
+    }
+
+    /// Converts per chunk, so a whole scan never sits in memory as f32 poses.
+    fn prepare<B>(
+        gpu: &GpuContext,
+        chunk: &[PoseParams],
+        bind: &B,
+    ) -> (wgpu::BindGroup, wgpu::Buffer)
+    where
+        B: Fn(&wgpu::Buffer, &wgpu::Buffer, u32) -> wgpu::BindGroup,
+    {
+        let gpu_poses: Vec<GpuPoseParams> = chunk.iter().map(GpuPoseParams::from).collect();
+        let pose_buffer = gpu.storage("Poses", bytemuck::cast_slice(&gpu_poses));
+        let output = gpu.output("Energies", chunk.len());
+        (bind(&pose_buffer, &output, chunk.len() as u32), output)
+    }
+}
+
+/// One thread per pose, 64 per workgroup as the kernels declare.
+fn workgroups(n_poses: usize) -> [u32; 2] {
+    [(n_poses as u32).div_ceil(64), 1]
+}
+
+/// Spline tables plus the WGSL that indexes them, for whichever grid type
+/// the potentials were built on.
+pub(crate) struct SplineTables {
+    pub coeffs: Vec<u8>,
+    pub params: Vec<u8>,
+    pub wgsl: &'static str,
+}
+
+impl SplineTables {
+    pub fn new(splines: &SplinedPotentials) -> anyhow::Result<Self> {
+        let grid_type = splines
+            .iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("Empty spline matrix"))?
+            .grid_type();
+        match grid_type {
+            GridType::PowerLaw2 => Ok(Self::typed::<PowerLaw2>(splines)),
+            GridType::InverseRsq => Ok(Self::typed::<InverseRsq>(splines)),
+            other => {
+                anyhow::bail!("GPU backend requires PowerLaw2 or InverseRsq grid, got {other:?}")
+            }
+        }
+    }
+
+    fn typed<G: GpuGridType>(splines: &SplinedPotentials) -> Self {
+        let data = GpuSplineData::<G>::from_potentials(splines.iter());
+        Self {
+            coeffs: data.coefficients_as_bytes().to_vec(),
+            params: data.params_as_bytes().to_vec(),
+            wgsl: G::SPLINE_WGSL,
+        }
+    }
+}
+
+/// A position as the `vec4<f32>` WGSL arrays expect, with `w` in the fourth lane.
+pub(crate) fn pack_bead(p: &crate::Vector3, w: f32) -> [f32; 4] {
+    [p.x as f32, p.y as f32, p.z as f32, w]
+}
+
+/// Positions with `w` unused.
+pub(crate) fn pack_positions(s: &Structure) -> Vec<[f32; 4]> {
+    s.pos.iter().map(|p| pack_bead(p, 0.0)).collect()
 }
 
 /// GPU-compatible uniform parameters.
@@ -72,57 +179,40 @@ struct GpuUniforms {
 
 /// GPU backend for energy calculations using wgpu compute shaders.
 pub struct GpuBackend {
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
-    pipeline: wgpu::ComputePipeline,
-    bind_group_layout: wgpu::BindGroupLayout,
-    // Constant buffers (uploaded once)
-    spline_coeffs_buffer: wgpu::Buffer,
-    spline_params_buffer: wgpu::Buffer,
-    ref_pos_a_buffer: wgpu::Buffer,
-    ref_pos_b_buffer: wgpu::Buffer,
-    atom_ids_buffer: wgpu::Buffer,
-    coulomb_prefactors_buffer: wgpu::Buffer,
-    uniform_buffer: wgpu::Buffer,
-    // Reference structures
+    gpu: GpuContext,
+    kernel: PoseKernel,
+    /// Bindings 0–4, uploaded once: spline coeffs, spline params, A, B, atom ids.
+    constant: [wgpu::Buffer; 5],
+    coulomb_prefactors: wgpu::Buffer,
     ref_a: Structure,
     ref_b: Structure,
-    // Dimensions
-    n_atoms_a: u32,
-    n_atoms_b: u32,
-    n_atom_types: u32,
-    // Coulomb screening parameter
-    kappa: f32,
-    // Maximum batch size
-    max_batch_size: usize,
-    // Mutex for serializing GPU submissions (wgpu doesn't handle concurrent submissions well)
-    submit_lock: Mutex<()>,
+    uniforms: GpuUniforms,
 }
 
-// SAFETY: On wasm32, execution is single-threaded so Send + Sync are trivially safe.
-// wgpu types don't implement Send on wasm32 because they wrap JS handles, but since
-// there's no multi-threading, this is sound.
+// SAFETY: wasm32 is single-threaded; see `GpuContext`.
 #[cfg(target_arch = "wasm32")]
 unsafe impl Send for GpuBackend {}
 #[cfg(target_arch = "wasm32")]
 unsafe impl Sync for GpuBackend {}
 
-/// Headless compute: no surface, prefer the discrete GPU.
-fn adapter_options() -> wgpu::RequestAdapterOptions<'static, 'static> {
-    wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        ..Default::default()
-    }
-}
+/// Binding order of `energy.wgsl`.
+const BINDINGS: [Binding; 9] = [
+    Binding::Read,      // spline coefficients
+    Binding::Read,      // spline params
+    Binding::Read,      // reference positions A
+    Binding::Read,      // reference positions B
+    Binding::Read,      // atom ids, A then B
+    Binding::Read,      // poses
+    Binding::ReadWrite, // energies
+    Binding::Uniform,   // uniforms
+    Binding::Read,      // Coulomb prefactors
+];
 
 impl GpuBackend {
     /// Check if a GPU is available for compute (not available on WASM — use async path).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn is_available() -> bool {
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-
-        pollster::block_on(instance.request_adapter(&adapter_options())).is_ok()
+        GpuContext::is_available()
     }
 
     /// Create a new GPU backend, auto-detecting grid type from the splined matrix (not available on WASM).
@@ -133,30 +223,8 @@ impl GpuBackend {
         splined_matrix: &SplinedPotentials,
         coulomb: &CoulombParams,
     ) -> anyhow::Result<Self> {
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let adapter = pollster::block_on(instance.request_adapter(&adapter_options()))?;
-
-        log::info!("Using GPU adapter: {:?}", adapter.get_info().name);
-
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                label: Some("Duello GPU"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::Performance,
-                trace: wgpu::Trace::Off,
-                experimental_features: wgpu::ExperimentalFeatures::default(),
-            }))?;
-
-        Self::setup(
-            Arc::new(device),
-            Arc::new(queue),
-            ref_a,
-            ref_b,
-            splined_matrix,
-            coulomb,
-        )
+        let gpu = GpuContext::new(Limits::Default)?;
+        Self::setup(gpu, ref_a, ref_b, splined_matrix, coulomb)
     }
 
     /// Create a new GPU backend asynchronously (required for WASM).
@@ -166,451 +234,104 @@ impl GpuBackend {
         splined_matrix: &SplinedPotentials,
         coulomb: &CoulombParams,
     ) -> anyhow::Result<Self> {
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let adapter = instance.request_adapter(&adapter_options()).await?;
-
-        log::info!("Using GPU adapter: {:?}", adapter.get_info().name);
-
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("Duello GPU"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::Performance,
-                trace: wgpu::Trace::Off,
-                experimental_features: wgpu::ExperimentalFeatures::default(),
-            })
-            .await?;
-
-        Self::setup(
-            Arc::new(device),
-            Arc::new(queue),
-            ref_a,
-            ref_b,
-            splined_matrix,
-            coulomb,
-        )
+        let gpu = GpuContext::new_async(Limits::Default).await?;
+        Self::setup(gpu, ref_a, ref_b, splined_matrix, coulomb)
     }
 
-    /// Shared setup: create pipeline and buffers from an already-obtained device+queue.
     fn setup(
-        device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
+        gpu: GpuContext,
         ref_a: Structure,
         ref_b: Structure,
-        splined_matrix: &SplinedPotentials,
+        splines: &SplinedPotentials,
         coulomb: &CoulombParams,
     ) -> anyhow::Result<Self> {
-        let grid_type = splined_matrix
-            .iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("Empty spline matrix"))?
-            .grid_type();
-        match grid_type {
-            GridType::PowerLaw2 => {
-                Self::setup_typed::<PowerLaw2>(device, queue, ref_a, ref_b, splined_matrix, coulomb)
-            }
-            GridType::InverseRsq => Self::setup_typed::<InverseRsq>(
-                device,
-                queue,
-                ref_a,
-                ref_b,
-                splined_matrix,
-                coulomb,
-            ),
-            other => {
-                anyhow::bail!("GPU backend requires PowerLaw2 or InverseRsq grid, got {other:?}")
-            }
-        }
-    }
-
-    /// Create pipeline and buffers for a specific grid type.
-    fn setup_typed<G: GpuGridType>(
-        device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
-        ref_a: Structure,
-        ref_b: Structure,
-        splined_matrix: &SplinedPotentials,
-        coulomb: &CoulombParams,
-    ) -> anyhow::Result<Self> {
-        let n_atom_types = splined_matrix.n_types() as u32;
-        let spline_data = GpuSplineData::<G>::from_potentials(splined_matrix.iter());
-
-        // Prepend grid-type-specific WGSL (SplineParams, SplineCoeffs, spline_index_eps)
-        let shader_source = format!(
-            "{}\n{}",
-            G::SPLINE_WGSL,
+        let tables = SplineTables::new(splines)?;
+        let source = format!(
+            "{}\n{}\n{}\n{}",
+            tables.wgsl,
+            include_str!("../shaders/common.wgsl"),
+            include_str!("../shaders/spline_eval.wgsl"),
             include_str!("../shaders/energy.wgsl")
         );
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Energy Compute Shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-        });
-
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Energy Bind Group Layout"),
-            entries: &[
-                storage_entry(0, true),  // Spline coefficients
-                storage_entry(1, true),  // Spline params
-                storage_entry(2, true),  // Reference positions A
-                storage_entry(3, true),  // Reference positions B
-                storage_entry(4, true),  // Atom IDs
-                storage_entry(5, true),  // Poses (input)
-                storage_entry(6, false), // Energies (output)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 7,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                storage_entry(8, true), // Coulomb prefactors
-            ],
-        });
-
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Energy Pipeline Layout"),
-            bind_group_layouts: &[Some(&bind_group_layout)],
-            immediate_size: 0,
-        });
-
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Energy Compute Pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
-
-        let spline_coeffs_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Spline Coefficients"),
-            contents: spline_data.coefficients_as_bytes(),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-
-        let spline_params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Spline Params"),
-            contents: spline_data.params_as_bytes(),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-
-        // Pack reference positions as vec4<f32> (padded)
-        let pos_a: Vec<[f32; 4]> = ref_a
-            .pos
-            .iter()
-            .map(|p| [p.x as f32, p.y as f32, p.z as f32, 0.0])
-            .collect();
-        let pos_b: Vec<[f32; 4]> = ref_b
-            .pos
-            .iter()
-            .map(|p| [p.x as f32, p.y as f32, p.z as f32, 0.0])
-            .collect();
-
-        let ref_pos_a_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Reference Positions A"),
-            contents: bytemuck::cast_slice(&pos_a),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-
-        let ref_pos_b_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Reference Positions B"),
-            contents: bytemuck::cast_slice(&pos_b),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-
-        // Pack atom IDs
+        let kernel = PoseKernel::new(&gpu, "Energy", &source, &BINDINGS);
         let atom_ids: Vec<u32> = ref_a
             .atom_ids
             .iter()
-            .chain(ref_b.atom_ids.iter())
+            .chain(&ref_b.atom_ids)
             .map(|&id| id as u32)
             .collect();
-
-        let atom_ids_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Atom IDs"),
-            contents: bytemuck::cast_slice(&atom_ids),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-
-        let coulomb_prefactors_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Coulomb Prefactors"),
-                contents: bytemuck::cast_slice(&coulomb.prefactors),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
-
-        let n_atoms_a = ref_a.pos.len() as u32;
-        let n_atoms_b = ref_b.pos.len() as u32;
-
+        let constant = [
+            gpu.storage("Spline Coefficients", &tables.coeffs),
+            gpu.storage("Spline Params", &tables.params),
+            gpu.storage("Positions A", bytemuck::cast_slice(&pack_positions(&ref_a))),
+            gpu.storage("Positions B", bytemuck::cast_slice(&pack_positions(&ref_b))),
+            gpu.storage("Atom IDs", bytemuck::cast_slice(&atom_ids)),
+        ];
+        let coulomb_prefactors = gpu.storage(
+            "Coulomb Prefactors",
+            bytemuck::cast_slice(&coulomb.prefactors),
+        );
         let uniforms = GpuUniforms {
-            n_atoms_a,
-            n_atoms_b,
-            n_atom_types,
+            n_atoms_a: ref_a.pos.len() as u32,
+            n_atoms_b: ref_b.pos.len() as u32,
+            n_atom_types: splines.n_types() as u32,
             n_poses: 0,
             kappa: coulomb.kappa,
             _pad: [0; 3],
         };
-        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Uniforms"),
-            contents: bytemuck::bytes_of(&uniforms),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
         log::info!(
-            "GPU backend: {} coefficients, {} atom types, {} + {} atoms",
-            spline_data.coefficients.len(),
-            n_atom_types,
-            n_atoms_a,
-            n_atoms_b
+            "GPU backend: {} atom types, {} + {} atoms",
+            uniforms.n_atom_types,
+            uniforms.n_atoms_a,
+            uniforms.n_atoms_b
         );
-
         Ok(Self {
-            device,
-            queue,
-            pipeline,
-            bind_group_layout,
-            spline_coeffs_buffer,
-            spline_params_buffer,
-            ref_pos_a_buffer,
-            ref_pos_b_buffer,
-            atom_ids_buffer,
-            coulomb_prefactors_buffer,
-            uniform_buffer,
+            gpu,
+            kernel,
+            constant,
+            coulomb_prefactors,
             ref_a,
             ref_b,
-            n_atoms_a,
-            n_atoms_b,
-            n_atom_types,
-            kappa: coulomb.kappa,
-            max_batch_size: 100_000,
-            submit_lock: Mutex::new(()),
+            uniforms,
         })
     }
 
-    /// Encode and submit a GPU compute pass, returning the staging buffer.
-    fn encode_and_submit(&self, poses: &[GpuPoseParams]) -> (wgpu::Buffer, usize) {
-        let n_poses = poses.len();
-
-        let pose_buffer = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Poses"),
-                contents: bytemuck::cast_slice(poses),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
-
-        let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Energies Output"),
-            size: (n_poses * std::mem::size_of::<f32>()) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-
-        let staging_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Staging"),
-            size: (n_poses * std::mem::size_of::<f32>()) as u64,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        // Update uniforms
+    fn bind(&self, poses: &wgpu::Buffer, energies: &wgpu::Buffer, n_poses: u32) -> wgpu::BindGroup {
         let uniforms = GpuUniforms {
-            n_atoms_a: self.n_atoms_a,
-            n_atoms_b: self.n_atoms_b,
-            n_atom_types: self.n_atom_types,
-            n_poses: n_poses as u32,
-            kappa: self.kappa,
-            _pad: [0; 3],
+            n_poses,
+            ..self.uniforms
         };
-        self.queue
-            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
-
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Energy Bind Group"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.spline_coeffs_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.spline_params_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.ref_pos_a_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: self.ref_pos_b_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: self.atom_ids_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: pose_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: output_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 7,
-                    resource: self.uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 8,
-                    resource: self.coulomb_prefactors_buffer.as_entire_binding(),
-                },
-            ],
-        });
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Compute Encoder"),
-            });
-
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Energy Compute Pass"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            let workgroups = (n_poses as u32).div_ceil(64);
-            pass.dispatch_workgroups(workgroups, 1, 1);
-        }
-
-        encoder.copy_buffer_to_buffer(
-            &output_buffer,
-            0,
-            &staging_buffer,
-            0,
-            (n_poses * std::mem::size_of::<f32>()) as u64,
-        );
-
-        self.queue.submit(std::iter::once(encoder.finish()));
-
-        (staging_buffer, n_poses)
+        let uniform_buffer = self.gpu.uniform("Uniforms", bytemuck::bytes_of(&uniforms));
+        let [c0, c1, c2, c3, c4] = &self.constant;
+        let buffers = [
+            c0,
+            c1,
+            c2,
+            c3,
+            c4,
+            poses,
+            energies,
+            &uniform_buffer,
+            &self.coulomb_prefactors,
+        ];
+        self.gpu.bind_group(&self.kernel.layout, &buffers)
     }
 
-    /// Read back energies from a mapped staging buffer.
-    fn read_staging(staging_buffer: &wgpu::Buffer) -> Vec<f32> {
-        // Callers have already checked the map succeeded, so a failed view is a bug.
-        let data = staging_buffer
-            .slice(..)
-            .get_mapped_range()
-            .expect("staging buffer is mapped");
-        let energies: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
-        drop(data);
-        staging_buffer.unmap();
-        energies
-    }
-
-    /// Compute energies for a batch of poses on the GPU (synchronous).
-    fn compute_batch(&self, poses: &[GpuPoseParams]) -> Vec<f32> {
-        if poses.is_empty() {
-            return Vec::new();
-        }
-        let _lock = self.submit_lock.lock().unwrap();
-        let (staging_buffer, _) = self.encode_and_submit(poses);
-
-        // Synchronous readback
-        let slice = staging_buffer.slice(..);
-        let (sender, receiver) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = sender.send(result);
-        });
-        self.device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            })
-            .unwrap();
-        receiver
-            .recv()
-            .unwrap()
-            .expect("GPU staging buffer map failed");
-
-        Self::read_staging(&staging_buffer)
-    }
-
-    /// Compute energies for a batch of poses on the GPU (async, for WASM).
-    pub async fn compute_batch_async(&self, poses: &[GpuPoseParams]) -> Vec<f32> {
-        if poses.is_empty() {
-            return Vec::new();
-        }
-        let (staging_buffer, _) = self.encode_and_submit(poses);
-
-        let slice = staging_buffer.slice(..);
-        let (sender, receiver) = futures_channel::oneshot::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = sender.send(result);
-        });
-
-        // On native, we need to poll; on WASM, the browser event loop handles it
-        #[cfg(not(target_arch = "wasm32"))]
-        self.device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            })
-            .unwrap();
-
-        receiver.await.unwrap().unwrap();
-        Self::read_staging(&staging_buffer)
-    }
-
-    /// Async version of compute_energies (processes in max_batch_size chunks).
+    /// Async version of compute_energies (required for WASM).
     pub async fn compute_energies_async(&self, poses: &[PoseParams]) -> Vec<f64> {
-        let gpu_poses: Vec<GpuPoseParams> = poses.iter().map(GpuPoseParams::from).collect();
-        let mut all_energies = Vec::with_capacity(poses.len());
-        for chunk in gpu_poses.chunks(self.max_batch_size) {
-            let batch_energies = self.compute_batch_async(chunk).await;
-            all_energies.extend(batch_energies.into_iter().map(|e| e as f64));
-        }
-        all_energies
-    }
-}
-
-/// Helper to create a read-only or read-write storage bind group layout entry.
-fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
+        let bind = |p: &_, e: &_, n| self.bind(p, e, n);
+        self.kernel.energies_async(&self.gpu, poses, bind).await
     }
 }
 
 impl EnergyBackend for GpuBackend {
     fn compute_energy(&self, pose: &PoseParams) -> f64 {
-        let gpu_pose = GpuPoseParams::from(pose);
-        let energies = self.compute_batch(&[gpu_pose]);
-        energies.first().copied().unwrap_or(0.0) as f64
+        self.compute_energies(std::slice::from_ref(pose))[0]
     }
 
     fn compute_energies(&self, poses: &[PoseParams]) -> Vec<f64> {
-        let gpu_poses: Vec<GpuPoseParams> = poses.iter().map(GpuPoseParams::from).collect();
-        let mut all_energies = Vec::with_capacity(poses.len());
-        for chunk in gpu_poses.chunks(self.max_batch_size) {
-            let batch_energies = self.compute_batch(chunk);
-            all_energies.extend(batch_energies.into_iter().map(|e| e as f64));
-        }
-        all_energies
+        let bind = |p: &_, e: &_, n| self.bind(p, e, n);
+        self.kernel.energies(&self.gpu, poses, bind)
     }
 
     fn prefers_batch(&self) -> bool {
@@ -629,7 +350,7 @@ impl EnergyBackend for GpuBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::test_support::{kt, lysozyme, pose_list};
+    use crate::backend::test_support::{kt, lysozyme, no_gpu, pose_list};
 
     /// Kernel changes must keep agreeing with the exact pair sum. Poses that
     /// carry Boltzmann weight match to the spline error (1e-3, with a floor for
@@ -637,19 +358,19 @@ mod tests {
     /// extrapolation below r_min, so they only need to stay repulsive.
     #[test]
     fn gpu_matches_exact_cpu_on_lysozyme() {
-        if !GpuBackend::is_available() {
-            eprintln!("no GPU adapter; skipping");
+        if no_gpu() {
             return;
         }
         let sys = lysozyme();
-        let (a, b) = (sys.exact.ref_a().clone(), sys.exact.ref_b().clone());
-        let gpu = GpuBackend::new(a, b, &sys.splines, &sys.coulomb).unwrap();
+        let (a, b) = (sys.ref_a.clone(), sys.ref_b.clone());
+        let gpu = GpuBackend::new(a.clone(), b.clone(), &sys.splines, &sys.coulomb).unwrap();
+        let exact = sys.into_exact(a, b);
         let u_weighted = 10.0 * kt();
         let poses = pose_list();
         let got = gpu.compute_energies(&poses);
         let mut n_weighted = 0;
         for (pose, u_gpu) in poses.iter().zip(got) {
-            let u_exact = sys.exact.compute_energy(pose);
+            let u_exact = exact.compute_energy(pose);
             let weighted = u_exact < u_weighted;
             n_weighted += usize::from(weighted);
             let ok = if weighted {

@@ -184,6 +184,19 @@ impl Structure {
         self.pos.iter_mut().for_each(|pos| *pos = func(*pos));
     }
 
+    /// Largest bead distance from the origin (the mass centre for reference structures).
+    pub fn radius(&self) -> f64 {
+        self.pos.iter().map(Vector3::norm).fold(0.0, f64::max)
+    }
+
+    /// Sorted distinct atom kind ids.
+    pub fn unique_atom_types(&self) -> Vec<usize> {
+        let mut types = self.atom_ids.clone();
+        types.sort_unstable();
+        types.dedup();
+        types
+    }
+
     /// Net charge of the structure
     pub fn net_charge(&self) -> f64 {
         self.charges.iter().sum()
