@@ -14,7 +14,7 @@
 
 //! GPU backend using wgpu compute shaders.
 
-use super::gpu_context::{Binding, GpuContext, Limits};
+use super::gpu_context::{Batch, Binding, GpuContext, Limits};
 use super::{EnergyBackend, PoseParams};
 use crate::energy::{CoulombParams, SplinedPotentials};
 use crate::structure::Structure;
@@ -48,7 +48,7 @@ impl From<&PoseParams> for GpuPoseParams {
     }
 }
 
-/// Poses per dispatch; bounds the pose and output buffers.
+/// Poses per dispatch; bounds each batch's pose and output buffers.
 const MAX_BATCH: usize = 100_000;
 
 /// A one-thread-per-pose pipeline. Owns batching, the pose and output buffers
@@ -69,14 +69,8 @@ impl PoseKernel {
     where
         B: Fn(&wgpu::Buffer, &wgpu::Buffer, u32) -> wgpu::BindGroup,
     {
-        poses
-            .chunks(MAX_BATCH)
-            .flat_map(|chunk| {
-                let (group, output) = Self::prepare(gpu, chunk, &bind);
-                gpu.dispatch_read(&self.pipeline, &group, workgroups(chunk.len()), &output)
-            })
-            .map(f64::from)
-            .collect()
+        let batches = poses.chunks(MAX_BATCH).map(|c| Self::batch(gpu, c, &bind));
+        widen(gpu.dispatch_read(&self.pipeline, batches))
     }
 
     /// As [`Self::energies`], for WASM.
@@ -89,31 +83,28 @@ impl PoseKernel {
     where
         B: Fn(&wgpu::Buffer, &wgpu::Buffer, u32) -> wgpu::BindGroup,
     {
-        let mut energies = Vec::with_capacity(poses.len());
-        for chunk in poses.chunks(MAX_BATCH) {
-            let (group, output) = Self::prepare(gpu, chunk, &bind);
-            let batch = gpu
-                .dispatch_read_async(&self.pipeline, &group, workgroups(chunk.len()), &output)
-                .await;
-            energies.extend(batch.into_iter().map(f64::from));
-        }
-        energies
+        let batches = poses.chunks(MAX_BATCH).map(|c| Self::batch(gpu, c, &bind));
+        widen(gpu.dispatch_read_async(&self.pipeline, batches).await)
     }
 
-    /// Converts per chunk, so a whole scan never sits in memory as f32 poses.
-    fn prepare<B>(
-        gpu: &GpuContext,
-        chunk: &[PoseParams],
-        bind: &B,
-    ) -> (wgpu::BindGroup, wgpu::Buffer)
+    /// Built lazily as the dispatcher pulls it, so few batches' buffers live at once.
+    fn batch<B>(gpu: &GpuContext, chunk: &[PoseParams], bind: &B) -> Batch
     where
         B: Fn(&wgpu::Buffer, &wgpu::Buffer, u32) -> wgpu::BindGroup,
     {
         let gpu_poses: Vec<GpuPoseParams> = chunk.iter().map(GpuPoseParams::from).collect();
         let pose_buffer = gpu.storage("Poses", bytemuck::cast_slice(&gpu_poses));
         let output = gpu.output("Energies", chunk.len());
-        (bind(&pose_buffer, &output, chunk.len() as u32), output)
+        Batch {
+            group: bind(&pose_buffer, &output, chunk.len() as u32),
+            workgroups: workgroups(chunk.len()),
+            output,
+        }
     }
+}
+
+fn widen(energies: Vec<f32>) -> Vec<f64> {
+    energies.into_iter().map(f64::from).collect()
 }
 
 /// One thread per pose, 64 per workgroup as the kernels declare.
