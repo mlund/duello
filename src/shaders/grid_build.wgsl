@@ -1,4 +1,6 @@
-// Map build: one thread per voxel sums A's short-range energy for every B type.
+// Map build: each thread sums A's short-range energy for every B type at an
+// x-pair of nodes, which share one u32 of f16 maps (BRICK is even), so no two
+// threads write the same word.
 // Each node acts as AutoDock's probe atom, "sequentially placed at each grid
 // point" with "an affinity grid [...] calculated for each type of atom"
 // (Goodsell & Olson 1990, p. 196).
@@ -13,39 +15,48 @@
 @group(0) @binding(3) var<storage, read> ids_a: array<u32>;
 // B atom type held by each map slot.
 @group(0) @binding(4) var<storage, read> slot_types: array<u32>;
-@group(0) @binding(5) var<storage, read_write> maps: array<f32>;
+// Two f16 per word: half the memory and bandwidth of f32. See `map_value`.
+@group(0) @binding(5) var<storage, read_write> maps: array<u32>;
 @group(0) @binding(6) var<uniform> grid: Grid;
-// The build is split into dispatches; x = first voxel of this one.
-@group(0) @binding(7) var<uniform> voxel_offset: vec4<u32>;
+// The build is split into dispatches: x = first node pair of this one,
+// y = total node pairs.
+@group(0) @binding(7) var<uniform> pairs: vec4<u32>;
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let v = voxel_offset.x + gid.x;
-    let n_vox = grid.dims.x * grid.dims.y * grid.dims.z;
-    if v >= n_vox {
+    let q = pairs.x + gid.x;
+    if q >= pairs.y {
         return;
     }
-    let nx = grid.dims.x;
+    let n_pairs_x = (grid.dims.x + 1u) / 2u;
     let ny = grid.dims.y;
-    let node = vec3<u32>(v % nx, (v / nx) % ny, v / (nx * ny));
-    let p = grid.origin.xyz + grid.spacing * vec3<f32>(node);
+    let node = vec3<u32>(2u * (q % n_pairs_x), (q / n_pairs_x) % ny, q / (n_pairs_x * ny));
+    let p0 = grid.origin.xyz + grid.spacing * vec3<f32>(node);
+    // May fall in the x padding: stored but never read.
+    let p1 = p0 + vec3<f32>(grid.spacing, 0.0, 0.0);
 
     // A outer, slots inner: one distance per A bead serves every slot.
-    var u: array<f32, MAX_SLOTS>;
+    var u: array<vec2<f32>, MAX_SLOTS>;
     let n_slots = grid.dims.w;
     for (var i = 0u; i < grid.n_atoms_a; i++) {
-        let r = distance(pos_a[i].xyz, p);
-        if r >= grid.reach {
+        let a = pos_a[i].xyz;
+        let r = vec2<f32>(distance(a, p0), distance(a, p1));
+        let near = r < vec2<f32>(grid.reach);
+        if !any(near) {
             continue; // most of the box is out of reach of any one bead
         }
         let row = ids_a[i] * grid.n_atom_types;
         for (var s = 0u; s < n_slots; s++) {
-            u[s] += spline_energy(row + slot_types[s], r);
+            let pair = row + slot_types[s];
+            let e = vec2<f32>(spline_energy(pair, r.x), spline_energy(pair, r.y));
+            u[s] += select(vec2<f32>(0.0), e, near);
         }
     }
     // A flat wall keeps trilinear weights from smearing huge overlap energies
-    // into neighbouring cells.
+    // into neighbouring cells; the floor keeps deep attraction inside f16
+    // range, where pack is defined. The cap is validated to fit already.
     for (var s = 0u; s < n_slots; s++) {
-        maps[s * n_vox + v] = min(u[s], grid.energy_cap);
+        let stored = clamp(u[s], vec2<f32>(-F16_MAX), vec2<f32>(grid.energy_cap));
+        maps[map_index(s, node) / 2u] = pack2x16float(stored);
     }
 }

@@ -498,10 +498,10 @@ On the lysozyme benchmark below (CLAUDE.md command, Apple M4):
 | Backend                         | B₂ (Å³) | ΔB₂     | Scan time |
 |---------------------------------|---------|---------|-----------|
 | `gpu`                           | 367 543 |   —     | 52 s      |
-| `grid --grid-spacing 0.5`       | 367 883 | +0.09 % | 12 s      |
-| `grid` (default, 1.0 Å)         | 368 581 | +0.28 % |  7 s      |
+| `grid --grid-spacing 0.5`       | 367 883 | +0.09 % |  7 s      |
+| `grid` (default, 1.0 Å)         | 368 581 | +0.28 % |  4 s      |
 
-Maps take about 4 bytes × nodes × B atom types of GPU memory (≈ 390 MB for 2CDS at 0.5 Å); a coarser spacing helps if they don't fit.
+Maps are stored as f16 in 2×2×2 bricks, which keeps lookups cache-friendly; they take about 2 bytes × nodes × B atom types of GPU memory (≈ 200 MB for 2CDS at 0.5 Å); a coarser spacing helps if they don't fit.
 
 # Interaction Models
 

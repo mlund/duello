@@ -120,3 +120,22 @@ fn grid_scan_benchmark() {
         );
     }
 }
+
+/// Grid-only CLAUDE.md scan, timed: the kernel is bound by scattered map
+/// reads, so only real scan ordering shows layout changes honestly.
+#[test]
+#[ignore]
+fn grid_kernel_benchmark() {
+    if no_gpu() {
+        return;
+    }
+    let sys = lysozyme();
+    let params = params(&sys, 26.0, 60.0, 0.5);
+    for spacing in [1.0, 0.5] {
+        let (pmf, seconds) = scan(&params, &grid_backend(&sys, spacing));
+        println!(
+            "grid {spacing} Å: {seconds:.2} s, B₂ {:.0} Å³",
+            pmf.virial.b2()
+        );
+    }
+}
