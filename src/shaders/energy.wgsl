@@ -176,35 +176,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let q2 = quat_from_axis_angle(zaxis, pose.omega);
     let q3 = quat_rotation_between(zaxis, vertex_i);
 
-    // Combined rotation for initial orientation: q1 * q2
-    // Note: quat_mul(a, b) computes a * b, so for q1 * q2 we need quat_mul(q1, q2)
-    let q12 = quat_mul(q1, q2);
-
-    // Translation vector
-    let r_vec = vec3<f32>(0.0, 0.0, pose.r);
+    // B bead j lands at q3·(q1·q2·b + r·ẑ) = Q·b + c. Composing once per pose
+    // and transforming each B bead once keeps rotations at N_B, not N_A·N_B.
+    let q = quat_mul(q3, quat_mul(q1, q2));
+    let c = quat_rotate(q3, vec3<f32>(0.0, 0.0, pose.r));
 
     var total_energy: f32 = 0.0;
 
-    for (var i: u32 = 0u; i < uniforms.n_atoms_a; i++) {
-        let pos_a = ref_pos_a[i].xyz;
-        let id_a = atom_ids[i];
+    for (var j: u32 = 0u; j < uniforms.n_atoms_b; j++) {
+        let pos_b = quat_rotate(q, ref_pos_b[j].xyz) + c;
+        let id_b = atom_ids[uniforms.n_atoms_a + j];
 
-        for (var j: u32 = 0u; j < uniforms.n_atoms_b; j++) {
-            // Transform pos_b:
-            // 1. Rotate by q12 = q2 * q1
-            // 2. Translate by r_vec
-            // 3. Rotate by q3
-            var pos_b = ref_pos_b[j].xyz;
-            pos_b = quat_rotate(q12, pos_b);
-            pos_b = pos_b + r_vec;
-            pos_b = quat_rotate(q3, pos_b);
-
-            let id_b = atom_ids[uniforms.n_atoms_a + j];
-            let pair_idx = id_a * uniforms.n_atom_types + id_b;
-
-            let diff = pos_a - pos_b;
+        for (var i: u32 = 0u; i < uniforms.n_atoms_a; i++) {
+            let pair_idx = atom_ids[i] * uniforms.n_atom_types + id_b;
+            let diff = ref_pos_a[i].xyz - pos_b;
             let r = sqrt(dot(diff, diff));
-
             total_energy += spline_energy(pair_idx, r) + coulomb_energy(pair_idx, r);
         }
     }

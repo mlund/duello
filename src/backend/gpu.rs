@@ -625,3 +625,45 @@ impl EnergyBackend for GpuBackend {
         &self.ref_b
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::test_support::{kt, lysozyme, pose_list};
+
+    /// Kernel changes must keep agreeing with the exact pair sum. Poses that
+    /// carry Boltzmann weight match to the spline error (1e-3, with a floor for
+    /// f32 noise near U = 0). Overlaps differ by the spline's linear
+    /// extrapolation below r_min, so they only need to stay repulsive.
+    #[test]
+    fn gpu_matches_exact_cpu_on_lysozyme() {
+        if !GpuBackend::is_available() {
+            eprintln!("no GPU adapter; skipping");
+            return;
+        }
+        let sys = lysozyme();
+        let (a, b) = (sys.exact.ref_a().clone(), sys.exact.ref_b().clone());
+        let gpu = GpuBackend::new(a, b, &sys.splines, &sys.coulomb).unwrap();
+        let u_weighted = 10.0 * kt();
+        let poses = pose_list();
+        let got = gpu.compute_energies(&poses);
+        let mut n_weighted = 0;
+        for (pose, u_gpu) in poses.iter().zip(got) {
+            let u_exact = sys.exact.compute_energy(pose);
+            let weighted = u_exact < u_weighted;
+            n_weighted += usize::from(weighted);
+            let ok = if weighted {
+                (u_gpu - u_exact).abs() < 1e-3 * u_exact.abs() + 0.05
+            } else {
+                u_gpu > u_weighted
+            };
+            assert!(
+                ok,
+                "R={} ω={}: gpu {u_gpu:.4} vs exact {u_exact:.4} kJ/mol",
+                pose.r, pose.omega
+            );
+        }
+        // Guards against a pose list that only exercises the repulsive branch.
+        assert!(n_weighted >= 14, "only {n_weighted} weighted poses");
+    }
+}

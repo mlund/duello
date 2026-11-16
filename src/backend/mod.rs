@@ -21,6 +21,8 @@
 pub mod cpu;
 mod gpu;
 mod simd;
+#[cfg(test)]
+mod test_support;
 
 pub use gpu::GpuBackend;
 pub use simd::SimdBackend;
