@@ -191,99 +191,149 @@ impl GpuContext {
         workgroups: [u32; 2],
     ) {
         let _lock = self.submit_lock.lock().unwrap();
-        self.submit(pipeline, group, workgroups, None);
+        self.submit_encoded(|encoder| encode_pass(encoder, pipeline, group, workgroups));
     }
 
-    /// Run `pipeline` and read back the f32 buffer `output`.
+    /// Run `pipeline` on each batch and return all f32 outputs, in order.
+    ///
+    /// A rolling window keeps up to [`IN_FLIGHT`] batches queued: before each
+    /// new submission the oldest is waited for and read. The GPU never drains
+    /// between batches, yet live buffers stay bounded however many poses the
+    /// (lazy) iterator yields.
     pub fn dispatch_read(
         &self,
         pipeline: &wgpu::ComputePipeline,
-        group: &wgpu::BindGroup,
-        workgroups: [u32; 2],
-        output: &wgpu::Buffer,
+        batches: impl IntoIterator<Item = Batch>,
     ) -> Vec<f32> {
         let _lock = self.submit_lock.lock().unwrap();
-        let staging = self
-            .submit(pipeline, group, workgroups, Some(output))
-            .unwrap();
-        let (sender, receiver) = std::sync::mpsc::channel();
-        staging.slice(..).map_async(wgpu::MapMode::Read, move |r| {
-            let _ = sender.send(r);
-        });
-        self.wait();
-        receiver
-            .recv()
-            .unwrap()
-            .expect("GPU staging buffer map failed");
-        read_staging(&staging)
+        let mut window = std::collections::VecDeque::with_capacity(IN_FLIGHT);
+        let mut out = Vec::new();
+        for batch in batches {
+            if window.len() == IN_FLIGHT {
+                out.extend(self.finish(window.pop_front().unwrap()));
+            }
+            window.push_back(self.launch(pipeline, &batch));
+        }
+        window.into_iter().for_each(|f| out.extend(self.finish(f)));
+        out
     }
 
     /// As [`Self::dispatch_read`], for WASM where the browser drives mapping.
     pub async fn dispatch_read_async(
         &self,
         pipeline: &wgpu::ComputePipeline,
-        group: &wgpu::BindGroup,
-        workgroups: [u32; 2],
-        output: &wgpu::Buffer,
+        batches: impl IntoIterator<Item = Batch>,
     ) -> Vec<f32> {
-        let staging = self
-            .submit(pipeline, group, workgroups, Some(output))
-            .unwrap();
-        let (sender, receiver) = futures_channel::oneshot::channel();
+        let mut window = std::collections::VecDeque::with_capacity(IN_FLIGHT);
+        let mut out = Vec::new();
+        for batch in batches {
+            if window.len() == IN_FLIGHT {
+                out.extend(self.finish_async(window.pop_front().unwrap()).await);
+            }
+            window.push_back(self.launch(pipeline, &batch));
+        }
+        for f in window {
+            out.extend(self.finish_async(f).await);
+        }
+        out
+    }
+
+    /// Submit one batch with a copy of its output into a staging buffer, and
+    /// request that buffer's mapping.
+    fn launch(&self, pipeline: &wgpu::ComputePipeline, batch: &Batch) -> InFlight {
+        let size = batch.output.size();
+        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Staging"),
+            size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let submission = self.submit_encoded(|encoder| {
+            encode_pass(encoder, pipeline, &batch.group, batch.workgroups);
+            encoder.copy_buffer_to_buffer(&batch.output, 0, &staging, 0, size);
+        });
+        let (sender, mapped) = futures_channel::oneshot::channel();
         staging.slice(..).map_async(wgpu::MapMode::Read, move |r| {
             let _ = sender.send(r);
         });
-        #[cfg(not(target_arch = "wasm32"))]
-        self.wait();
-        receiver
-            .await
-            .unwrap()
-            .expect("GPU staging buffer map failed");
-        read_staging(&staging)
+        InFlight {
+            staging,
+            mapped,
+            submission,
+        }
     }
 
-    /// Encode one compute pass, plus a copy of `output` into a staging buffer.
-    fn submit(
+    /// Wait for one batch only, so later ones keep the GPU busy, and read it.
+    fn finish(&self, mut f: InFlight) -> Vec<f32> {
+        self.wait_for(f.submission.clone());
+        let mapped = f.mapped.try_recv().ok().flatten();
+        mapped.expect(MAP_PENDING).expect(MAP_FAILED);
+        read_staging(&f.staging)
+    }
+
+    async fn finish_async(&self, f: InFlight) -> Vec<f32> {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.wait_for(f.submission.clone());
+        f.mapped.await.expect(MAP_PENDING).expect(MAP_FAILED);
+        read_staging(&f.staging)
+    }
+
+    fn submit_encoded(
         &self,
-        pipeline: &wgpu::ComputePipeline,
-        group: &wgpu::BindGroup,
-        [x, y]: [u32; 2],
-        output: Option<&wgpu::Buffer>,
-    ) -> Option<wgpu::Buffer> {
+        encode: impl FnOnce(&mut wgpu::CommandEncoder),
+    ) -> wgpu::SubmissionIndex {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: None,
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, group, &[]);
-            pass.dispatch_workgroups(x, y, 1);
-        }
-        let staging = output.map(|out| {
-            let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Staging"),
-                size: out.size(),
-                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            encoder.copy_buffer_to_buffer(out, 0, &staging, 0, out.size());
-            staging
-        });
-        self.queue.submit(std::iter::once(encoder.finish()));
-        staging
+        encode(&mut encoder);
+        self.queue.submit(std::iter::once(encoder.finish()))
     }
 
-    fn wait(&self) {
+    fn wait_for(&self, submission: wgpu::SubmissionIndex) {
         self.device
             .poll(wgpu::PollType::Wait {
-                submission_index: None,
+                submission_index: Some(submission),
                 timeout: None,
             })
             .unwrap();
     }
+}
+
+/// Batches queued at once by [`GpuContext::dispatch_read`]: enough to keep
+/// the GPU busy across readbacks, few enough to bound live buffers and keep
+/// each submission short for driver watchdogs.
+const IN_FLIGHT: usize = 4;
+
+const MAP_PENDING: &str = "GPU staging buffer not mapped after its submission completed";
+const MAP_FAILED: &str = "GPU staging buffer map failed";
+
+/// A submitted batch awaiting readback.
+struct InFlight {
+    staging: wgpu::Buffer,
+    mapped: futures_channel::oneshot::Receiver<Result<(), wgpu::BufferAsyncError>>,
+    submission: wgpu::SubmissionIndex,
+}
+
+/// One dispatch of a pipeline and the f32 buffer it writes.
+pub(crate) struct Batch {
+    pub group: wgpu::BindGroup,
+    pub workgroups: [u32; 2],
+    pub output: wgpu::Buffer,
+}
+
+fn encode_pass(
+    encoder: &mut wgpu::CommandEncoder,
+    pipeline: &wgpu::ComputePipeline,
+    group: &wgpu::BindGroup,
+    [x, y]: [u32; 2],
+) {
+    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: None,
+        timestamp_writes: None,
+    });
+    pass.set_pipeline(pipeline);
+    pass.set_bind_group(0, group, &[]);
+    pass.dispatch_workgroups(x, y, 1);
 }
 
 pub(crate) const fn f32_bytes(n: usize) -> u64 {
