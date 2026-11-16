@@ -18,7 +18,11 @@ use anyhow::{anyhow, bail, Context, Result};
 use cgkitten::{residue::PkaOverrides, CgSystem};
 use clap::{Parser, Subcommand};
 use duello::{
-    backend::{self, GpuBackend, SimdBackend},
+    backend::{
+        self,
+        grid::{GridBackend, GridSpec, DEFAULT_ENERGY_CAP},
+        GpuBackend, SimdBackend,
+    },
     energy, icoscan, report,
     structure::{pqr_write_atom, Structure},
     system::{CgOptions, PairSpec, PairSystem, Source},
@@ -203,6 +207,9 @@ pub enum Backend {
     Gpu,
     /// SIMD backend (AVX2 on x86_64, NEON on aarch64)
     Simd,
+    /// GPU with precomputed short-range maps: several times faster, with a
+    /// small trilinear error set by --grid-spacing
+    Grid,
 }
 
 /// Angular subdivision/lookup scheme for the icosphere meshes.
@@ -400,6 +407,13 @@ enum Commands {
         /// Defaults to --cutoff if not set. Set to SR potential range for best accuracy.
         #[arg(long)]
         sr_cutoff: Option<f64>,
+        /// Map node spacing for --backend grid (angstroms); error scales as its square
+        #[arg(long, default_value = "0.5")]
+        grid_spacing: f64,
+        /// Map wall height for --backend grid (kJ/mol); poses touching it count
+        /// at least this much, so it need only be many kT
+        #[arg(long, default_value_t = DEFAULT_ENERGY_CAP)]
+        grid_cap: f64,
         #[command(flatten)]
         cg: CgArgs,
         /// Validate the input and stop before scanning (dry run; writes no files)
@@ -566,6 +580,8 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         backend: backend_type,
         grid,
         sr_cutoff,
+        grid_spacing,
+        grid_cap,
         cg,
         check,
     } = cmd
@@ -704,7 +720,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
             let backend = backend::cpu::CpuBackend::new(ref_a, ref_b, pair_matrix);
             icoscan::do_icoscan(&scan_config, &backend)
         }
-        Backend::Gpu | Backend::Simd => {
+        Backend::Gpu | Backend::Simd | Backend::Grid => {
             let sr_cut = sr_cutoff.unwrap_or(*cutoff);
             info!("Split path: SR spline (cutoff={sr_cut:.1} Å) + analytical Coulomb");
             let sr_spline_config = SplineConfig {
@@ -722,6 +738,14 @@ fn do_scan(cmd: &Commands) -> Result<()> {
                 Backend::Simd => {
                     let simd_backend = SimdBackend::new(ref_a, ref_b, &splined, coulomb);
                     icoscan::do_icoscan(&scan_config, &simd_backend)
+                }
+                Backend::Grid => {
+                    let spec = GridSpec {
+                        spacing: *grid_spacing,
+                        energy_cap: *grid_cap,
+                    };
+                    let grid_backend = GridBackend::new(ref_a, ref_b, &splined, coulomb, spec)?;
+                    icoscan::do_icoscan(&scan_config, &grid_backend)
                 }
                 _ => unreachable!(),
             }

@@ -347,13 +347,7 @@ fn r_value(table: &Table6DAdaptive<f32>, ri: usize) -> f64 {
 
 /// Cube side enclosing the widest pose, in ångström.
 fn box_side(table: &Table6DAdaptive<f32>, ref_a: &Structure, ref_b: &Structure) -> f64 {
-    let radius = |s: &Structure| {
-        s.pos
-            .iter()
-            .map(nalgebra::Vector3::norm)
-            .fold(0.0, f64::max)
-    };
-    table.rmax + 2.0 * (radius(ref_a) + radius(ref_b))
+    table.rmax + 2.0 * (ref_a.radius() + ref_b.radius())
 }
 
 /// Log the frame count and rough file size before writing, since a full scan can

@@ -8,6 +8,11 @@ duello scan -1 2CDS.xyz -2 2CDS.xyz --rmin 26 --rmax 60 --dr 0.5 --top topology.
 ~~~
 DUELLO_BENCH_ARCHIVE=$PWD/lys.duello.zip cargo test --release -p duello --lib step8_benchmark -- --ignored --nocapture
 ~~~
+  The grid backend's accuracy (B₂ vs `--backend gpu`) and speed on the same
+  system, from the package root:
+~~~
+cargo test --release -p duello --lib grid_scan -- --ignored --nocapture
+~~~
 - Avoid lenghty Rust functions
 - Reduce nested code with helper functions
 - Prefer *why* over *what* in code comments

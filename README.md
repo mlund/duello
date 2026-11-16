@@ -188,7 +188,9 @@ duello scan \
 | `--sr-cutoff`            | = `--cutoff`  | Fine-tuned SR potential range (angstrom)              |
 | `--max-ndiv`             | 3             | Icosphere subdivision level (see [Angular Resolution](#angular-resolution)) |
 | `--gradient-threshold`   | 0.5           | Adaptive resolution threshold (1/rad)                 |
-| `--backend`              | auto          | Compute backend: `auto`, `gpu`, `simd`, `reference`   |
+| `--backend`              | auto          | Compute backend: `auto`, `gpu`, `grid`, `simd`, `reference` |
+| `--grid-spacing`         | 0.5           | Map spacing for `--backend grid` (angstrom)           |
+| `--grid-cap`             | 1000          | Map wall height for `--backend grid` (kJ/mol)         |
 | `--grid`                 | (see below)   | Spline grid settings (see [Spline Grid](#spline-grid)) |
 | `--pmf`                  | pmf.dat       | Output PMF file                                       |
 | `--savetable`            | --            | Save 6D binary table (`.bin.gz` for compression)      |
@@ -481,6 +483,25 @@ Duello automatically selects the best available backend. Performance on the Calv
 
 `auto` (default) selects GPU if available, otherwise SIMD.
 GPU and SIMD backends use cubic Hermite splines for short-range potentials and evaluate Coulomb/Yukawa analytically.
+
+### Grid backend
+
+`--backend grid` precomputes molecule A's short-range field on a Cartesian map, one per atom type in B, as in AutoDock's affinity grids ([Goodsell & Olson 1990](https://doi.org/10.1002/prot.340080302); [Morris et al. 2009](https://doi.org/10.1002/jcc.21256)).
+Each pose then costs one trilinear lookup per B bead, plus an exact Yukawa sum over charged beads only.
+Electrostatics are not gridded, so low ionic strength doesn't grow the maps.
+Map values are capped at `--grid-cap`, and a pose with any bead in the capped wall counts at least that much; results don't change from about 30 kJ/mol up.
+The box covers A plus the range where the short-range potentials are nonzero, independent of `--cutoff` and `--rmax`.
+
+Trilinear interpolation biases the PMF slightly repulsive near contact, with an error that scales as the spacing squared.
+On the lysozyme benchmark below (CLAUDE.md command, Apple M4):
+
+| Backend                         | B₂ (Å³) | ΔB₂     | Scan time |
+|---------------------------------|---------|---------|-----------|
+| `gpu`                           | 367 543 |   —     | 52 s      |
+| `grid --grid-spacing 0.5`       | 367 883 | +0.09 % | 12 s      |
+| `grid --grid-spacing 1.0`       | 368 581 | +0.28 % |  7 s      |
+
+Maps take about 4 bytes × nodes × B atom types of GPU memory (≈ 390 MB for 2CDS at 0.5 Å); a coarser spacing helps if they don't fit.
 
 # Interaction Models
 

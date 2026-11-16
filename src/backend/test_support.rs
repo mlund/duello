@@ -1,7 +1,8 @@
 //! Shared fixtures for backend tests: lysozyme pairs scored by the exact CPU path.
 
 use super::{cpu::CpuBackend, PoseParams};
-use crate::energy::{CoulombParams, SplinedPotentials};
+use crate::energy::{CoulombParams, PairMatrix, SplinedPotentials};
+use crate::structure::Structure;
 use crate::system::{CgOptions, PairSpec, PairSystem, Source};
 use crate::Vector3;
 use faunus::interatomic::coulomb::{Medium, Salt};
@@ -17,10 +18,47 @@ pub fn kt() -> f64 {
 
 /// The CLAUDE.md benchmark system: 2CDS × 2CDS, 20 mM NaCl, 150 Å cutoff.
 pub struct Lysozyme {
+    pub ref_a: Structure,
+    pub ref_b: Structure,
     pub splines: SplinedPotentials,
     pub coulomb: CoulombParams,
-    /// Exact (unsplined) reference; also owns the reference structures.
-    pub exact: CpuBackend,
+    pair_matrix: PairMatrix,
+}
+
+impl Lysozyme {
+    /// Exact (unsplined) reference for any structures typed by this force field.
+    pub fn into_exact(self, a: Structure, b: Structure) -> CpuBackend {
+        CpuBackend::new(a, b, self.pair_matrix)
+    }
+
+    /// Atom types in A, split by whether they carry charge.
+    pub fn types_by_charge(&self) -> (Vec<usize>, Vec<usize>) {
+        let n = self.splines.n_types();
+        self.ref_a
+            .unique_atom_types()
+            .into_iter()
+            .partition(|&t| self.coulomb.prefactors[t * n + t] == 0.0)
+    }
+}
+
+/// GPU tests skip with a note on machines without an adapter.
+pub fn no_gpu() -> bool {
+    let missing = !crate::backend::gpu_context::GpuContext::is_available();
+    if missing {
+        eprintln!("no GPU adapter; skipping");
+    }
+    missing
+}
+
+/// One bead of type `id` at the origin.
+pub fn bead(id: usize) -> Structure {
+    Structure {
+        pos: vec![Vector3::zeros()],
+        masses: vec![1.0],
+        charges: vec![0.0],
+        radii: vec![1.0],
+        atom_ids: vec![id],
+    }
 }
 
 pub fn lysozyme() -> Lysozyme {
@@ -45,9 +83,11 @@ pub fn lysozyme() -> Lysozyme {
     let splines = system.pair_matrix.create_sr_splines(150.0, config);
     let coulomb = system.pair_matrix.coulomb_params().clone();
     Lysozyme {
+        ref_a: system.ref_a,
+        ref_b: system.ref_b,
         splines,
         coulomb,
-        exact: CpuBackend::new(system.ref_a, system.ref_b, system.pair_matrix),
+        pair_matrix: system.pair_matrix,
     }
 }
 
