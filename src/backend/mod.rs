@@ -24,7 +24,7 @@ mod gpu_context;
 pub mod grid;
 mod simd;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
 pub use crate::archive::ScanBackend;
 pub use gpu::GpuBackend;
@@ -82,6 +82,15 @@ pub trait EnergyBackend {
 
     /// Get reference to molecule B structure (at origin).
     fn ref_b(&self) -> &Structure;
+}
+
+/// A backend whose results arrive asynchronously, as GPU readback must in
+/// the browser.
+pub trait AsyncEnergyBackend: EnergyBackend {
+    fn compute_energies_async(
+        &self,
+        poses: &[PoseParams],
+    ) -> impl std::future::Future<Output = Vec<f64>>;
 }
 
 #[cfg(test)]

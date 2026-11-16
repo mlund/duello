@@ -764,12 +764,9 @@ impl SplitPath<'_> {
         }
         info!("Auto-detected GPU; using the grid backend");
         let (a, b) = (self.ref_a.clone(), self.ref_b.clone());
-        match GridBackend::new(a, b, self.splined, self.coulomb, self.grid) {
-            Ok(grid) => icoscan::do_icoscan(config, &grid),
-            Err(err) => {
-                warn!("Grid backend unavailable ({err:#}); using the GPU pair kernel");
-                self.scan(config, Backend::Gpu)
-            }
+        match GridBackend::try_new(a, b, self.splined, self.coulomb, self.grid) {
+            Some(grid) => icoscan::do_icoscan(config, &grid),
+            None => self.scan(config, Backend::Gpu),
         }
     }
 }

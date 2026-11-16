@@ -124,6 +124,36 @@ impl GridBackend {
         pollster::block_on(Self::new_async(ref_a, ref_b, splines, coulomb, spec))
     }
 
+    /// As [`Self::try_new_async`], blocking.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn try_new(
+        ref_a: Structure,
+        ref_b: Structure,
+        splines: &SplinedPotentials,
+        coulomb: &CoulombParams,
+        spec: GridSpec,
+    ) -> Option<Self> {
+        pollster::block_on(Self::try_new_async(ref_a, ref_b, splines, coulomb, spec))
+    }
+
+    /// The grid, or `None` with a warning when it can't be set up (e.g. maps
+    /// too large for the GPU), so callers can fall back to the pair kernel:
+    /// a slower scan beats none where the backend wasn't the user's choice.
+    pub async fn try_new_async(
+        ref_a: Structure,
+        ref_b: Structure,
+        splines: &SplinedPotentials,
+        coulomb: &CoulombParams,
+        spec: GridSpec,
+    ) -> Option<Self> {
+        Self::new_async(ref_a, ref_b, splines, coulomb, spec)
+            .await
+            .inspect_err(|err| {
+                log::warn!("Grid backend unavailable ({err:#}); using the GPU pair kernel")
+            })
+            .ok()
+    }
+
     pub async fn new_async(
         ref_a: Structure,
         ref_b: Structure,
@@ -193,20 +223,19 @@ impl GridBackend {
         ];
         self.gpu.bind_group(&self.kernel.layout, &buffers)
     }
-
-    /// As [`EnergyBackend::compute_energies`], for WASM.
-    pub async fn compute_energies_async(&self, poses: &[PoseParams]) -> Vec<f64> {
-        let bind = |p: &_, e: &_, n| self.bind(p, e, n);
-        self.kernel.energies_async(&self.gpu, poses, bind).await
-    }
 }
 
 /// Errors here rather than panics deeper in, since spacing is user input.
 fn validate(ref_a: &Structure, ref_b: &Structure, spec: GridSpec) -> anyhow::Result<()> {
     anyhow::ensure!(
-        spec.spacing > 0.0,
+        spec.spacing > 0.0 && spec.spacing.is_finite(),
         "grid spacing must be positive, got {}",
         spec.spacing
+    );
+    anyhow::ensure!(
+        spec.energy_cap > 0.0 && spec.energy_cap.is_finite(),
+        "grid energy cap must be positive, got {} kJ/mol",
+        spec.energy_cap
     );
     anyhow::ensure!(
         !ref_a.pos.is_empty() && !ref_b.pos.is_empty(),
@@ -273,6 +302,13 @@ impl EnergyBackend for GridBackend {
     }
 }
 
+impl crate::backend::AsyncEnergyBackend for GridBackend {
+    async fn compute_energies_async(&self, poses: &[PoseParams]) -> Vec<f64> {
+        let bind = |p: &_, e: &_, n| self.bind(p, e, n);
+        self.kernel.energies_async(&self.gpu, poses, bind).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,6 +358,27 @@ mod tests {
             .map(|k| lo + (hi - lo) * f64::from(k) / 10.0)
             .map(|x| ((u(x + D) - 2.0 * u(x) + u(x - D)) / (D * D)).abs())
             .fold(0.0, f64::max)
+    }
+
+    /// Spec values come from users (CLI, web UI); bad ones must error, not
+    /// build nonsense maps. Checked before touching the GPU.
+    #[test]
+    fn rejects_unusable_specs() {
+        let sys = lysozyme();
+        let t = sys.types_by_charge().0[0];
+        for (spacing, energy_cap) in [
+            (0.0, 1e3),
+            (f64::NAN, 1e3),
+            (0.5, 0.0),
+            (0.5, f64::INFINITY),
+        ] {
+            let spec = GridSpec {
+                spacing,
+                energy_cap,
+            };
+            let result = GridBackend::new(bead(t), bead(t), &sys.splines, &sys.coulomb, spec);
+            assert!(result.is_err(), "accepted {spec:?}");
+        }
     }
 
     /// Mid-cell is the worst case for trilinear; error ≤ h²/8 · max|u''| there.
