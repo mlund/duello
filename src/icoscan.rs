@@ -199,60 +199,72 @@ pub fn compute_scan<B: EnergyBackend + Sync>(
             compute_slab_serial(backend, &builder, n_omega, n_v, r, verts)
         };
 
-        let weights = builder.vertex_weights(level);
-        let r_sample = accumulate_r_sample(&slab_data, weights, n_v, params.temperature);
-
-        for (oi, data) in slab_data.iter().enumerate() {
-            builder.set_slab(ri, oi, data);
-        }
-        let n_div_before = builder.current_n_div();
-        let max_grad = builder.finish_r_slice(ri);
-        let n_div_after = builder.current_n_div();
-
-        if n_div_after < n_div_before {
-            let new_n_v = builder.current_n_vertices();
-            log::debug!(
-                "R={:.1} Å: resolution reduced n_div {} → {} ({} vertices)",
-                r,
-                n_div_before,
-                n_div_after,
-                new_n_v
-            );
-        }
-        log::debug!(
-            "r={:.1} (n_div={}, max_grad={:.2e}): free_energy={:.4e}",
-            r,
-            n_div_after,
-            max_grad,
-            r_sample.free_energy()
-        );
-        report_bin(on_progress, ri, n_r, r, &r_sample)?;
-        partition_samples.push(r_sample);
+        let sample = record_slice(&mut builder, params, ri, &slab_data, on_progress)?;
+        partition_samples.push(sample);
     }
+    Ok(finish_scan(builder, partition_samples, backend.kind()))
+}
 
-    let distances: Vec<f64> = (0..n_r).map(|ri| builder.r_value(ri)).collect();
+/// Store one R-slice's slabs, let the builder coarsen the angular mesh, and
+/// report the bin. Shared by the sync and async scans so they can't drift.
+fn record_slice(
+    builder: &mut AdaptiveBuilder,
+    params: &ScanParams,
+    ri: usize,
+    slab_data: &[Vec<f64>],
+    on_progress: OnProgress,
+) -> anyhow::Result<Sample> {
+    let r = builder.r_value(ri);
+    let n_v = builder.current_n_vertices();
+    let weights = builder.vertex_weights(builder.current_level());
+    let r_sample = accumulate_r_sample(slab_data, weights, n_v, params.temperature);
+    for (oi, data) in slab_data.iter().enumerate() {
+        builder.set_slab(ri, oi, data);
+    }
+    let n_div_before = builder.current_n_div();
+    let max_grad = builder.finish_r_slice(ri);
+    let n_div_after = builder.current_n_div();
+    if n_div_after < n_div_before {
+        log::debug!(
+            "R={r:.1} Å: resolution reduced n_div {n_div_before} → {n_div_after} ({} vertices)",
+            builder.current_n_vertices()
+        );
+    }
+    log::debug!(
+        "r={r:.1} (n_div={n_div_after}, max_grad={max_grad:.2e}): free_energy={:.4e}",
+        r_sample.free_energy()
+    );
+    report_bin(on_progress, ri, builder.n_r(), r, &r_sample)?;
+    Ok(r_sample)
+}
+
+/// Build the table and pair each R with its angular average.
+fn finish_scan(
+    builder: AdaptiveBuilder,
+    partition_samples: Vec<Sample>,
+    backend: crate::backend::ScanBackend,
+) -> ScanResult {
+    let distances: Vec<f64> = (0..builder.n_r()).map(|ri| builder.r_value(ri)).collect();
     let samples: Vec<(Vector3, Sample)> = distances
         .iter()
         .zip(partition_samples)
         .map(|(r, s)| (Vector3::new(0.0, 0.0, *r), s))
         .collect();
-
     let table = builder.build();
     log_resolution_summary(&table);
-
-    Ok(ScanResult {
+    ScanResult {
         samples,
         distances,
         table,
-        backend: backend.kind(),
-    })
+        backend,
+    }
 }
 
 /// Async version of compute_scan for WASM where GPU readback must be async.
 ///
 pub async fn compute_scan_async(
     params: &ScanParams,
-    backend: &crate::backend::GpuBackend,
+    backend: &impl crate::backend::AsyncEnergyBackend,
     on_progress: OnProgress<'_>,
 ) -> anyhow::Result<ScanResult> {
     let mut builder = make_6d_builder(params);
@@ -271,33 +283,10 @@ pub async fn compute_scan_async(
         let energies = backend.compute_energies_async(&poses).await;
         let slab_data = energies_to_slabs(&energies, n_v);
 
-        let weights = builder.vertex_weights(level);
-        let r_sample = accumulate_r_sample(&slab_data, weights, n_v, params.temperature);
-
-        for (oi, data) in slab_data.iter().enumerate() {
-            builder.set_slab(ri, oi, data);
-        }
-        builder.finish_r_slice(ri);
-        report_bin(on_progress, ri, n_r, r, &r_sample)?;
-        partition_samples.push(r_sample);
+        let sample = record_slice(&mut builder, params, ri, &slab_data, on_progress)?;
+        partition_samples.push(sample);
     }
-
-    let distances: Vec<f64> = (0..n_r).map(|ri| builder.r_value(ri)).collect();
-    let samples: Vec<(Vector3, Sample)> = distances
-        .iter()
-        .zip(partition_samples)
-        .map(|(r, s)| (Vector3::new(0.0, 0.0, *r), s))
-        .collect();
-
-    let table = builder.build();
-    log_resolution_summary(&table);
-
-    Ok(ScanResult {
-        samples,
-        distances,
-        table,
-        backend: backend.kind(),
-    })
+    Ok(finish_scan(builder, partition_samples, backend.kind()))
 }
 
 /// Build all poses for one R-bin across all omega and vertex pairs.

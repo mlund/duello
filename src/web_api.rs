@@ -3,13 +3,12 @@
 //! Hides faunus internals so that external crates (duello-web) don't need
 //! to depend on faunus types directly.
 
-pub use crate::archive::{CgBody, ScanArchive, ScanSettings};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::backend::EnergyBackend;
+pub use crate::archive::{CgBody, ScanArchive, ScanBackend, ScanSettings};
+use crate::backend::grid::GridBackend;
+pub use crate::backend::grid::GridSpec;
+pub use crate::backend::AsyncEnergyBackend;
 use crate::backend::GpuBackend;
 use crate::energy::SplinedPotentials;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::icoscan::compute_scan;
 use crate::icoscan::{compute_scan_async, ScanParams, ScanResult};
 pub use crate::icoscan::{OnProgress, ScanProgress};
 pub use crate::report::PmfPoint;
@@ -24,7 +23,23 @@ pub struct WebScanRequest {
     pub mol2_pdb: Vec<u8>,
     /// Chain IDs each molecule keeps; empty keeps all.
     pub chains: [Vec<String>; 2],
+    /// `Some` scans with the grid backend (faster, slightly biased near
+    /// contact); `None` with the exact GPU pair kernel.
+    pub grid: Option<GridSpec>,
     pub settings: ScanSettings,
+}
+
+impl WebScanRequest {
+    /// All chains, and the grid at its default spacing, as `duello scan` uses.
+    pub fn new(mol1_pdb: Vec<u8>, mol2_pdb: Vec<u8>, settings: ScanSettings) -> Self {
+        Self {
+            mol1_pdb,
+            mol2_pdb,
+            chains: Default::default(),
+            grid: Some(GridSpec::default()),
+            settings,
+        }
+    }
 }
 
 /// A web scan's result is the exportable archive itself, so what the UI shows
@@ -132,40 +147,36 @@ fn build_result(
     )
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn finish_scan(
-    prep: &PreparedScan,
-    backend: &(impl EnergyBackend + Sync),
-    progress: OnProgress,
-) -> anyhow::Result<WebScanResult> {
-    let scan_params = build_scan_params(prep);
-
-    log::info!("Running 6D scan...");
-    let scan_result = compute_scan(&scan_params, backend, progress)?;
-    build_result(prep, &scan_params, scan_result)
-}
-
 /// Run the complete scan pipeline asynchronously (required for WASM).
 pub async fn run_scan_async(
     req: WebScanRequest,
     progress: OnProgress<'_>,
 ) -> anyhow::Result<WebScanResult> {
     let prep = prepare_scan(&req)?;
-
+    let (a, b) = (prep.system.ref_a.clone(), prep.system.ref_b.clone());
+    let coulomb = prep.system.pair_matrix.coulomb_params();
+    if let Some(spec) = req.grid {
+        log::info!("Initializing grid backend...");
+        let grid =
+            GridBackend::try_new_async(a.clone(), b.clone(), &prep.sr_splines, coulomb, spec);
+        if let Some(backend) = grid.await {
+            return scan_async(&prep, &backend, progress).await;
+        }
+    }
     log::info!("Initializing GPU backend...");
-    let backend = GpuBackend::new_async(
-        prep.system.ref_a.clone(),
-        prep.system.ref_b.clone(),
-        &prep.sr_splines,
-        prep.system.pair_matrix.coulomb_params(),
-    )
-    .await?;
+    let backend = GpuBackend::new_async(a, b, &prep.sr_splines, coulomb).await?;
+    scan_async(&prep, &backend, progress).await
+}
 
-    let scan_params = build_scan_params(&prep);
-
+async fn scan_async(
+    prep: &PreparedScan,
+    backend: &impl AsyncEnergyBackend,
+    progress: OnProgress<'_>,
+) -> anyhow::Result<WebScanResult> {
+    let scan_params = build_scan_params(prep);
     log::info!("Running 6D scan (async)...");
-    let scan_result = compute_scan_async(&scan_params, &backend, progress).await?;
-    build_result(&prep, &scan_params, scan_result)
+    let scan_result = compute_scan_async(&scan_params, backend, progress).await?;
+    build_result(prep, &scan_params, scan_result)
 }
 
 /// Run the complete scan pipeline from PDB bytes to PMF results.
@@ -173,24 +184,28 @@ pub async fn run_scan_async(
 /// This is the primary entry point for the native desktop UI.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_scan(req: WebScanRequest, progress: OnProgress) -> anyhow::Result<WebScanResult> {
-    let prep = prepare_scan(&req)?;
-
-    log::info!("Initializing GPU backend...");
-    let backend = GpuBackend::new(
-        prep.system.ref_a.clone(),
-        prep.system.ref_b.clone(),
-        &prep.sr_splines,
-        prep.system.pair_matrix.coulomb_params(),
-    )?;
-
-    finish_scan(&prep, &backend, progress)
+    // Both GPU backends batch, so the async path does the same work; sharing
+    // it keeps backend selection in one place.
+    pollster::block_on(run_scan_async(req, progress))
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::archive::ScanBackend;
+    use crate::backend::EnergyBackend;
+    use crate::icoscan::compute_scan;
     use crate::Subdivision;
+
+    /// Synchronous scan with any backend, so CPU tests need no GPU.
+    fn scan_sync(
+        prep: &PreparedScan,
+        backend: &(impl EnergyBackend + Sync),
+        progress: OnProgress,
+    ) -> anyhow::Result<WebScanResult> {
+        let scan_params = build_scan_params(prep);
+        let scan_result = compute_scan(&scan_params, backend, progress)?;
+        build_result(prep, &scan_params, scan_result)
+    }
 
     /// One chain A; see [`pdb_chains`].
     fn pdb(residues: &[&str]) -> Vec<u8> {
@@ -236,6 +251,7 @@ pub(crate) mod tests {
             mol1_pdb: pdb(mol1),
             mol2_pdb: pdb(mol2),
             chains: Default::default(),
+            grid: None,
             settings: ScanSettings {
                 ph: 7.0,
                 model: "calvados3".into(),
@@ -275,7 +291,32 @@ pub(crate) mod tests {
         let energy = prepare_scan(req).unwrap().system;
         let backend =
             crate::backend::cpu::CpuBackend::new(energy.ref_a, energy.ref_b, energy.pair_matrix);
-        finish_scan(&prep, &backend, None).unwrap()
+        scan_sync(&prep, &backend, None).unwrap()
+    }
+
+    /// The web app gets the CLI's default: the grid at 1.0 Å, all chains.
+    #[test]
+    fn new_request_defaults_to_the_grid() {
+        let base = request(&["LYS"], &["LYS"]);
+        let req = WebScanRequest::new(base.mol1_pdb, base.mol2_pdb, base.settings);
+        assert_eq!(req.grid, Some(GridSpec::default()));
+        assert!(req.chains.iter().all(Vec::is_empty));
+    }
+
+    /// The web app can ask for the grid backend.
+    #[test]
+    fn grid_can_be_requested() {
+        if crate::backend::test_support::no_gpu() {
+            return;
+        }
+        let peptide = ["LYS", "LYS", "LYS"];
+        let spec = GridSpec::default();
+        let req = WebScanRequest {
+            grid: Some(spec),
+            ..request(&peptide, &peptide)
+        };
+        let archive = run_scan(req, None).unwrap(); // wraps run_scan_async
+        assert_eq!(archive.backend, ScanBackend::Grid(spec));
     }
 
     /// Grid scans carry a small bias, so a session must say what filled it.

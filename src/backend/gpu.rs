@@ -316,12 +316,6 @@ impl GpuBackend {
         ];
         self.gpu.bind_group(&self.kernel.layout, &buffers)
     }
-
-    /// Async version of compute_energies (required for WASM).
-    pub async fn compute_energies_async(&self, poses: &[PoseParams]) -> Vec<f64> {
-        let bind = |p: &_, e: &_, n| self.bind(p, e, n);
-        self.kernel.energies_async(&self.gpu, poses, bind).await
-    }
 }
 
 impl EnergyBackend for GpuBackend {
@@ -348,6 +342,13 @@ impl EnergyBackend for GpuBackend {
 
     fn ref_b(&self) -> &Structure {
         &self.ref_b
+    }
+}
+
+impl super::AsyncEnergyBackend for GpuBackend {
+    async fn compute_energies_async(&self, poses: &[PoseParams]) -> Vec<f64> {
+        let bind = |p: &_, e: &_, n| self.bind(p, e, n);
+        self.kernel.energies_async(&self.gpu, poses, bind).await
     }
 }
 
