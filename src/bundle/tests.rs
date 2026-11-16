@@ -65,6 +65,7 @@ fn round_trip(bundle: &Bundle) -> Bundle {
 
 fn assert_same_scan(restored: &ScanArchive, original: &ScanArchive) {
     assert_eq!(restored.settings, original.settings);
+    assert_eq!(restored.backend, original.backend);
     assert_eq!(restored.bodies, original.bodies);
     assert_eq!(restored.topology_yaml, original.topology_yaml);
     assert_eq!(restored.virial.b2(), original.virial.b2());

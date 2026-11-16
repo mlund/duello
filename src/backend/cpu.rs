@@ -60,6 +60,10 @@ impl EnergyBackend for CpuBackend {
         self.pair_matrix.sum_energy(&oriented_a, &oriented_b)
     }
 
+    fn kind(&self) -> super::ScanBackend {
+        super::ScanBackend::Reference
+    }
+
     fn ref_a(&self) -> &Structure {
         &self.ref_a
     }

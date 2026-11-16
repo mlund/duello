@@ -189,6 +189,7 @@ pub fn run_scan(req: WebScanRequest, progress: OnProgress) -> anyhow::Result<Web
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::archive::ScanBackend;
     use crate::Subdivision;
 
     /// One chain A; see [`pdb_chains`].
@@ -275,6 +276,15 @@ pub(crate) mod tests {
         let backend =
             crate::backend::cpu::CpuBackend::new(energy.ref_a, energy.ref_b, energy.pair_matrix);
         finish_scan(&prep, &backend, None).unwrap()
+    }
+
+    /// Grid scans carry a small bias, so a session must say what filled it.
+    #[test]
+    fn archive_records_the_backend() {
+        let peptide = ["LYS", "LYS", "LYS"];
+        let archive = cpu_scan(&request(&peptide, &peptide));
+        assert_eq!(archive.backend, ScanBackend::Reference);
+        assert_eq!(reloaded(&archive).backend, ScanBackend::Reference);
     }
 
     #[test]

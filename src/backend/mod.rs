@@ -26,6 +26,7 @@ mod simd;
 #[cfg(test)]
 mod test_support;
 
+pub use crate::archive::ScanBackend;
 pub use gpu::GpuBackend;
 pub use simd::SimdBackend;
 
@@ -72,6 +73,9 @@ pub trait EnergyBackend {
     fn prefers_batch(&self) -> bool {
         false
     }
+
+    /// What this backend is, for scan sessions to record.
+    fn kind(&self) -> ScanBackend;
 
     /// Get reference to molecule A structure (at origin).
     fn ref_a(&self) -> &Structure;

@@ -47,6 +47,21 @@ pub struct ScanSettings {
     pub subdivision: Subdivision,
 }
 
+/// Energy backend that filled a scan's table. A result, not an input, so it
+/// sits on [`ScanArchive`] rather than in [`ScanSettings`].
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScanBackend {
+    /// Exact pair potentials on the CPU.
+    Reference,
+    /// Splined short range and exact Yukawa, CPU SIMD.
+    Simd,
+    /// Splined short range and exact Yukawa, GPU pair kernel.
+    Gpu,
+    /// Short-range maps (trilinear, so slightly biased) and exact Yukawa, GPU.
+    Grid(crate::backend::grid::GridSpec),
+}
+
 /// Coarse-grained rigid body in its own frame (mass center at origin).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CgBody {
@@ -62,6 +77,7 @@ pub struct CgBody {
 #[derive(Clone, Debug)]
 pub struct ScanArchive {
     pub settings: ScanSettings,
+    pub backend: ScanBackend,
     pub table: Table6DAdaptive<f32>,
     pub bodies: [CgBody; 2],
     pub points: Vec<PmfPoint>,
@@ -124,6 +140,7 @@ impl ScanArchive {
         let [a, b] = bodies;
         Ok(Self {
             settings,
+            backend: scan.backend,
             table: scan.table,
             bodies: [CgBody::new(a, kinds), CgBody::new(b, kinds)],
             points: pmf.points,
@@ -295,6 +312,8 @@ pub(crate) mod tests {
                 homo_dimer: false,
                 subdivision: Default::default(),
             },
+            // The struct-shaped variant, so round trips exercise its JSON.
+            backend: ScanBackend::Grid(Default::default()),
             table: table(),
             bodies: [body("LYS"), body("ARG")],
             virial: VirialCoeff::from_pmf([(5.0, 1.5), (6.0, -0.25)], None).unwrap(),

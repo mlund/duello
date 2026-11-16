@@ -271,6 +271,10 @@ impl EnergyBackend for SimdBackend {
         self.compute_energy_simd(pose) as f64
     }
 
+    fn kind(&self) -> super::ScanBackend {
+        super::ScanBackend::Simd
+    }
+
     fn ref_a(&self) -> &Structure {
         &self.ref_a
     }

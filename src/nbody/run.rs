@@ -795,6 +795,7 @@ pub(crate) mod tests {
                 homo_dimer,
                 subdivision: Default::default(),
             },
+            backend: crate::archive::ScanBackend::Reference,
             table: table(move |_, _, _| well),
             bodies: [body.clone(), body],
             points: vec![],

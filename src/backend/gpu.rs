@@ -338,6 +338,10 @@ impl EnergyBackend for GpuBackend {
         true
     }
 
+    fn kind(&self) -> super::ScanBackend {
+        super::ScanBackend::Gpu
+    }
+
     fn ref_a(&self) -> &Structure {
         &self.ref_a
     }

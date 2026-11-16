@@ -3,6 +3,9 @@
 cd examples/calvados3/
 duello scan -1 2CDS.xyz -2 2CDS.xyz --rmin 26 --rmax 60 --dr 0.5 --top topology.yaml --cutoff 150 --molarity 0.02
 ~~~
+  With a GPU this runs the grid backend (1.0 Å maps); pin `--backend gpu` for the
+  exact-pair GPU kernel, e.g. to compare with baselines from before the grid.
+  The `--savescan` archive below is then grid-filled too.
   Add `--savescan lys.duello.zip` to benchmark the many-body engine on it (from
   the same directory; cargo runs tests from the package root, hence `$PWD`):
 ~~~

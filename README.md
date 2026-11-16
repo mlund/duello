@@ -189,7 +189,7 @@ duello scan \
 | `--max-ndiv`             | 3             | Icosphere subdivision level (see [Angular Resolution](#angular-resolution)) |
 | `--gradient-threshold`   | 0.5           | Adaptive resolution threshold (1/rad)                 |
 | `--backend`              | auto          | Compute backend: `auto`, `gpu`, `grid`, `simd`, `reference` |
-| `--grid-spacing`         | 0.5           | Map spacing for `--backend grid` (angstrom)           |
+| `--grid-spacing`         | 1.0           | Map spacing for `--backend grid` (angstrom)           |
 | `--grid-cap`             | 1000          | Map wall height for `--backend grid` (kJ/mol)         |
 | `--grid`                 | (see below)   | Spline grid settings (see [Spline Grid](#spline-grid)) |
 | `--pmf`                  | pmf.dat       | Output PMF file                                       |
@@ -481,7 +481,7 @@ Duello automatically selects the best available backend. Performance on the Calv
 | `simd`      | NEON (aarch64) / AVX2 (x86)   |      131 |    2.7x |
 | `gpu`       | wgpu compute shaders           |     1065 |     22x |
 
-`auto` (default) selects GPU if available, otherwise SIMD.
+`auto` (default) selects the [grid backend](#grid-backend) at 1.0 Å if a GPU is available, otherwise SIMD; `--backend gpu` gives the exact-pair GPU kernel.
 GPU and SIMD backends use cubic Hermite splines for short-range potentials and evaluate Coulomb/Yukawa analytically.
 
 ### Grid backend
@@ -499,7 +499,7 @@ On the lysozyme benchmark below (CLAUDE.md command, Apple M4):
 |---------------------------------|---------|---------|-----------|
 | `gpu`                           | 367 543 |   —     | 52 s      |
 | `grid --grid-spacing 0.5`       | 367 883 | +0.09 % | 12 s      |
-| `grid --grid-spacing 1.0`       | 368 581 | +0.28 % |  7 s      |
+| `grid` (default, 1.0 Å)         | 368 581 | +0.28 % |  7 s      |
 
 Maps take about 4 bytes × nodes × B atom types of GPU memory (≈ 390 MB for 2CDS at 0.5 Å); a coarser spacing helps if they don't fit.
 
