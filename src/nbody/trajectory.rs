@@ -222,7 +222,7 @@ pub fn expand(reference: &CgBody, pose: &Pose) -> Vec<Vector3> {
     reference
         .positions
         .iter()
-        .map(|&r| pose.position + pose.orientation * Vector3::from(r))
+        .map(|&r| pose.apply(r.into()))
         .collect()
 }
 

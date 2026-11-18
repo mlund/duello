@@ -200,6 +200,7 @@ impl Beads {
 
     /// RMSD ≥ the centroid distance, which rejects most pairs cheaply.
     fn within(&self, other: &Self, rmsd: f64) -> bool {
+        debug_assert_eq!(self.positions.len(), other.positions.len());
         if (self.centroid - other.centroid).norm() > rmsd {
             return false;
         }
