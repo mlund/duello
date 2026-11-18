@@ -74,13 +74,7 @@ pub fn lysozyme() -> Lysozyme {
         medium: &medium,
     })
     .expect("2CDS example loads");
-    let config = SplineConfig {
-        n_points: 200,
-        shift_energy: true,
-        grid_type: GridType::PowerLaw2,
-        ..Default::default()
-    };
-    let splines = system.pair_matrix.create_sr_splines(150.0, config);
+    let splines = sr_splines(&system.pair_matrix, 150.0);
     let coulomb = system.pair_matrix.coulomb_params().clone();
     Lysozyme {
         ref_a: system.ref_a,
@@ -89,6 +83,17 @@ pub fn lysozyme() -> Lysozyme {
         coulomb,
         pair_matrix: system.pair_matrix,
     }
+}
+
+/// Short-range splines as the CLI builds them by default, out to `cutoff` (Å).
+pub fn sr_splines(pair_matrix: &PairMatrix, cutoff: f64) -> SplinedPotentials {
+    let config = SplineConfig {
+        n_points: 200,
+        shift_energy: true,
+        grid_type: GridType::PowerLaw2,
+        ..Default::default()
+    };
+    pair_matrix.create_sr_splines(cutoff, config)
 }
 
 /// 21 poses (3 R × 7 orientations) spanning contact (30 Å), mid (40 Å) and tail (55 Å) separations.

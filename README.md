@@ -515,21 +515,36 @@ GPU and SIMD backends use cubic Hermite splines for short-range potentials and e
 ### Grid backend
 
 `--backend grid` precomputes molecule A's short-range field on a Cartesian map, one per atom type in B, as in AutoDock's affinity grids ([Goodsell & Olson 1990](https://doi.org/10.1002/prot.340080302); [Morris et al. 2009](https://doi.org/10.1002/jcc.21256)).
-Each pose then costs one trilinear lookup per B bead, plus an exact Yukawa sum over charged beads only.
+Each pose then costs two trilinear lookups per B bead, plus an exact Yukawa sum over charged beads only.
 Electrostatics are not gridded, so low ionic strength doesn't grow the maps.
 Map values are capped at `--grid-cap`, and a pose with any bead in the capped wall counts at least that much; results don't change from about 30 kJ/mol up.
 The box covers A plus the range where the short-range potentials are nonzero, independent of `--cutoff` and `--rmax`.
 
-Trilinear interpolation biases the PMF slightly repulsive near contact, with an error that scales as the spacing squared.
-On the lysozyme benchmark below (CLAUDE.md command, Apple M4):
+Each pair potential is split at its minimum into a steep repulsive part and a flat-bottomed attractive one, mapped separately.
+The repulsive map holds its fourth root, which interpolates nearly linearly up the wall ([Minh 2018](https://doi.org/10.1002/jcc.25180)); the contact wells that decide an attraction-dominated B₂ are then resolved at 1 Å.
+On the lysozyme benchmark (CLAUDE.md command, Apple M4):
 
 | Backend                         | B₂ (Å³) | ΔB₂     | Scan time |
 |---------------------------------|---------|---------|-----------|
-| `gpu`                           | 367 543 |   —     | 52 s      |
-| `grid --grid-spacing 0.5`       | 367 883 | +0.09 % |  7 s      |
-| `grid` (default, 1.0 Å)         | 368 581 | +0.28 % |  4 s      |
+| `gpu`                           | 367 543 |   —     | 69 s      |
+| `grid --grid-spacing 0.5`       | 367 517 | −0.01 % | 13 s      |
+| `grid` (default, 1.0 Å)         | 367 480 | −0.02 % |  7 s      |
 
-Maps are stored as f16 in 2×2×2 bricks, which keeps lookups cache-friendly; they take about 2 bytes × nodes × B atom types of GPU memory (≈ 200 MB for 2CDS at 0.5 Å); a coarser spacing helps if they don't fit.
+Chymotrypsinogen A, whose B₂ is set by contact attraction (`grid_scan_contact_energies_cgn`):
+
+~~~
+duello scan -1 7KTZ.pdb -2 7KTZ.pdb --cg multi --rmin 32 --rmax 60 --dr 1 --molarity 0.015 --temperature 300
+~~~
+
+| Backend                         | B₂ (Å³)  | ΔB₂     |
+|---------------------------------|----------|---------|
+| `gpu`                           | −151 706 |   —     |
+| `grid --grid-spacing 0.5`       | −155 181 | +2.3 %  |
+| `grid` (default, 1.0 Å)         | −157 729 | +4.0 %  |
+
+The fourth-root transform suits Calvados-style walls; with `--model kimhummer` the same pair keeps only about two thirds of its exact B₂, so check attraction-dominated Kim–Hummer pairs against `--backend gpu`.
+
+Maps are stored as f16 in 2×2×2 bricks, which keeps lookups cache-friendly; they take about 4 bytes × nodes × B atom types of GPU memory (≈ 400 MB for 2CDS at 0.5 Å); a coarser spacing helps if they don't fit.
 
 # Interaction Models
 

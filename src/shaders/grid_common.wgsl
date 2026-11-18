@@ -21,6 +21,11 @@ struct Grid {
 // bytes) a cell starting on even nodes is a single read; measured faster than
 // 4 or 8 on the lysozyme scan. The padding is never read.
 
+// Each slot has a repulsive map, then an attractive one dims.w slots on.
+fn attractive_slot(slot: u32) -> u32 {
+    return slot + grid.dims.w;
+}
+
 fn bricks_per_axis() -> vec3<u32> {
     return (grid.dims.xyz + BRICK - 1u) / BRICK;
 }

@@ -21,6 +21,8 @@
 // The build is split into dispatches: x = first node pair of this one,
 // y = total node pairs.
 @group(0) @binding(7) var<uniform> pairs: vec4<u32>;
+// (r_m, U_m) per type pair: where each potential splits into repulsion and attraction.
+@group(0) @binding(8) var<storage, read> pair_min: array<vec2<f32>>;
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -36,7 +38,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let p1 = p0 + vec3<f32>(grid.spacing, 0.0, 0.0);
 
     // A outer, slots inner: one distance per A bead serves every slot.
-    var u: array<vec2<f32>, MAX_SLOTS>;
+    var rep: array<vec2<f32>, MAX_SLOTS>;
+    var att: array<vec2<f32>, MAX_SLOTS>;
     let n_slots = grid.dims.w;
     for (var i = 0u; i < grid.n_atoms_a; i++) {
         let a = pos_a[i].xyz;
@@ -49,14 +52,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         for (var s = 0u; s < n_slots; s++) {
             let pair = row + slot_types[s];
             let e = vec2<f32>(spline_energy(pair, r.x), spline_energy(pair, r.y));
-            u[s] += select(vec2<f32>(0.0), e, near);
+            let m = pair_min[pair];
+            let inside = r < vec2<f32>(m.x);
+            // f32 splines can dip a hair below the CPU-found U_m near r_m.
+            let e_rep = select(vec2<f32>(0.0), max(e - m.y, vec2<f32>(0.0)), inside);
+            let e_att = select(e, vec2<f32>(m.y), inside);
+            rep[s] += select(vec2<f32>(0.0), e_rep, near);
+            att[s] += select(vec2<f32>(0.0), e_att, near);
         }
     }
     // A flat wall keeps trilinear weights from smearing huge overlap energies
-    // into neighbouring cells; the floor keeps deep attraction inside f16
-    // range, where pack is defined. The cap is validated to fit already.
+    // into neighbouring cells; attraction is kept inside f16 range, where pack
+    // is defined, and may be positive past r_m (e.g. a barrier).
     for (var s = 0u; s < n_slots; s++) {
-        let stored = clamp(u[s], vec2<f32>(-F16_MAX), vec2<f32>(grid.energy_cap));
-        maps[map_index(s, node) / 2u] = pack2x16float(stored);
+        // Repulsion as its fourth root, which interpolates nearly linearly up
+        // a steep wall (Minh 2018); attraction plain, as it is smooth.
+        let r4 = sqrt(sqrt(min(rep[s], vec2<f32>(grid.energy_cap))));
+        maps[map_index(s, node) / 2u] = pack2x16float(r4);
+        let a = clamp(att[s], vec2<f32>(-F16_MAX), vec2<f32>(F16_MAX));
+        maps[map_index(attractive_slot(s), node) / 2u] = pack2x16float(a);
     }
 }

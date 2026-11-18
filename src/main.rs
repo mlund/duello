@@ -209,8 +209,8 @@ pub enum Backend {
     Gpu,
     /// SIMD backend (AVX2 on x86_64, NEON on aarch64)
     Simd,
-    /// GPU with precomputed short-range maps: several times faster, with a
-    /// small trilinear error set by --grid-spacing
+    /// GPU with precomputed short-range maps: several times faster, B₂ within
+    /// a few percent at the default --grid-spacing
     Grid,
 }
 

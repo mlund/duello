@@ -53,7 +53,7 @@ pub(super) struct Maps {
     pub grid_uniform: wgpu::Buffer,
 }
 
-const BUILD_BINDINGS: [Binding; 8] = [
+const BUILD_BINDINGS: [Binding; 9] = [
     Binding::Read,      // spline coefficients
     Binding::Read,      // spline params
     Binding::Read,      // positions A
@@ -62,6 +62,7 @@ const BUILD_BINDINGS: [Binding; 8] = [
     Binding::ReadWrite, // maps
     Binding::Uniform,   // grid
     Binding::Uniform,   // node-pair range of this dispatch
+    Binding::Read,      // pair minima
 ];
 
 /// Node pairs (2 voxels each) per build dispatch: keeps each one well under GPU watchdog limits
@@ -132,11 +133,13 @@ fn fill_maps(
         gpu.storage("Atom IDs A", bytemuck::cast_slice(&ids_a)),
         gpu.storage("Slot types", bytemuck::cast_slice(&slots.types)),
     ];
+    let minima = super::tables::pair_minima(splines, ref_a, &slots.types);
+    let minima = gpu.storage("Pair minima", bytemuck::cast_slice(&minima));
     let shared: Vec<&wgpu::Buffer> = fixed.iter().chain([&values, &grid_uniform]).collect();
     for first in (0..n_pairs).step_by(PAIRS_PER_DISPATCH) {
         let range = [first as u32, n_pairs as u32, 0, 0];
         let pair_range = gpu.uniform("Pair range", bytemuck::bytes_of(&range));
-        let group = gpu.bind_group(&layout, &[&shared[..], &[&pair_range]].concat());
+        let group = gpu.bind_group(&layout, &[&shared[..], &[&pair_range, &minima]].concat());
         let n = PAIRS_PER_DISPATCH.min(n_pairs - first);
         gpu.dispatch(&pipeline, &group, [(n as u32).div_ceil(64), 1]);
     }
@@ -169,7 +172,8 @@ fn map_values(domain: &GridDomain, slots: &SlotTable) -> usize {
         .iter()
         .map(|&n| (n.div_ceil(BRICK) * BRICK) as usize)
         .product();
-    padded * slots.types.len()
+    // A repulsive and an attractive map per slot.
+    2 * padded * slots.types.len()
 }
 
 fn too_big(bytes: u64, limit: impl std::fmt::Display) -> anyhow::Error {
