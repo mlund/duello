@@ -45,6 +45,7 @@ impl Founders {
             pose,
             b2: 0.0,
             share: 0.0,
+            association_share: None,
             n_poses: 0,
         });
         Families {
