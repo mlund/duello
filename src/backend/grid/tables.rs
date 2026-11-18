@@ -27,6 +27,25 @@ impl SlotTable {
     }
 }
 
+/// (r_m, U_m) per A–B type pair, row-major over all types; a pair without a
+/// well splits at its range's end, so all of it is repulsion.
+pub(super) fn pair_minima(
+    splines: &SplinedPotentials,
+    a: &Structure,
+    b_types: &[u32],
+) -> Vec<[f32; 2]> {
+    let n = splines.n_types();
+    let mut minima = vec![[0.0; 2]; n * n];
+    let b_types = b_types.iter().map(|&t| t as usize);
+    for (i, j) in itertools::iproduct!(a.unique_atom_types(), b_types) {
+        let (r, u) = splines
+            .minimum(i, j)
+            .unwrap_or((splines.vanishes_beyond(i, j), 0.0));
+        minima[i * n + j] = [r as f32, u as f32];
+    }
+    minima
+}
+
 /// Distance beyond which every A–B type pair's short-range energy vanishes.
 pub(super) fn effective_range(splines: &SplinedPotentials, a: &Structure, b: &Structure) -> f64 {
     itertools::iproduct!(a.unique_atom_types(), b.unique_atom_types())

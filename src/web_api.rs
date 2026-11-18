@@ -23,8 +23,8 @@ pub struct WebScanRequest {
     pub mol2_pdb: Vec<u8>,
     /// Chain IDs each molecule keeps; empty keeps all.
     pub chains: [Vec<String>; 2],
-    /// `Some` scans with the grid backend (faster, slightly biased near
-    /// contact); `None` with the exact GPU pair kernel.
+    /// `Some` scans with the grid backend (faster; B₂ within a few percent);
+    /// `None` with the exact GPU pair kernel.
     pub grid: Option<GridSpec>,
     pub settings: ScanSettings,
 }

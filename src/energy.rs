@@ -161,6 +161,20 @@ impl SplinedPotentials {
         r + STEP
     }
 
+    /// The `(i, j)` well's bottom (r, U) in (Å, kJ/mol), sampled over the
+    /// spline's own range; None for a purely repulsive pair (U ≥ 0).
+    pub fn minimum(&self, i: usize, j: usize) -> Option<(f64, f64)> {
+        const STEP: f64 = 0.005;
+        let spline = self.get(i, j);
+        let end = self.vanishes_beyond(i, j);
+        (0..)
+            .map(|k| spline.r_min() + k as f64 * STEP)
+            .take_while(|&r| r < end)
+            .map(|r| (r, spline.isotropic_twobody_energy(r * r)))
+            .filter(|&(_, u)| u < 0.0)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+    }
+
     /// Iterate over all splined potentials in row-major order.
     pub fn iter(&self) -> impl Iterator<Item = &SplinedPotential> {
         self.potentials.iter()

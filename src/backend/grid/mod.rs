@@ -1,6 +1,6 @@
 //! Grid backend: A's short-range field precomputed on a Cartesian map.
 //!
-//! Each pose then costs one trilinear lookup per B bead plus an exact Yukawa
+//! Each pose then costs two trilinear lookups per B bead plus an exact Yukawa
 //! sum over charged pairs, instead of a full N_A·N_B pair sum.
 //!
 //! This is AutoDock's affinity-grid scheme. Goodsell & Olson (1990, p. 196,
@@ -16,6 +16,15 @@
 //! the maps. Unlike AutoDock, electrostatics are not gridded (Goodsell & Olson
 //! also interpolate an electrostatic potential grid): an exact Yukawa sum keeps
 //! low ionic strength from growing the box.
+//!
+//! Plain trilinear lookups overestimate the narrow, curved contact wells. So
+//! each pair potential is split at its minimum into a steep repulsive part and
+//! a flat-bottomed attractive one, mapped separately; the repulsive map holds
+//! its fourth root. This follows Minh (2018, J. Comput. Chem. 39, 1200,
+//! doi:10.1002/jcc.25180): "taking a power transformation of grid point
+//! energies and inverse transformation of the result from trilinear
+//! interpolation", applied to repulsion only, with the inverse power 4 he
+//! recommends.
 //!
 //! Provenance: written from these published descriptions. No AutoDock or
 //! AutoGrid source code (MPL) was copied or adapted.
@@ -38,8 +47,8 @@ use bytemuck::{Pod, Zeroable};
 use maps::{build_maps, Maps};
 use tables::{charged_beads, effective_range, SlotTable};
 
-/// Map spacing (Å) when none is given: B₂ within ~0.3% of the pair kernel on
-/// the lysozyme benchmark at about half the time of 0.5 Å.
+/// Map spacing (Å) when none is given: B₂ within 0.1 % of the pair kernel on
+/// lysozyme and ~3 % on chymotrypsinogen, at about half the time of 0.5 Å.
 pub const DEFAULT_GRID_SPACING: f64 = 1.0;
 
 /// Wall height when none is given. A pose touching the wall counts at least
@@ -232,7 +241,7 @@ fn validate(ref_a: &Structure, ref_b: &Structure, spec: GridSpec) -> anyhow::Res
         "grid spacing must be positive, got {}",
         spec.spacing
     );
-    // Maps hold f16, whose largest finite value bounds the cap.
+    // Kept within f16, the maps' storage, though repulsion is stored as cap^¼.
     anyhow::ensure!(
         spec.energy_cap > 0.0 && spec.energy_cap <= maps::F16_MAX,
         "grid energy cap must be in (0, {}] kJ/mol, got {}",
@@ -406,6 +415,32 @@ mod tests {
             let err = (grid.compute_energy(&along_x(mid)) - u(mid)).abs();
             assert!(err <= bound, "r={mid}: |ΔU| {err:.2e} > bound {bound:.2e}");
         }
+    }
+
+    /// The repulsive/attractive split sits at each well's bottom, lower than
+    /// both neighbours; a pair without a well (U ≥ 0) is all repulsion.
+    /// Diagonal pairs suffice: they cover every type with and without a well.
+    #[test]
+    fn pair_minima_are_well_bottoms() {
+        use faunus::interatomic::twobody::IsotropicTwobodyEnergy;
+        let sys = lysozyme();
+        let n = sys.splines.n_types();
+        let types = sys.ref_a.unique_atom_types();
+        let slot_types: Vec<u32> = types.iter().map(|&t| t as u32).collect();
+        let minima = tables::pair_minima(&sys.splines, &sys.ref_a, &slot_types);
+        let mut wells = 0;
+        for t in types {
+            let [r, u] = minima[t * n + t].map(f64::from);
+            let at = |r: f64| sys.splines.get(t, t).isotropic_twobody_energy(r * r);
+            if u == 0.0 {
+                assert!(at(r - 0.5) >= 0.0, "type {t} has a well below r_m");
+                continue;
+            }
+            wells += 1;
+            assert!((at(r) - u).abs() < 1e-3);
+            assert!(at(r - 0.05) > u && at(r + 0.05) > u, "type {t}: r_m = {r}");
+        }
+        assert!(wells > 0);
     }
 
     /// Beyond the short-range reach there is nothing to interpolate.
