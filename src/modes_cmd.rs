@@ -69,12 +69,15 @@ fn all_atoms(
 fn print_table(export: &ModeExport) {
     let modes = &export.modes;
     println!(
-        "{:>4} {:>7} {:>10} {:>9} {:>8} {:>6}",
-        "mode", "share/%", "B₂/Å³", "poses", "U/kT", "R/Å"
+        "{:>4} {:>7} {:>8} {:>10} {:>9} {:>8} {:>6}",
+        "mode", "share/%", "of Ka/%", "B₂/Å³", "poses", "U/kT", "R/Å"
     );
     for (rank, m) in (1..).zip(&modes.modes) {
+        let ka = m
+            .association_share
+            .map_or("–".into(), |s| format!("{:.1}", 100.0 * s));
         println!(
-            "{rank:>4} {:>7.1} {:>10.3e} {:>9} {:>8.2} {:>6.1}",
+            "{rank:>4} {:>7.1} {ka:>8} {:>10.3e} {:>9} {:>8.2} {:>6.1}",
             100.0 * m.share,
             m.b2,
             m.n_poses,
@@ -89,6 +92,13 @@ fn print_table(export: &ModeExport) {
         100.0 * explained,
         modes.attractive_b2
     );
+    if modes.association.is_some() {
+        let ka: f64 = modes.modes.iter().filter_map(|m| m.association_share).sum();
+        println!(
+            "and {:.0}% of K_a's B₂ − B₂ʳᵉᶠ, which soft repulsion offsets, so it can pass 100%",
+            100.0 * ka
+        );
+    }
 }
 
 fn write_files(export: &ModeExport, dir: &Path) -> Result<()> {

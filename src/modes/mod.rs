@@ -40,6 +40,11 @@ pub struct BindingMode {
     pub b2: f64,
     /// Fraction of [`Modes::attractive_b2`]
     pub share: f64,
+    /// Fraction of the table's B₂ − B₂ʳᵉᶠ, which sets K_a. Usually larger than
+    /// `share`, and shares may sum past 1, as soft repulsion beyond the hard
+    /// beads offsets part of the attraction. None where the pair barely or
+    /// doesn't associate.
+    pub association_share: Option<f64>,
     /// Tabulated states in the family, counting the weak ones that joined
     pub n_poses: usize,
 }
@@ -51,6 +56,9 @@ pub struct Modes {
     /// Σc over attractive states (Å³). Shares are relative to this rather than
     /// to the reported B₂, which the coarsened f32 table only approximates.
     pub attractive_b2: f64,
+    /// The table's B₂ − B₂ʳᵉᶠ (Å³), the denominator of each mode's share of
+    /// K_a; None where the pair barely or doesn't associate.
+    pub association: Option<f64>,
 }
 
 /// The poses that carry the attraction in `archive`'s B₂, as binding modes.
@@ -63,6 +71,7 @@ pub fn binding_modes(archive: &ScanArchive, spec: ModeSpec) -> Modes {
 fn clustered(archive: &ScanArchive, spec: ModeSpec, max_candidates: usize) -> Modes {
     let strongest = Strongest::of(archive, max_candidates);
     let attractive_b2 = strongest.total;
+    let association = strongest.association(archive);
     let homodimer = archive.settings.homo_dimer;
     let mut founders = Founders::new(&archive.bodies, homodimer, spec.rmsd);
     for ByKey(_, state) in strongest.covering() {
@@ -80,10 +89,12 @@ fn clustered(archive: &ScanArchive, spec: ModeSpec, max_candidates: usize) -> Mo
     modes.truncate(spec.max_modes);
     for mode in &mut modes {
         mode.share = mode.b2 / attractive_b2;
+        mode.association_share = association.map(|excess| mode.b2 / excess);
     }
     Modes {
         modes,
         attractive_b2,
+        association,
     }
 }
 
@@ -100,6 +111,8 @@ const COVERAGE: f64 = 0.999;
 struct Strongest {
     /// Σc over all attractive states (Å³)
     total: f64,
+    /// Σc over every state, attractive or not (Å³)
+    all: f64,
     /// Σc over attractive mesh states, the only ones a mode can hold
     oriented: f64,
     /// Keyed by c
@@ -108,9 +121,10 @@ struct Strongest {
 
 impl Strongest {
     fn of(archive: &ScanArchive, max_candidates: usize) -> Self {
-        let (mut total, mut oriented) = (0.0, 0.0);
+        let (mut total, mut all, mut oriented) = (0.0, 0.0, 0.0);
         let mut kept = BinaryHeap::with_capacity(max_candidates);
         contributions(archive, |Term { c, state }| {
+            all += c;
             if c < 0.0 {
                 total += c;
                 if let Some(state) = state {
@@ -122,9 +136,23 @@ impl Strongest {
         let states = kept.into_sorted_vec();
         Self {
             total,
+            all,
             oriented,
             states,
         }
+    }
+
+    /// The table's own B₂ (Å³): the hard core plus every state's term.
+    fn table_b2(&self, archive: &ScanArchive) -> f64 {
+        crate::virial::hardsphere(archive.virial.sigma()) + self.all
+    }
+
+    /// The table's B₂ − B₂ʳᵉᶠ (Å³), which sets K_a, if attractive enough for
+    /// shares of it to mean something: at least 1 % of the attraction (both
+    /// negative, hence "below").
+    fn association(&self, archive: &ScanArchive) -> Option<f64> {
+        let excess = self.table_b2(archive) - archive.virial.reference();
+        (excess < 0.01 * self.total).then_some(excess)
     }
 
     /// The leading states that together reach [`COVERAGE`] of the oriented
@@ -256,6 +284,12 @@ fn mesh_terms(
             });
         }
     }
+}
+
+/// The table's own B₂ (Å³), as the shares see it.
+#[cfg(test)]
+pub(crate) fn table_b2(archive: &ScanArchive) -> f64 {
+    Strongest::of(archive, 1).table_b2(archive)
 }
 
 #[cfg(test)]
@@ -412,6 +446,26 @@ mod tests {
                 spikes: vec![(3, 7, SPIKE)],
             },
         }
+    }
+
+    /// K_a ∝ −(B₂ − B₂ʳᵉᶠ): a reference that puts B₂ − B₂ʳᵉᶠ at twice the
+    /// attraction halves every mode's share of it; none without association.
+    #[test]
+    fn a_modes_share_of_ka_uses_b2_beyond_the_reference() {
+        let mut archive = crate::poses::tests::planted_archive();
+        let attraction = binding_modes(&archive, ModeSpec::default()).attractive_b2;
+        let b2 = table_b2(&archive);
+        archive.virial = archive.virial.clone().with_reference(b2 - 2.0 * attraction);
+        let modes = binding_modes(&archive, ModeSpec::default());
+        let mode = &modes.modes[0];
+        assert_relative_eq!(
+            mode.association_share.unwrap(),
+            mode.share / 2.0,
+            max_relative = 1e-9
+        );
+        archive.virial = archive.virial.clone().with_reference(b2 - 1.0);
+        let modes = binding_modes(&archive, ModeSpec::default());
+        assert!(modes.modes[0].association_share.is_none());
     }
 
     #[test]

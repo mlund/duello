@@ -24,22 +24,26 @@ pub struct ModeFile {
 
 impl<'a> ModeExport<'a> {
     pub fn new(scan: &'a ScanArchive, spec: ModeSpec, atoms: Option<[AllAtom; 2]>) -> Self {
-        Self {
-            scan,
-            modes: binding_modes(scan, spec),
-            atoms,
-        }
+        Self::with_modes(scan, binding_modes(scan, spec), atoms)
+    }
+
+    /// Reuses a ranking, as ranking walks the whole table. `modes` must come
+    /// from `scan`.
+    pub fn with_modes(scan: &'a ScanArchive, modes: Modes, atoms: Option<[AllAtom; 2]>) -> Self {
+        Self { scan, modes, atoms }
     }
 
     /// One row per mode, strongest first.
     pub fn csv(&self) -> String {
-        let header = "rank,share/%,b2/Å³,n_poses,U/kT,R/Å,ω/°,ix,iy,iz,jx,jy,jz";
+        let header = "rank,share/%,share_Ka/%,b2/Å³,n_poses,U/kT,R/Å,ω/°,ix,iy,iz,jx,jy,jz";
         let rows = (1..).zip(&self.modes.modes).map(|(rank, mode)| {
             let [i, j] = mode.pose.directions();
             let directions = i.iter().chain(j.iter()).map(|x| format!("{x:.3}"));
             let fields = [
                 rank.to_string(),
                 format!("{:.2}", 100.0 * mode.share),
+                mode.association_share
+                    .map_or(String::new(), |s| format!("{:.2}", 100.0 * s)),
                 format!("{:.4e}", mode.b2),
                 mode.n_poses.to_string(),
             ];
@@ -85,26 +89,45 @@ impl<'a> ModeExport<'a> {
 
     /// The table, one CG file per mode and, if possible, the all-atom models.
     pub fn files(&self) -> Vec<ModeFile> {
-        let table = ModeFile {
+        let cg = (0..self.modes.modes.len()).map(|i| self.cg_entry(i));
+        std::iter::once(self.csv_file())
+            .chain(cg)
+            .chain(self.allatom_file())
+            .collect()
+    }
+
+    pub fn csv_file(&self) -> ModeFile {
+        ModeFile {
             name: TABLE.into(),
             contents: self.csv(),
             media_type: "text/csv",
             description: "Binding modes: poses grouped by similarity, ranked by B₂ contribution"
                 .into(),
-        };
-        let cg = (0..self.modes.modes.len()).map(|i| ModeFile {
-            name: format!("{CG_PREFIX}{:02}{CG_SUFFIX}", i + 1),
-            contents: self.cg_xyz(i),
+        }
+    }
+
+    /// Mode `index`'s beads; None past the last mode.
+    pub fn cg_file(&self, index: usize) -> Option<ModeFile> {
+        (index < self.modes.modes.len()).then(|| self.cg_entry(index))
+    }
+
+    fn cg_entry(&self, index: usize) -> ModeFile {
+        ModeFile {
+            name: format!("{CG_PREFIX}{:02}{CG_SUFFIX}", index + 1),
+            contents: self.cg_xyz(index),
             media_type: "chemical/x-xyz",
-            description: format!("Mode {} of modes.csv, both bodies' beads (Å)", i + 1),
-        });
-        let allatom = self.allatom_pdb().map(|contents| ModeFile {
+            description: format!("Mode {} of modes.csv, both bodies' beads (Å)", index + 1),
+        }
+    }
+
+    /// None without the input structures.
+    pub fn allatom_file(&self) -> Option<ModeFile> {
+        self.allatom_pdb().map(|contents| ModeFile {
             name: ALLATOM.into(),
             contents,
             media_type: "chemical/x-pdb",
             description: "All modes of modes.csv as models, all atoms, chains A and B".into(),
-        });
-        std::iter::once(table).chain(cg).chain(allatom).collect()
+        })
     }
 }
 
@@ -157,4 +180,56 @@ pub fn session_atoms(session: &Session, scan: &ScanArchive) -> Option<[AllAtom; 
     atom_pair(inputs, scan)
         .inspect_err(|e| log::warn!("No all-atom binding modes: {e:#}"))
         .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modes::ModeSpec;
+    use crate::poses::tests::planted_archive;
+
+    /// A front end that already ranked the modes saves the same bytes without
+    /// ranking again.
+    #[test]
+    fn an_existing_ranking_exports_the_same_files() {
+        let scan = planted_archive();
+        let fresh = ModeExport::new(&scan, ModeSpec::default(), None);
+        assert!(!fresh.modes.modes.is_empty(), "the fixture should attract");
+        let reused = ModeExport::with_modes(&scan, fresh.modes.clone(), None);
+        assert_eq!(reused.csv(), fresh.csv());
+        assert_eq!(reused.cg_xyz(0), fresh.cg_xyz(0));
+    }
+
+    /// Each file by what it is, so callers needn't know `files()`'s order.
+    #[test]
+    fn each_file_is_named_by_what_it_holds() {
+        let scan = planted_archive();
+        let export = ModeExport::new(&scan, ModeSpec::default(), None);
+        assert_eq!(export.csv_file().name, "modes.csv");
+        assert_eq!(
+            export.cg_file(0).map(|f| f.name),
+            Some("mode01_cg.xyz".into())
+        );
+        assert!(export.cg_file(export.modes.modes.len()).is_none());
+        assert!(export.allatom_file().is_none(), "no structures given");
+        let names: Vec<String> = export.files().into_iter().map(|f| f.name).collect();
+        assert_eq!(names.first().map(String::as_str), Some("modes.csv"));
+        assert_eq!(names.len(), 1 + export.modes.modes.len());
+    }
+
+    /// The K_a share sits beside the attraction share, empty without association.
+    #[test]
+    fn the_csv_has_a_ka_share_column() {
+        let mut scan = planted_archive();
+        let b2 = crate::modes::table_b2(&scan);
+        scan.virial = scan.virial.clone().with_reference(b2 - 1.0);
+        let csv = ModeExport::new(&scan, ModeSpec::default(), None).csv();
+        let mut lines = csv.lines();
+        let header: Vec<&str> = lines.next().unwrap().split(',').collect();
+        let i = header
+            .iter()
+            .position(|h| *h == "share_Ka/%")
+            .expect("column");
+        assert_eq!(lines.next().unwrap().split(',').nth(i), Some(""));
+    }
 }

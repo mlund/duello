@@ -355,7 +355,7 @@ duello modes pair.duello.zip -1 protein.cif -o modes/
 | `-n, --modes`   | 10         | Modes to keep                                                        |
 | `-o, --output`  | modes      | Output directory                                                     |
 
-It writes `modes.csv` (share, _B2_ term, pose count, _U_, _R_, ω and vertex directions), `modeNN_cg.xyz` with both bodies' beads and, given structures, `modes_allatom.pdb` with one model per mode, the molecules as chains A and B. Scans of XYZ input have no atoms, so only CG files. Sessions also carry these files under `twobody/modes/`.
+It writes `modes.csv` (shares of the attraction and of K_a's _B2_ − _B2_ʳᵉᶠ, _B2_ term, pose count, _U_, _R_, ω and vertex directions; K_a shares may sum past 100 % as soft repulsion offsets attraction, and are empty without association), `modeNN_cg.xyz` with both bodies' beads and, given structures, `modes_allatom.pdb` with one model per mode, the molecules as chains A and B. Scans of XYZ input have no atoms, so only CG files. Sessions also carry these files under `twobody/modes/`.
 
 ## `duello diffusion` -- Rotational Diffusion
 
