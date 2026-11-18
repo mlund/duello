@@ -233,6 +233,19 @@ fn a_version_7_file_without_multipoles_is_refused() {
     assert!(error.contains("re-run the scan"), "{error}");
 }
 
+/// Grid scans before the split maps underestimate contact attraction, and a
+/// session can't tell which grid filled it.
+#[test]
+fn a_version_8_file_from_the_biased_grid_is_refused() {
+    let manifest = r#"{"format":"duello-session","version":8,"parts":[]}"#;
+    let error = load_error(&with_entry_replaced(
+        &session_zip(),
+        "manifest.json",
+        manifest.as_bytes(),
+    ));
+    assert!(error.contains("re-run the scan"), "{error}");
+}
+
 #[test]
 fn a_newer_version_is_refused() {
     let manifest = r#"{"format":"duello-session","version":99,"parts":[]}"#;
