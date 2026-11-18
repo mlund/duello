@@ -232,7 +232,7 @@ pub fn weight_at_sigma(pmf: &[PmfPoint], sigma: f64) -> Option<f64> {
 }
 
 /// e^{−βw} − 1, with w in kT.
-fn mayer(w: f64) -> f64 {
+pub(crate) fn mayer(w: f64) -> f64 {
     w.neg().exp_m1()
 }
 
@@ -242,7 +242,7 @@ fn boltzmann_mean_energy(p: &PmfPoint) -> f64 {
 }
 
 /// 2π σ³/3 (Å³)
-fn hardsphere(sigma: f64) -> f64 {
+pub(crate) fn hardsphere(sigma: f64) -> f64 {
     2.0 * PI / 3.0 * sigma.powi(3)
 }
 
@@ -255,14 +255,17 @@ fn shells<P>(
     sigma: f64,
 ) -> Option<impl Iterator<Item = (&P, f64)>> {
     let dr = r(points.get(1)?) - r(&points[0]);
-    // PMF radii are f32, so σ given in f64 (e.g. 26.3) can sit just above its own point.
-    let from = sigma - 1e-3 * dr;
     Some(
         points
             .iter()
-            .filter(move |p| r(p) >= from)
-            .map(move |p| (p, 2.0 * PI * dr * r(p).powi(2))),
+            .filter_map(move |p| Some((p, shell(r(p), dr, sigma)?))),
     )
+}
+
+/// The quadrature weight 2π·dr·r² of the shell at `r`, or `None` below σ.
+pub(crate) fn shell(r: f64, dr: f64, sigma: f64) -> Option<f64> {
+    // PMF radii are f32, so σ given in f64 (e.g. 26.3) can sit just above its own point.
+    (r >= sigma - 1e-3 * dr).then(|| 2.0 * PI * dr * r.powi(2))
 }
 
 // Implement serialize which writes B2, hardsphere, and dissociation constant

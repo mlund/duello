@@ -52,8 +52,13 @@ pub fn lowest(archive: &ScanArchive, n: usize) -> Vec<TablePose> {
     }
     kept.into_sorted_vec()
         .into_iter()
-        .map(|c| c.to_pose(table, &archive.settings))
+        .map(|c| TablePose::at(table, &archive.settings, c.ri, c.k, c.energy))
         .collect()
+}
+
+/// Mass-centre separation (Å) of R-bin `ri`.
+pub(crate) fn r_at(table: &Table6DAdaptive<f32>, ri: usize) -> f64 {
+    (ri as f64).mul_add(table.dr, table.rmin)
 }
 
 fn is_scalar(table: &Table6DAdaptive<f32>, ri: usize, oi: usize) -> bool {
@@ -85,29 +90,6 @@ struct Candidate {
     k: usize,
 }
 
-impl Candidate {
-    /// Decodes the layout `vi·n_v·n_ω + vj·n_ω + oi` and converts to kT the way
-    /// [`crate::Sample`] does.
-    fn to_pose(&self, table: &Table6DAdaptive<f32>, settings: &ScanSettings) -> TablePose {
-        let level = table
-            .mesh_level_at_r(self.ri)
-            .expect("the energies came from this R-bin's mesh");
-        let (n_v, n_omega) = (level.n_vertices, table.n_omega);
-        let (vi, vj, oi) = (
-            self.k / (n_v * n_omega),
-            self.k / n_omega % n_v,
-            self.k % n_omega,
-        );
-        TablePose {
-            r: (self.ri as f64).mul_add(table.dr, table.rmin),
-            // The table keeps only the bin count; τ/n_ω can be off by half a bin.
-            omega: oi as f64 * omega_step(settings.subdivision, settings.max_ndiv),
-            energy: self.energy / crate::thermal_energy(settings.temperature),
-            directions: [level.direction(vi), level.direction(vj)],
-        }
-    }
-}
-
 impl PartialEq for Candidate {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == Ordering::Equal
@@ -129,6 +111,30 @@ impl Ord for Candidate {
 }
 
 impl TablePose {
+    /// The state at flat index `k` of [`Table6DAdaptive::energies_at_r`] in R-bin
+    /// `ri`. Decodes the layout `vi·n_v·n_ω + vj·n_ω + oi` and converts kJ/mol to
+    /// kT the way [`crate::Sample`] does.
+    pub(crate) fn at(
+        table: &Table6DAdaptive<f32>,
+        settings: &ScanSettings,
+        ri: usize,
+        k: usize,
+        energy: f64,
+    ) -> Self {
+        let level = table
+            .mesh_level_at_r(ri)
+            .expect("the energies came from this R-bin's mesh");
+        let (n_v, n_omega) = (level.n_vertices, table.n_omega);
+        let (vi, vj, oi) = (k / (n_v * n_omega), k / n_omega % n_v, k % n_omega);
+        Self {
+            r: r_at(table, ri),
+            // The table keeps only the bin count; τ/n_ω can be off by half a bin.
+            omega: oi as f64 * omega_step(settings.subdivision, settings.max_ndiv),
+            energy: energy / crate::thermal_energy(settings.temperature),
+            directions: [level.direction(vi), level.direction(vj)],
+        }
+    }
+
     /// Bead positions (Å) of both bodies: A as stored, B rotated and shifted.
     pub fn place(&self, bodies: &[CgBody; 2]) -> [Vec<[f64; 3]>; 2] {
         let [dir_i, dir_j] = &self.directions;
