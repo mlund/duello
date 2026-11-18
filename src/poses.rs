@@ -146,6 +146,19 @@ impl TablePose {
         }
     }
 
+    /// Mesh directions of vertex i (B as seen from A) and j (A as seen from B).
+    pub fn directions(&self) -> &[Vector3; 2] {
+        &self.directions
+    }
+
+    /// Where A goes: nowhere, as tables are relative to A's own frame.
+    pub fn a_pose() -> Pose {
+        Pose {
+            position: Vector3::zeros(),
+            orientation: UnitQuaternion::identity(),
+        }
+    }
+
     /// Where B goes; A stays as stored, since `orient` never rotates it.
     pub fn b_pose(&self) -> Pose {
         let [dir_i, dir_j] = &self.directions;
@@ -159,12 +172,11 @@ impl TablePose {
 
     /// Bead positions (Å) of both bodies: A as stored, B rotated and shifted.
     pub fn place(&self, bodies: &[CgBody; 2]) -> [Vec<[f64; 3]>; 2] {
-        let a = Pose {
-            position: Vector3::zeros(),
-            orientation: UnitQuaternion::identity(),
-        };
         let placed = |body, pose| expand(body, &pose).into_iter().map(Into::into).collect();
-        [placed(&bodies[0], a), placed(&bodies[1], self.b_pose())]
+        [
+            placed(&bodies[0], Self::a_pose()),
+            placed(&bodies[1], self.b_pose()),
+        ]
     }
 }
 

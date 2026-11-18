@@ -3,6 +3,8 @@
 //! B₂ splits exactly into one term per tabulated state, so each pose's share of
 //! the attraction can be ranked instead of guessed from its energy alone.
 
+pub mod export;
+
 use crate::archive::{CgBody, ScanArchive};
 use crate::nbody::{trajectory::expand, Pose};
 use crate::poses::{keep_least, r_at, ByKey, TablePose};
