@@ -12,6 +12,7 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
+mod modes_cmd;
 mod nbody_cmd;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -457,6 +458,9 @@ enum Commands {
     Nbody(nbody_cmd::NBodyArgs),
     /// Expand an nbody trajectory to bead coordinates (XTC plus XYZ topology)
     NbodyExpand(nbody_cmd::ExpandArgs),
+    /// Rank a saved scan's poses by their B₂ contribution, grouped into
+    /// binding modes; writes a table, CG poses and all-atom models
+    Modes(modes_cmd::ModesArgs),
 }
 
 /// Mirrors faunus `--check`, so scripts can validate inputs cheaply.
@@ -1225,6 +1229,7 @@ fn do_main() -> Result<()> {
             Commands::Potential { .. } => do_potential(&cmd)?,
             Commands::Nbody(args) => nbody_cmd::run_nbody(&args)?,
             Commands::NbodyExpand(args) => nbody_cmd::run_expand(&args)?,
+            Commands::Modes(args) => modes_cmd::run_modes(&args)?,
         },
         None => {
             bail!("No command given");
@@ -1235,7 +1240,7 @@ fn do_main() -> Result<()> {
 
 fn main() -> ExitCode {
     if let Err(err) = do_main() {
-        eprintln!("Error: {err}");
+        eprintln!("Error: {err:#}");
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS

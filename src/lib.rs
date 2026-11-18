@@ -12,6 +12,7 @@
 // See the license for the specific language governing permissions and
 // limitations under the license.
 
+pub mod allatom;
 pub mod archive;
 pub mod backend;
 pub mod bundle;
@@ -19,6 +20,7 @@ pub mod bundle;
 pub mod diffusion;
 pub mod energy;
 pub mod icoscan;
+pub mod modes;
 pub mod molecule;
 pub mod nbody;
 pub mod poses;

@@ -42,6 +42,7 @@
   - [`duello atom-scan` -- Atom Scan](#duello-atom-scan----atom-scan)
   - [`duello nbody` -- Many-Body Monte Carlo](#duello-nbody----many-body-monte-carlo)
     - [`duello nbody-expand` -- Bead Trajectory](#duello-nbody-expand----bead-trajectory)
+  - [`duello modes` -- Binding Modes](#duello-modes----binding-modes)
   - [`duello diffusion` -- Rotational Diffusion](#duello-diffusion----rotational-diffusion)
 - [Input Formats](#input-formats)
   - [PDB / mmCIF (recommended)](#pdb--mmcif-recommended)
@@ -144,6 +145,7 @@ Main subcommands:
 | `duello atom-scan`   | 3D scan between a rigid body and a single atom type           |
 | `duello nbody`       | Monte Carlo of N rigid proteins on a saved scan; _I(q)_, _S(q)_, _g(r)_ |
 | `duello nbody-expand`| Convert an `nbody` trajectory to bead XTC for viewers         |
+| `duello modes`       | The poses that carry _B2_, grouped into binding modes         |
 | `duello diffusion`   | Rotational diffusion analysis from a saved 6D energy table    |
 
 ## `duello scan` -- Two-Body Scan
@@ -328,6 +330,32 @@ vmd nbody.xyz nbody.xtc
 | `-o, --output`  | nbody.xtc  | Bead XTC; must end in `.xtc` and differ from the input   |
 | `--copy`        | 0          | Copy to keep; copies are independent runs                |
 | `--all-copies`  | --         | Keep every copy (frames interleave), e.g. for averaging  |
+
+## `duello modes` -- Binding Modes
+
+Ranks a saved scan's poses by how much each adds to _B2_, rather than by energy alone. Each tabulated pose at $R \ge \sigma$ contributes
+
+$$
+c = -2\pi \Delta R\, R^2\, \frac{w_i w_j}{n_\omega n_v^2} \left( e^{-U/k_BT} - 1 \right),
+$$
+
+with $w_i, w_j$ the Voronoi weights of its two mesh directions, so that $B_2 = 2\pi\sigma^3/3 + \sum c$. Attractive poses ($c < 0$) are grouped greedily, strongest first, into modes whose B beads lie within an RMSD of the mode's strongest pose; for homodimers the A↔B swap counts as the same complex. A mode's share is its $\sum c$ over the table's total attraction, so isotropic long-range attraction and the weakest poses belong to no mode.
+
+```sh
+duello scan -1 protein.cif -2 protein.cif --rmax 60 --savescan pair.duello.zip
+duello modes pair.duello.zip -1 protein.cif -o modes/
+```
+
+| Flag            | Default    | Description                                                          |
+|-----------------|------------|----------------------------------------------------------------------|
+| `<SESSION>`     | (required) | Session with a two-body scan                                         |
+| `-1, -2`        | --         | Structures (PDB/mmCIF) as scanned, for all-atom models; `-2` defaults to `-1`. Without them, the session's own (saved by the web tool) |
+| `--chain`       | all        | Chains kept in the scan; repeatable                                  |
+| `--rmsd`        | 4          | Poses within this B-bead RMSD (Å) are one mode                       |
+| `-n, --modes`   | 10         | Modes to keep                                                        |
+| `-o, --output`  | modes      | Output directory                                                     |
+
+It writes `modes.csv` (share, _B2_ term, pose count, _U_, _R_, ω and vertex directions), `modeNN_cg.xyz` with both bodies' beads and, given structures, `modes_allatom.pdb` with one model per mode, the molecules as chains A and B. Scans of XYZ input have no atoms, so only CG files. Sessions also carry these files under `twobody/modes/`.
 
 ## `duello diffusion` -- Rotational Diffusion
 

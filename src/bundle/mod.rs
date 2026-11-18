@@ -94,7 +94,7 @@ impl BundleRef<'_> {
         let mut entries = canonical::session_entries(self.session)?;
         if let Some(scan) = self.scan {
             entries.extend(canonical::scan_entries(scan)?);
-            entries.extend(extracts::twobody(scan));
+            entries.extend(extracts::twobody(scan, self.session));
         }
         if let Some(run) = self.run {
             entries.extend(canonical::run_entries(run, self.trajectory)?);

@@ -301,31 +301,41 @@ fn xyz_positions(xyz: &str) -> Vec<Vector3> {
 }
 
 #[test]
-fn the_lowest_pose_is_written_first_with_both_bodies_r_apart() {
-    use crate::poses::tests::{planted_archive, ISOTROPIC};
+fn the_strongest_binding_mode_is_written_first_with_both_bodies_r_apart() {
+    use crate::poses::tests::planted_archive;
     let bundle = Bundle {
         scan: Some(planted_archive()),
         ..Default::default()
     };
     let zip = bundle.to_zip(&Extracts::default()).unwrap();
 
-    let csv = entry_text(&zip, "twobody/poses/poses.csv");
+    let csv = entry_text(&zip, "twobody/modes/modes.csv");
+    let header: Vec<&str> = csv.lines().next().unwrap().split(',').collect();
     let first: Vec<&str> = csv.lines().nth(1).unwrap().split(',').collect();
-    assert_eq!(first[0], "1");
-    let kt = 2.4789570296023884; // kJ/mol at 298.15 K
-    let energy: f64 = first[1].parse().unwrap();
-    approx::assert_relative_eq!(energy, ISOTROPIC / kt, max_relative = 1e-4);
-    let r: f64 = first[2].parse().unwrap();
-    assert_eq!(r, 5.0); // the isotropic slab's R-bin
+    let column = |name: &str| first[header.iter().position(|h| *h == name).unwrap()];
+    assert_eq!(column("rank"), "1");
+    // The planted well at R = 6 Å, not the deeper but isotropic slab at 5 Å.
+    assert_eq!(column("R/Å").parse::<f64>().unwrap(), 6.0);
+    // The deep isotropic slab holds nearly all of the attraction, so the share is tiny.
+    let share: f64 = column("share/%").parse().unwrap();
+    assert!((0.0..=100.0).contains(&share));
+    assert!(column("b2/Å³").parse::<f64>().unwrap() < 0.0);
 
     // Fixture bodies: two beads each, of equal mass.
-    let beads = xyz_positions(&entry_text(&zip, "twobody/poses/pose01.xyz"));
+    let beads = xyz_positions(&entry_text(&zip, "twobody/modes/mode01_cg.xyz"));
     assert_eq!(beads.len(), 4);
     let centre = |b: &[Vector3]| (b[0] + b[1]) / 2.0;
     approx::assert_relative_eq!(
         (centre(&beads[2..]) - centre(&beads[..2])).norm(),
-        5.0,
+        6.0,
         epsilon = 1e-3
+    );
+    // No input structures, so no all-atom models.
+    let names = entry_names(&zip);
+    assert!(!names.iter().any(|n| n.ends_with(".pdb")), "{names:?}");
+    assert!(
+        !names.iter().any(|n| n.starts_with("twobody/poses/")),
+        "{names:?}"
     );
 }
 

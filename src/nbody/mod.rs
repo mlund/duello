@@ -44,6 +44,13 @@ pub struct Pose {
     pub orientation: UnitQuaternion,
 }
 
+impl Pose {
+    /// `x`, given in the body's own frame, in the lab frame.
+    pub fn apply(&self, x: Vector3) -> Vector3 {
+        self.position + self.orientation * x
+    }
+}
+
 /// Side length in Å of the cubic box holding `n_bodies` at `molarity` (mol/L).
 pub fn box_length(n_bodies: usize, molarity: f64) -> f64 {
     (n_bodies as f64 / crate::number_density(molarity)).cbrt()

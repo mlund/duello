@@ -3,7 +3,7 @@
 use crate::archive::{CgBody, ScanArchive, ScanSettings};
 use crate::icoscan::omega_step;
 use crate::nbody::{trajectory::expand, Pose};
-use crate::{Table6DAdaptive, Vector3};
+use crate::{Table6DAdaptive, UnitQuaternion, Vector3};
 use icotable::{AngularMesh, SlabResolution};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -41,19 +41,19 @@ pub fn lowest(archive: &ScanArchive, n: usize) -> Vec<TablePose> {
                 n_v * n_v
             };
             for k in (0..pairs).map(|pair| pair * table.n_omega + oi) {
-                let candidate = Candidate {
-                    energy: energies[k],
-                    ri,
-                    k,
-                };
-                keep_if_lower(&mut kept, n, candidate);
+                keep_if_lower(&mut kept, n, ByKey(energies[k], (ri, k)));
             }
         }
     }
     kept.into_sorted_vec()
         .into_iter()
-        .map(|c| c.to_pose(table, &archive.settings))
+        .map(|ByKey(energy, (ri, k))| TablePose::at(table, &archive.settings, ri, k, energy))
         .collect()
+}
+
+/// Mass-centre separation (Å) of R-bin `ri`.
+pub(crate) fn r_at(table: &Table6DAdaptive<f32>, ri: usize) -> f64 {
+    (ri as f64).mul_add(table.dr, table.rmin)
 }
 
 fn is_scalar(table: &Table6DAdaptive<f32>, ri: usize, oi: usize) -> bool {
@@ -63,91 +63,119 @@ fn is_scalar(table: &Table6DAdaptive<f32>, ri: usize, oi: usize) -> bool {
     )
 }
 
-/// A bounded max-heap: the worst kept state is on top, ready to be replaced.
-fn keep_if_lower(kept: &mut BinaryHeap<Candidate>, n: usize, candidate: Candidate) {
-    if !candidate.energy.is_finite() {
-        return;
+/// Infinite energies would outrank nothing yet fill the heap.
+/// `candidate` is keyed by energy (kJ/mol) and holds (R-bin, flat index in
+/// [`Table6DAdaptive::energies_at_r`]).
+fn keep_if_lower(
+    kept: &mut BinaryHeap<ByKey<(usize, usize)>>,
+    n: usize,
+    candidate: ByKey<(usize, usize)>,
+) {
+    if candidate.0.is_finite() {
+        keep_least(kept, n, candidate);
     }
+}
+
+/// Keeps the `n` least items in a max-heap, whose top is the one to replace.
+pub(crate) fn keep_least<T: Ord>(kept: &mut BinaryHeap<T>, n: usize, item: T) {
     if kept.len() < n {
-        kept.push(candidate);
+        kept.push(item);
     } else if let Some(mut top) = kept.peek_mut() {
-        if candidate < *top {
-            *top = candidate;
+        if item < *top {
+            *top = item;
         }
     }
 }
 
-/// A table entry by its R-bin and flat index in [`Table6DAdaptive::energies_at_r`].
-struct Candidate {
-    /// kJ/mol, as tabulated
-    energy: f64,
-    ri: usize,
-    k: usize,
-}
+/// An item ordered by its key alone, for bounded heaps of table states.
+pub(crate) struct ByKey<T>(pub f64, pub T);
 
-impl Candidate {
-    /// Decodes the layout `vi·n_v·n_ω + vj·n_ω + oi` and converts to kT the way
-    /// [`crate::Sample`] does.
-    fn to_pose(&self, table: &Table6DAdaptive<f32>, settings: &ScanSettings) -> TablePose {
-        let level = table
-            .mesh_level_at_r(self.ri)
-            .expect("the energies came from this R-bin's mesh");
-        let (n_v, n_omega) = (level.n_vertices, table.n_omega);
-        let (vi, vj, oi) = (
-            self.k / (n_v * n_omega),
-            self.k / n_omega % n_v,
-            self.k % n_omega,
-        );
-        TablePose {
-            r: (self.ri as f64).mul_add(table.dr, table.rmin),
-            // The table keeps only the bin count; τ/n_ω can be off by half a bin.
-            omega: oi as f64 * omega_step(settings.subdivision, settings.max_ndiv),
-            energy: self.energy / crate::thermal_energy(settings.temperature),
-            directions: [level.direction(vi), level.direction(vj)],
-        }
-    }
-}
-
-impl PartialEq for Candidate {
+impl<T> PartialEq for ByKey<T> {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == Ordering::Equal
     }
 }
 
-impl Eq for Candidate {}
+impl<T> Eq for ByKey<T> {}
 
-impl PartialOrd for Candidate {
+impl<T> PartialOrd for ByKey<T> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for Candidate {
+impl<T> Ord for ByKey<T> {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.energy.total_cmp(&other.energy)
+        self.0.total_cmp(&other.0)
     }
 }
 
 impl TablePose {
-    /// Bead positions (Å) of both bodies: A as stored, B rotated and shifted.
-    pub fn place(&self, bodies: &[CgBody; 2]) -> [Vec<[f64; 3]>; 2] {
+    /// The state at flat index `k` of [`Table6DAdaptive::energies_at_r`] in R-bin
+    /// `ri`. Decodes the layout `vi·n_v·n_ω + vj·n_ω + oi` and converts kJ/mol to
+    /// kT the way [`crate::Sample`] does.
+    pub(crate) fn at(
+        table: &Table6DAdaptive<f32>,
+        settings: &ScanSettings,
+        ri: usize,
+        k: usize,
+        energy: f64,
+    ) -> Self {
+        let level = table
+            .mesh_level_at_r(ri)
+            .expect("the energies came from this R-bin's mesh");
+        let (n_v, n_omega) = (level.n_vertices, table.n_omega);
+        let (vi, vj, oi) = (k / (n_v * n_omega), k / n_omega % n_v, k % n_omega);
+        Self {
+            r: r_at(table, ri),
+            // The table keeps only the bin count; τ/n_ω can be off by half a bin.
+            omega: oi as f64 * omega_step(settings.subdivision, settings.max_ndiv),
+            energy: energy / crate::thermal_energy(settings.temperature),
+            directions: [level.direction(vi), level.direction(vj)],
+        }
+    }
+
+    /// A pose anywhere, not only on the table's grid.
+    #[cfg(test)]
+    pub(crate) fn off_grid(r: f64, omega: f64, directions: [Vector3; 2]) -> Self {
+        Self {
+            r,
+            omega,
+            energy: 0.0,
+            directions,
+        }
+    }
+
+    /// Mesh directions of vertex i (B as seen from A) and j (A as seen from B).
+    pub fn directions(&self) -> &[Vector3; 2] {
+        &self.directions
+    }
+
+    /// Where A goes: nowhere, as tables are relative to A's own frame.
+    pub fn a_pose() -> Pose {
+        Pose {
+            position: Vector3::zeros(),
+            orientation: UnitQuaternion::identity(),
+        }
+    }
+
+    /// Where B goes; A stays as stored, since `orient` never rotates it.
+    pub fn b_pose(&self) -> Pose {
         let [dir_i, dir_j] = &self.directions;
         let (q_a, q_b, separation) = icotable::orient(self.r, self.omega, dir_i, dir_j);
-        let placed = |body: &CgBody, position, orientation| {
-            expand(
-                body,
-                &Pose {
-                    position,
-                    orientation,
-                },
-            )
-            .into_iter()
-            .map(Into::into)
-            .collect()
-        };
+        debug_assert_eq!(q_a, UnitQuaternion::identity());
+        Pose {
+            position: separation,
+            orientation: q_b,
+        }
+    }
+
+    /// Bead positions (Å) of both bodies: A as stored, B rotated and shifted.
+    pub fn place(&self, bodies: &[CgBody; 2]) -> [Vec<[f64; 3]>; 2] {
+        let placed = |body, pose| expand(body, &pose).into_iter().map(Into::into).collect();
         [
-            placed(&bodies[0], Vector3::zeros(), q_a),
-            placed(&bodies[1], separation, q_b),
+            placed(&bodies[0], Self::a_pose()),
+            placed(&bodies[1], self.b_pose()),
         ]
     }
 }
