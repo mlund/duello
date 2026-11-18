@@ -22,6 +22,7 @@ fn point_body() -> CgBody {
         charges: vec![0.0],
         radii: vec![1.0],
         kinds: vec!["X".into()],
+        multipole: None,
     }
 }
 

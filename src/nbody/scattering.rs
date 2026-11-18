@@ -430,6 +430,7 @@ mod tests {
             charges: vec![0.0; n],
             radii: vec![1.0; n],
             kinds: vec![kind.into(); n],
+            multipole: None,
         }
     }
 

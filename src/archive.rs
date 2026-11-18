@@ -71,6 +71,61 @@ pub struct CgBody {
     pub radii: Vec<f64>,
     /// Atom kind name per bead, e.g. residue names for single-bead models.
     pub kinds: Vec<String>,
+    /// From the titration that set `charges`; None for fixed-charge (XYZ) input.
+    /// Skipped when None so existing many-body trajectory headers still read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multipole: Option<Multipole>,
+}
+
+/// Titration moments about the mass centre; owned here so the session format
+/// doesn't follow cgkitten's.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Multipole {
+    /// ⟨Z⟩
+    pub charge: f64,
+    /// ⟨Z²⟩
+    pub charge_sq: f64,
+    /// ⟨|μ|⟩, e·Å
+    pub dipole: f64,
+    /// ⟨μ²⟩, (e·Å)²
+    pub dipole_sq: f64,
+    /// ⟨‖Θ‖⟩, e·Å² (traceless, Frobenius norm)
+    pub quadrupole: f64,
+    /// ⟨‖Θ‖²⟩, (e·Å²)²
+    pub quadrupole_sq: f64,
+}
+
+impl Multipole {
+    /// C = ⟨Z²⟩ − ⟨Z⟩²: how readily the net charge responds to a field.
+    pub fn capacitance(&self) -> f64 {
+        self.charge.mul_add(-self.charge, self.charge_sq).max(0.0)
+    }
+}
+
+/// One log line per titrated molecule.
+impl std::fmt::Display for Multipole {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "Z = {:.2} e, C = {:.2} e², ⟨|μ|⟩ = {:.1} eÅ",
+            self.charge,
+            self.capacitance(),
+            self.dipole
+        )
+    }
+}
+
+impl From<&cgkitten::Multipole> for Multipole {
+    fn from(m: &cgkitten::Multipole) -> Self {
+        Self {
+            charge: m.charge,
+            charge_sq: m.charge_sq,
+            dipole: m.dipole,
+            dipole_sq: m.dipole_sq,
+            quadrupole: m.quadrupole,
+            quadrupole_sq: m.quadrupole_sq,
+        }
+    }
 }
 
 /// A finished two-body scan; saved and loaded via [`crate::bundle`].
@@ -130,6 +185,7 @@ impl ScanArchive {
         params: &ScanParams,
         mut scan: ScanResult,
         bodies: [&Structure; 2],
+        multipoles: [Option<Multipole>; 2],
         kinds: &[AtomKind],
         topology_yaml: String,
     ) -> Result<Self> {
@@ -137,12 +193,15 @@ impl ScanArchive {
         if scan.table.metadata.is_none() {
             scan.table.metadata = Some(table_metadata(params, &scan));
         }
-        let [a, b] = bodies;
+        let [a, b] = [0, 1].map(|i| CgBody {
+            multipole: multipoles[i].clone(),
+            ..CgBody::new(bodies[i], kinds)
+        });
         Ok(Self {
             settings,
             backend: scan.backend,
             table: scan.table,
-            bodies: [CgBody::new(a, kinds), CgBody::new(b, kinds)],
+            bodies: [a, b],
             points: pmf.points,
             virial: pmf.virial,
             topology_yaml,
@@ -174,6 +233,7 @@ impl CgBody {
                 .iter()
                 .map(|&id| kinds[id].name().to_string())
                 .collect(),
+            multipole: None,
         }
     }
 
@@ -251,6 +311,26 @@ pub(crate) mod tests {
     use super::*;
     use crate::AdaptiveBuilder;
 
+    /// C = 58 − 7.5² = 1.75; the dipole is no rounding tie.
+    pub(crate) fn multipole() -> Multipole {
+        Multipole {
+            charge: 7.5,
+            charge_sq: 58.0,
+            dipole: 40.21,
+            dipole_sq: 1700.0,
+            quadrupole: 900.0,
+            quadrupole_sq: 820_000.0,
+        }
+    }
+
+    #[test]
+    fn a_multipole_reads_as_charge_capacitance_and_dipole() {
+        assert_eq!(
+            multipole().to_string(),
+            "Z = 7.50 e, C = 1.75 e², ⟨|μ|⟩ = 40.2 eÅ"
+        );
+    }
+
     /// Energy varies with both directions, so a broken table shows up in lookups.
     fn table() -> Table6DAdaptive<f32> {
         let mut builder =
@@ -276,6 +356,7 @@ pub(crate) mod tests {
             charges: vec![1.0, -0.5],
             radii: vec![3.0, 3.0],
             kinds: vec![kind.into(), "GLU".into()],
+            multipole: None,
         }
     }
 

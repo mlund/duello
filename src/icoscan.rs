@@ -70,6 +70,8 @@ pub struct SaveScan {
     pub path: PathBuf,
     pub settings: crate::archive::ScanSettings,
     pub topology_yaml: String,
+    /// Titration moments of A and B, kept beside their bodies.
+    pub multipoles: [Option<crate::archive::Multipole>; 2],
 }
 
 /// Progress of a running scan, reported after each R-bin.
@@ -488,6 +490,7 @@ fn save_archive<B: EnergyBackend>(
         &config.params,
         result,
         [backend.ref_a(), backend.ref_b()],
+        save.multipoles.clone(),
         &config.atom_kinds,
         save.topology_yaml.clone(),
     )?;
@@ -845,6 +848,7 @@ mod tests {
             &params(1),
             result,
             [backend.ref_a(), backend.ref_b()],
+            [None, None],
             &[Default::default()],
             String::new(),
         )

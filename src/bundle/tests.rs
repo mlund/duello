@@ -209,6 +209,30 @@ fn a_version_5_file_without_a_steric_reference_is_refused() {
     assert!(error.contains("re-run the scan"), "{error}");
 }
 
+/// Sweeps read each point's moments from the session, not a re-titration.
+#[test]
+fn titration_moments_survive_the_round_trip() {
+    let mut scan = archive();
+    scan.bodies[0].multipole = Some(crate::archive::tests::multipole());
+    let bundle = Bundle {
+        scan: Some(scan),
+        ..Default::default()
+    };
+    let restored = round_trip(&bundle).scan.unwrap();
+    assert_eq!(restored.bodies, bundle.scan.unwrap().bodies);
+}
+
+#[test]
+fn a_version_7_file_without_multipoles_is_refused() {
+    let manifest = r#"{"format":"duello-session","version":7,"parts":[]}"#;
+    let error = load_error(&with_entry_replaced(
+        &session_zip(),
+        "manifest.json",
+        manifest.as_bytes(),
+    ));
+    assert!(error.contains("re-run the scan"), "{error}");
+}
+
 #[test]
 fn a_newer_version_is_refused() {
     let manifest = r#"{"format":"duello-session","version":99,"parts":[]}"#;

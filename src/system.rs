@@ -15,6 +15,7 @@
 //! Everything a scan needs before the first energy evaluation, behind one call so the
 //! CLI and web front-ends can't drift apart on loading, coarse-graining, or pairing.
 
+use crate::archive::Multipole;
 use crate::energy::PairMatrix;
 use crate::structure::Structure;
 use anyhow::{Context, Result};
@@ -84,6 +85,8 @@ pub struct PairSystem {
     /// Coarse-graining output, if any. Nothing is written to disk here;
     /// persisting it is the caller's choice.
     pub generated: Option<cgkitten::CgSystem>,
+    /// Titration moments of A and B; a homodimer's B is A's.
+    pub multipoles: [Option<Multipole>; 2],
 }
 
 impl PairSystem {
@@ -93,10 +96,11 @@ impl PairSystem {
             structures,
             topology,
             origin,
+            multipoles,
         } = Loaded::new(&sources, spec.chains, spec.top, &spec.cg, spec.medium)?;
-        let mut structures = structures.into_iter();
-        let ref_a = structures.next().context("no structure loaded")?;
-        let ref_b = structures.next().unwrap_or_else(|| ref_a.clone());
+        let [Some(ref_a), Some(ref_b)] = a_and_b(structures) else {
+            anyhow::bail!("no structure loaded");
+        };
         let nonbonded = origin.nonbonded(&topology, spec.medium)?;
         let pair_matrix = PairMatrix::new(nonbonded, topology.atomkinds(), spec.medium);
         Ok(Self {
@@ -105,8 +109,17 @@ impl PairSystem {
             topology,
             pair_matrix,
             generated: origin.into_generated(),
+            multipoles: a_and_b(multipoles),
         })
     }
+}
+
+/// A's and B's, with a lone A standing in for B: a homodimer shares one titration.
+fn a_and_b<T: Clone>(items: impl IntoIterator<Item = T>) -> [Option<T>; 2] {
+    let mut each = items.into_iter();
+    let a = each.next();
+    let b = each.next().or_else(|| a.clone());
+    [a, b]
 }
 
 impl Source<'_> {
@@ -157,6 +170,8 @@ pub(crate) struct Loaded {
     pub(crate) structures: Vec<Structure>,
     pub(crate) topology: Topology,
     origin: TopologyOrigin,
+    /// One per structure if titrated; empty for fixed-charge input.
+    multipoles: Vec<Multipole>,
 }
 
 impl Loaded {
@@ -200,7 +215,11 @@ impl Loaded {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        Self::from_generated(coarse_grain(&inputs, cg, medium)?)
+        let (generated, multipoles) = coarse_grain(&inputs, cg, medium)?;
+        Ok(Self {
+            multipoles,
+            ..Self::from_generated(generated)?
+        })
     }
 
     fn from_xyz_files(xyz: &[&Path], top: Option<&Path>, cg: &CgOptions) -> Result<Self> {
@@ -219,6 +238,7 @@ impl Loaded {
             structures,
             topology,
             origin: TopologyOrigin::File(top.to_path_buf()),
+            multipoles: Vec::new(),
         })
     }
 
@@ -234,6 +254,7 @@ impl Loaded {
             structures,
             topology,
             origin: TopologyOrigin::Generated(cg),
+            multipoles: Vec::new(),
         })
     }
 }
@@ -281,7 +302,11 @@ impl Input<'_> {
 
 /// Titrates at the medium's salt and temperature, so charges belong to the scanned solution.
 /// Mirrors `cgkitten::coarse_grain_jointly`, which takes one chain list for all inputs.
-fn coarse_grain(inputs: &[Input], cg: &CgOptions, medium: &Medium) -> Result<cgkitten::CgSystem> {
+fn coarse_grain(
+    inputs: &[Input],
+    cg: &CgOptions,
+    medium: &Medium,
+) -> Result<(cgkitten::CgSystem, Vec<Multipole>)> {
     let calc = cgkitten::ChargeCalc {
         ph: cg.ph,
         temperature: medium.temperature(),
@@ -294,18 +319,20 @@ fn coarse_grain(inputs: &[Input], cg: &CgOptions, medium: &Medium) -> Result<cgk
         .map_err(anyhow::Error::msg)?;
     calc.log_conditions();
     let policy = cg_policy(cg.single_bead);
-    let molecules = inputs
-        .iter()
-        .enumerate()
-        .map(|(i, input)| {
-            let beads = input
-                .beads(policy)
-                .with_context(|| format!("molecule {}", i + 1))?;
-            Ok(calc.run(&beads).apply(&beads))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    cgkitten::assemble_system(&molecules, ff.as_deref(), MERGE_TOLERANCE)
-        .map_err(anyhow::Error::msg)
+    let titrated = inputs.iter().enumerate().map(|(i, input)| {
+        let beads = input
+            .beads(policy)
+            .with_context(|| format!("molecule {}", i + 1))?;
+        let result = calc.run(&beads);
+        let multipole = Multipole::from(&result.multipole);
+        log::info!("Molecule {} titrated: {multipole}", i + 1);
+        anyhow::Ok((result.apply(&beads), multipole))
+    });
+    let (molecules, multipoles): (Vec<_>, Vec<_>) =
+        itertools::process_results(titrated, |each| each.unzip())?;
+    let system = cgkitten::assemble_system(&molecules, ff.as_deref(), MERGE_TOLERANCE)
+        .map_err(anyhow::Error::msg)?;
+    Ok((system, multipoles))
 }
 
 /// `beads` of `chains` only (empty keeps all). An empty result fails here, naming
@@ -424,6 +451,73 @@ mod tests {
         assert!(high - low > 0.3, "Z(0.005 M) = {low}, Z(0.5 M) = {high}");
         // Measured with the old hard-wired 0.1 M; MC noise is ~0.01.
         assert!((net_charge_2cds(0.1) - 7.76).abs() < 0.1);
+    }
+
+    /// At 0.1 M, 25 °C and default coarse-graining.
+    fn load(
+        a: Source,
+        b: Option<Source>,
+        top: Option<&Path>,
+        chains: [&[String]; 2],
+    ) -> PairSystem {
+        PairSystem::load(PairSpec {
+            a,
+            b,
+            top,
+            chains,
+            cg: CgOptions::default(),
+            medium: &Medium::salt_water(298.15, Salt::SodiumChloride, 0.1),
+        })
+        .unwrap()
+    }
+
+    /// The titration that set the charges also sampled the moments. The beads'
+    /// charges are rounded and merged into kinds, so ⟨Z⟩ agrees only that far.
+    #[test]
+    fn a_titrated_molecule_keeps_its_multipole() {
+        let cif = example("calvados3/2CDS.cif");
+        let system = load(Source::File(&cif), None, None, [&[], &[]]);
+        let multipole = system.multipoles[0].as_ref().unwrap();
+        let z: f64 = system.ref_a.charges.iter().sum();
+        assert!(
+            (multipole.charge - z).abs() < 0.01,
+            "{} vs {z}",
+            multipole.charge
+        );
+        assert!(multipole.capacitance() > 0.0);
+    }
+
+    /// Each partner reports its own titration; a homodimer's B shares A's, and
+    /// fixed XYZ charges were never titrated.
+    #[test]
+    fn multipoles_follow_the_pair() {
+        let pdb = crate::web_api::tests::two_chains();
+        let (a, b) = (["A".to_string()], ["B".to_string()]);
+        let hetero = load(
+            Source::PdbBytes(&pdb),
+            Some(Source::PdbBytes(&pdb)),
+            None,
+            [&a, &b],
+        );
+        assert!(hetero.multipoles.iter().all(Option::is_some));
+        assert_ne!(hetero.multipoles[0], hetero.multipoles[1]);
+
+        let cif = example("calvados3/2CDS.cif");
+        let homo = load(Source::File(&cif), None, None, [&[], &[]]);
+        assert!(homo.multipoles[0].is_some());
+        assert_eq!(homo.multipoles[0], homo.multipoles[1]);
+
+        let (xyz, top) = (
+            example("calvados3/2CDS.xyz"),
+            example("calvados3/topology.yaml"),
+        );
+        let fixed = load(
+            Source::File(&xyz),
+            Some(Source::File(&xyz)),
+            Some(&top),
+            [&[], &[]],
+        );
+        assert_eq!(fixed.multipoles, [None, None]);
     }
 
     /// Each molecule keeps its own chains, so one file can give both partners.
