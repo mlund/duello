@@ -3,13 +3,14 @@
 //! B₂ splits exactly into one term per tabulated state, so each pose's share of
 //! the attraction can be ranked instead of guessed from its energy alone.
 
+mod cluster;
 pub mod export;
 
-use crate::archive::{CgBody, ScanArchive};
-use crate::nbody::{trajectory::expand, Pose};
+use crate::archive::ScanArchive;
 use crate::poses::{keep_least, r_at, ByKey, TablePose};
 use crate::virial::{mayer, shell};
-use crate::{Table6DAdaptive, Vector3};
+use crate::Table6DAdaptive;
+use cluster::Founders;
 use icotable::{MeshLevel, SlabResolution};
 use std::collections::BinaryHeap;
 
@@ -39,6 +40,7 @@ pub struct BindingMode {
     pub b2: f64,
     /// Fraction of [`Modes::attractive_b2`]
     pub share: f64,
+    /// Tabulated states in the family, counting the weak ones that joined
     pub n_poses: usize,
 }
 
@@ -53,13 +55,27 @@ pub struct Modes {
 
 /// The poses that carry the attraction in `archive`'s B₂, as binding modes.
 pub fn binding_modes(archive: &ScanArchive, spec: ModeSpec) -> Modes {
-    let strongest = Strongest::of(archive);
+    clustered(archive, spec, MAX_CANDIDATES)
+}
+
+/// [`binding_modes`] with the seed count as a parameter, so tests can make
+/// the cap bite on small tables.
+fn clustered(archive: &ScanArchive, spec: ModeSpec, max_candidates: usize) -> Modes {
+    let strongest = Strongest::of(archive, max_candidates);
     let attractive_b2 = strongest.total;
-    let poses = strongest
-        .covering()
-        .map(|ByKey(c, state)| (state.pose(archive), c));
     let homodimer = archive.settings.homo_dimer;
-    let mut modes = cluster(poses, &archive.bodies, homodimer, spec.rmsd);
+    let mut founders = Founders::new(&archive.bodies, homodimer, spec.rmsd);
+    for ByKey(_, state) in strongest.covering() {
+        founders.found_if_new(state.pose(archive));
+    }
+    let mut families = founders.freeze();
+    // Every attractive state joins, seeds too, so shares count the whole table.
+    contributions(archive, |Term { c, state }| {
+        if let Some(state) = state.filter(|_| c < 0.0) {
+            families.join(&state.pose(archive).b_pose(), c);
+        }
+    });
+    let mut modes = families.into_modes();
     modes.sort_by(|a, b| a.b2.total_cmp(&b.b2));
     modes.truncate(spec.max_modes);
     for mode in &mut modes {
@@ -71,12 +87,12 @@ pub fn binding_modes(archive: &ScanArchive, spec: ModeSpec) -> Modes {
     }
 }
 
-/// Enough to cover the attraction of real tables, whose terms fall off fast,
-/// while bounding memory and clustering time.
+/// Seeds: the states that may found modes. The rest only join them, so this
+/// bounds memory and the number of modes, not what the shares cover.
 const MAX_CANDIDATES: usize = 20_000;
 
-/// Clustering stops once this fraction of the attraction is placed; the tail
-/// is a cloud of tiny terms that would each start a mode of its own.
+/// Seeding stops once this fraction of the attraction is placed; the tail
+/// is a cloud of tiny terms that would each found a mode of its own.
 const COVERAGE: f64 = 0.999;
 
 /// The strongest attractive mesh states, strongest first. A bounded heap, as
@@ -91,15 +107,15 @@ struct Strongest {
 }
 
 impl Strongest {
-    fn of(archive: &ScanArchive) -> Self {
+    fn of(archive: &ScanArchive, max_candidates: usize) -> Self {
         let (mut total, mut oriented) = (0.0, 0.0);
-        let mut kept = BinaryHeap::with_capacity(MAX_CANDIDATES);
+        let mut kept = BinaryHeap::with_capacity(max_candidates);
         contributions(archive, |Term { c, state }| {
             if c < 0.0 {
                 total += c;
                 if let Some(state) = state {
                     oriented += c;
-                    keep_least(&mut kept, MAX_CANDIDATES, ByKey(c, state));
+                    keep_least(&mut kept, max_candidates, ByKey(c, state));
                 }
             }
         });
@@ -120,100 +136,6 @@ impl Strongest {
             placed += s.0.abs();
             more
         })
-    }
-}
-
-/// Greedy: each pose, strongest first, joins the first mode within `rmsd`,
-/// else founds one, so a mode's representative is its largest contributor.
-fn cluster(
-    poses: impl IntoIterator<Item = (TablePose, f64)>,
-    bodies: &[CgBody; 2],
-    homodimer: bool,
-    rmsd: f64,
-) -> Vec<BindingMode> {
-    let mut families: Vec<Family> = Vec::new();
-    for (pose, c) in poses {
-        let b = pose.b_pose();
-        let view = Beads::new(expand(&bodies[1], &b));
-        match families.iter_mut().find(|f| f.holds(&view, rmsd)) {
-            Some(family) => {
-                family.mode.b2 += c;
-                family.mode.n_poses += 1;
-            }
-            None => {
-                let mut views = vec![view];
-                if homodimer {
-                    // A as B sees it: swapping identical molecules is the same complex.
-                    views.push(Beads::new(expand(&bodies[0], &seen_from(&b))));
-                }
-                families.push(Family::found(pose, c, views));
-            }
-        }
-    }
-    families.into_iter().map(|f| f.mode).collect()
-}
-
-/// The partner's placement in the frame of a body placed at `pose`.
-fn seen_from(pose: &Pose) -> Pose {
-    let orientation = pose.orientation.inverse();
-    Pose {
-        position: orientation * -pose.position,
-        orientation,
-    }
-}
-
-/// A mode and the B-bead views its representative is compared by.
-struct Family {
-    mode: BindingMode,
-    /// B as placed and, for homodimers, A as B sees it.
-    views: Vec<Beads>,
-}
-
-impl Family {
-    fn found(pose: TablePose, c: f64, views: Vec<Beads>) -> Self {
-        let mode = BindingMode {
-            pose,
-            b2: c,
-            share: 0.0,
-            n_poses: 1,
-        };
-        Self { mode, views }
-    }
-
-    fn holds(&self, view: &Beads, rmsd: f64) -> bool {
-        self.views.iter().any(|v| v.within(view, rmsd))
-    }
-}
-
-/// Bead positions with their centroid, which bounds the RMSD from below.
-struct Beads {
-    positions: Vec<Vector3>,
-    centroid: Vector3,
-}
-
-impl Beads {
-    fn new(positions: Vec<Vector3>) -> Self {
-        let centroid = positions.iter().sum::<Vector3>() / positions.len() as f64;
-        Self {
-            positions,
-            centroid,
-        }
-    }
-
-    /// RMSD ≥ the centroid distance, which rejects most pairs cheaply.
-    fn within(&self, other: &Self, rmsd: f64) -> bool {
-        debug_assert_eq!(self.positions.len(), other.positions.len());
-        if (self.centroid - other.centroid).norm() > rmsd {
-            return false;
-        }
-        let msd = self
-            .positions
-            .iter()
-            .zip(&other.positions)
-            .map(|(a, b)| (a - b).norm_squared())
-            .sum::<f64>()
-            / self.positions.len() as f64;
-        msd <= rmsd * rmsd
     }
 }
 
@@ -338,12 +260,13 @@ fn mesh_terms(
 
 #[cfg(test)]
 mod tests {
+    use super::cluster::seen_from;
     use super::*;
     use crate::archive::tests::archive;
     use crate::icoscan::omega_step;
     use crate::virial::{hardsphere, VirialCoeff};
     use crate::AdaptiveBuilder;
-    use crate::UnitQuaternion;
+    use crate::{UnitQuaternion, Vector3};
     use approx::assert_relative_eq;
 
     /// What one ω-slab holds, in kJ/mol.
@@ -573,6 +496,17 @@ mod tests {
         assert_eq!(binding_modes(&archive, tight).modes.len(), 2);
     }
 
+    #[test]
+    fn poses_beyond_the_candidate_cap_still_join_their_mode() {
+        let archive = archive_with(wells(&[(0, 3, 7, -20.0), (1, 3, 7, -15.0)]));
+        let modes = clustered(&archive, ModeSpec::default(), 1);
+        let [mode] = modes.modes.as_slice() else {
+            panic!("expected one mode, got {}", modes.modes.len());
+        };
+        assert_eq!(mode.n_poses, 2);
+        assert_relative_eq!(mode.share, 1.0, max_relative = 1e-9);
+    }
+
     /// A pose and the same complex seen from B: B's frame becomes the lab.
     fn pose_and_swap() -> [TablePose; 2] {
         let dir = |x, y, z| Vector3::new(x, y, z).normalize();
@@ -590,12 +524,20 @@ mod tests {
         body.masses = vec![1.0; 3];
         let bodies = [body.clone(), body];
         let [pose, swap] = pose_and_swap();
-        let poses = || [(pose.clone(), -2.0), (swap.clone(), -1.0)];
+        let cluster = |homodimer| {
+            let mut founders = Founders::new(&bodies, homodimer, 0.1);
+            founders.found_if_new(pose.clone());
+            founders.found_if_new(swap.clone());
+            let mut families = founders.freeze();
+            families.join(&pose.b_pose(), -2.0);
+            families.join(&swap.b_pose(), -1.0);
+            families.into_modes()
+        };
 
-        let homo = cluster(poses(), &bodies, true, 0.1);
+        let homo = cluster(true);
         assert_eq!(homo.len(), 1);
         assert_eq!(homo[0].n_poses, 2);
-        assert_eq!(cluster(poses(), &bodies, false, 0.1).len(), 2);
+        assert_eq!(cluster(false).len(), 2);
     }
 
     fn kt(archive: &ScanArchive) -> f64 {

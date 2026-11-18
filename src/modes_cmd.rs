@@ -69,12 +69,12 @@ fn all_atoms(
 fn print_table(export: &ModeExport) {
     let modes = &export.modes;
     println!(
-        "{:>4} {:>7} {:>10} {:>7} {:>8} {:>6}",
+        "{:>4} {:>7} {:>10} {:>9} {:>8} {:>6}",
         "mode", "share/%", "B₂/Å³", "poses", "U/kT", "R/Å"
     );
     for (rank, m) in (1..).zip(&modes.modes) {
         println!(
-            "{rank:>4} {:>7.1} {:>10.3e} {:>7} {:>8.2} {:>6.1}",
+            "{rank:>4} {:>7.1} {:>10.3e} {:>9} {:>8.2} {:>6.1}",
             100.0 * m.share,
             m.b2,
             m.n_poses,
