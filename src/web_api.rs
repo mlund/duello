@@ -142,6 +142,7 @@ fn build_result(
         params,
         scan,
         [&system.ref_a, &system.ref_b],
+        system.multipoles.clone(),
         system.topology.atomkinds(),
         topology_yaml.unwrap_or_default(),
     )
@@ -326,6 +327,19 @@ pub(crate) mod tests {
         let archive = cpu_scan(&request(&peptide, &peptide));
         assert_eq!(archive.backend, ScanBackend::Reference);
         assert_eq!(reloaded(&archive).backend, ScanBackend::Reference);
+    }
+
+    /// A sweep reads each point's moments from its archive.
+    #[test]
+    fn a_saved_scan_keeps_each_bodys_multipole() {
+        let req = request(&["LYS", "LYS", "GLU"], &["ASP", "LYS"]);
+        let archive = reloaded(&cpu_scan(&req));
+        let [a, b] = archive
+            .bodies
+            .each_ref()
+            .map(|body| body.multipole.clone().unwrap());
+        assert_ne!(a, b);
+        assert!((a.charge - archive.bodies[0].net_charge()).abs() < 0.01);
     }
 
     #[test]

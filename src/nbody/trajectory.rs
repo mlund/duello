@@ -312,6 +312,7 @@ mod tests {
                 charges: vec![1.0],
                 radii: vec![3.0],
                 kinds: vec!["LYS".into()],
+                multipole: None,
             },
             translation: None,
             rotation: None,

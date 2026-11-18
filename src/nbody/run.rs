@@ -776,6 +776,7 @@ pub(crate) mod tests {
             charges: vec![0.0; n],
             radii: vec![1.0; n],
             kinds: kinds.iter().map(|k| k.to_string()).collect(),
+            multipole: None,
         };
         ScanArchive {
             settings: ScanSettings {

@@ -502,6 +502,7 @@ fn save_scan_request(
     (rmin, rmin_auto): (f64, bool),
     homo_dimer: bool,
     generated: Option<&cgkitten::CgSystem>,
+    multipoles: [Option<duello::archive::Multipole>; 2],
 ) -> Result<icoscan::SaveScan> {
     let Commands::Scan {
         rmax,
@@ -560,6 +561,7 @@ fn save_scan_request(
         path,
         settings,
         topology_yaml,
+        multipoles,
     })
 }
 
@@ -627,6 +629,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         topology,
         pair_matrix,
         generated,
+        multipoles,
     } = PairSystem::load(PairSpec {
         a: Source::File(mol1),
         b: (!homo_dimer).then_some(Source::File(mol2)),
@@ -686,7 +689,14 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         save_scan: savescan
             .clone()
             .map(|path| {
-                save_scan_request(cmd, path, (rmin, rmin_auto), homo_dimer, generated.as_ref())
+                save_scan_request(
+                    cmd,
+                    path,
+                    (rmin, rmin_auto),
+                    homo_dimer,
+                    generated.as_ref(),
+                    multipoles,
+                )
             })
             .transpose()?,
     };
