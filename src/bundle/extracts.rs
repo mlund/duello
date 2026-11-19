@@ -55,9 +55,9 @@ pub fn manybody(run: &RunRecord) -> Vec<Entry<'static>> {
         ),
         Entry::text(
             "manybody/rdf.csv",
-            run.rdf.to_csv(),
+            run.rdf_analysis().to_csv(),
             "text/csv",
-            "Mass-centre radial distribution function g(r)",
+            "Mass-centre g(r), its views along r and the Kirkwood–Buff G22 and S(0) as # comments",
         ),
         Entry::text(
             "manybody/energy.csv",

@@ -104,7 +104,7 @@ pub fn run_nbody(args: &NBodyArgs) -> Result<()> {
     // Its own file: a second table would break readers of the first.
     std::fs::write(
         with_suffix(&args.output, ".rdf.csv"),
-        run.pair_correlation().to_csv(),
+        run.rdf_analysis().to_csv(),
     )?;
     std::fs::write(with_suffix(&args.output, ".traj"), run.trajectory_bytes()?)?;
     Ok(())

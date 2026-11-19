@@ -1,7 +1,7 @@
 //! A many-body run's inputs and results, detached from the running engine so
 //! they can be saved, reloaded and shown without a scan or GPU.
 
-use super::{HsyFluid, Progress, RdfCurve, RunSpec, RunStats, ScatteringCurve, Stage};
+use super::{HsyFluid, Progress, RdfAnalysis, RdfCurve, RunSpec, RunStats, ScatteringCurve, Stage};
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 
@@ -38,6 +38,11 @@ impl RunRecord {
             frames: self.stats.energy.frames,
             recording: self.spec.record_trajectory && !self.trajectory_capped,
         }
+    }
+
+    /// Kirkwood–Buff reading of the run's g(r).
+    pub fn rdf_analysis(&self) -> RdfAnalysis {
+        self.spec.rdf_analysis(self.rdf.clone())
     }
 
     /// Curve code zips these vectors, so an opened file must agree on lengths.
