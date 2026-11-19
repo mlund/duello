@@ -16,8 +16,8 @@ pub fn kt() -> f64 {
     crate::thermal_energy(TEMPERATURE)
 }
 
-/// The CLAUDE.md benchmark system: 2CDS × 2CDS, 20 mM NaCl, 150 Å cutoff.
-pub struct Lysozyme {
+/// A homodimer with its splines and an exact reference.
+pub struct TestPair {
     pub ref_a: Structure,
     pub ref_b: Structure,
     pub splines: SplinedPotentials,
@@ -25,10 +25,17 @@ pub struct Lysozyme {
     pair_matrix: PairMatrix,
 }
 
-impl Lysozyme {
+impl TestPair {
     /// Exact (unsplined) reference for any structures typed by this force field.
     pub fn into_exact(self, a: Structure, b: Structure) -> CpuBackend {
         CpuBackend::new(a, b, self.pair_matrix)
+    }
+
+    /// The same system with splines cut at `cutoff` (Å), as `--cutoff`;
+    /// [`Self::into_exact`] stays uncut.
+    pub fn with_cutoff(mut self, cutoff: f64) -> Self {
+        self.splines = sr_splines(&self.pair_matrix, cutoff);
+        self
     }
 
     /// Atom types in A, split by whether they carry charge.
@@ -61,26 +68,54 @@ pub fn bead(id: usize) -> Structure {
     }
 }
 
-pub fn lysozyme() -> Lysozyme {
+/// The CLAUDE.md benchmark system: 2CDS × 2CDS, 20 mM NaCl, 150 Å cutoff.
+pub fn lysozyme() -> TestPair {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/calvados3");
     let (xyz, top) = (dir.join("2CDS.xyz"), dir.join("topology.yaml"));
     let medium = Medium::salt_water(TEMPERATURE, Salt::SodiumChloride, 0.02);
-    let system = PairSystem::load(PairSpec {
+    let spec = PairSpec {
         a: Source::File(&xyz),
         b: None,
         top: Some(&top),
         chains: [&[], &[]],
         cg: CgOptions::default(),
         medium: &medium,
-    })
-    .expect("2CDS example loads");
-    let splines = sr_splines(&system.pair_matrix, 150.0);
-    let coulomb = system.pair_matrix.coulomb_params().clone();
-    Lysozyme {
+    };
+    load(spec, 150.0)
+}
+
+/// Temperature (K) of the chymotrypsinogen fixture.
+pub const CGN_TEMPERATURE: f64 = 300.0;
+
+/// Chymotrypsinogen A (7KTZ) at pH 7, 15 mM, cutoff 30 Å, coarse-grained
+/// with `model`: a pair whose B₂ is set by contact attraction, unlike
+/// lysozyme's excluded volume.
+pub fn chymotrypsinogen(model: &str, single_bead: bool) -> TestPair {
+    let pdb = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/calvados3/7KTZ.pdb");
+    let medium = Medium::salt_water(CGN_TEMPERATURE, Salt::SodiumChloride, 0.015);
+    let cg = CgOptions {
+        model: model.to_string(),
+        single_bead,
+        ..Default::default()
+    };
+    let spec = PairSpec {
+        a: Source::File(&pdb),
+        b: None,
+        top: None,
+        chains: [&[], &[]],
+        cg,
+        medium: &medium,
+    };
+    load(spec, 30.0) // the CLI's default --cutoff
+}
+
+fn load(spec: PairSpec, cutoff: f64) -> TestPair {
+    let system = PairSystem::load(spec).expect("example loads");
+    TestPair {
+        splines: sr_splines(&system.pair_matrix, cutoff),
+        coulomb: system.pair_matrix.coulomb_params().clone(),
         ref_a: system.ref_a,
         ref_b: system.ref_b,
-        splines,
-        coulomb,
         pair_matrix: system.pair_matrix,
     }
 }
@@ -117,6 +152,33 @@ pub fn pose_list() -> Vec<PoseParams> {
                 vertex_i: v(vi),
                 vertex_j: v(vj),
             })
+        })
+        .collect()
+}
+
+/// A vertex vector uniform in the unit ball, so its direction is uniform on
+/// the sphere (`PoseParams` normalises it); never near zero.
+pub fn random_direction(rng: &mut rand_pcg::Pcg64) -> Vector3 {
+    use rand::Rng;
+    loop {
+        let v = Vector3::from_fn(|_, _| rng.gen_range(-1.0..1.0));
+        if (1e-6..1.0).contains(&v.norm_squared()) {
+            return v;
+        }
+    }
+}
+
+/// Random orientations at R = `r_min` … `r_min` + 3 Å; seeded, so runs agree.
+pub fn contact_poses(n: usize, r_min: f64) -> Vec<PoseParams> {
+    use rand::{Rng, SeedableRng};
+    let mut rng = rand_pcg::Pcg64::seed_from_u64(12345);
+    let direction = random_direction;
+    (0..n)
+        .map(|i| PoseParams {
+            r: r_min + (i % 4) as f64,
+            omega: rng.gen_range(0.0..std::f64::consts::TAU),
+            vertex_i: direction(&mut rng),
+            vertex_j: direction(&mut rng),
         })
         .collect()
 }

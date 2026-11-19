@@ -1,5 +1,5 @@
 // Lattice uniforms shared by the grid build and pose kernels.
-// Prepended at runtime: `const BRICK` and `const F16_MAX` (maps::layout_consts).
+// Prepended at runtime: `const BRICK` (maps::layout_consts).
 
 struct Grid {
     origin: vec4<f32>,
@@ -8,23 +8,20 @@ struct Grid {
     n_atom_types: u32,
     energy_cap: f32,
     n_atoms_a: u32,
-    // Short-range energy is zero beyond this distance from an A bead.
-    reach: f32,
-    // Scalars, not vec3: a vec3 would align to 16 and grow the struct to 80 bytes.
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
+    // The far map is zero beyond this distance from an A bead: the potentials'
+    // range plus the prefilter's stencil.
+    support: f32,
+    // Pairs closer than near_r2 are summed exactly, the rest gridded; see grid_switch.wgsl.
+    near_r1: f32,
+    near_r2: f32,
+    // Scalar, not vec: a vec would align to 16 and grow the struct.
+    _pad: u32,
 }
 
 // Maps are stored in bricks of BRICK³ nodes, each axis padded to a multiple of
 // BRICK, so a lookup's eight corners mostly share one brick. At BRICK = 2 (32
 // bytes) a cell starting on even nodes is a single read; measured faster than
 // 4 or 8 on the lysozyme scan. The padding is never read.
-
-// Each slot has a repulsive map, then an attractive one dims.w slots on.
-fn attractive_slot(slot: u32) -> u32 {
-    return slot + grid.dims.w;
-}
 
 fn bricks_per_axis() -> vec3<u32> {
     return (grid.dims.xyz + BRICK - 1u) / BRICK;

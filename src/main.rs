@@ -413,8 +413,8 @@ enum Commands {
         /// angstroms; its error scales as the square. Ignored by gpu/simd/reference
         #[arg(long, default_value_t = DEFAULT_GRID_SPACING)]
         grid_spacing: f64,
-        /// Map wall height of the grid backend (kJ/mol); poses touching it count
-        /// at least this much, so it need only be many kT
+        /// Cap on large repulsive energies of the grid backend (kJ/mol); keep the
+        /// default unless changing it leaves your results unchanged
         #[arg(long, default_value_t = DEFAULT_ENERGY_CAP)]
         grid_cap: f64,
         #[command(flatten)]

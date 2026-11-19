@@ -2,15 +2,17 @@
 //! kernel. Slow, so `#[ignore]`d; run with
 //! `cargo test --release -p duello --lib grid_scan -- --ignored --nocapture`.
 
-use super::{GridBackend, GridSpec};
-use crate::backend::test_support::{lysozyme, no_gpu, sr_splines, Lysozyme};
+use super::{GridBackend, GridSpec, DEFAULT_GRID_SPACING};
+use crate::backend::test_support::{
+    chymotrypsinogen, contact_poses, lysozyme, no_gpu, TestPair, CGN_TEMPERATURE,
+};
 use crate::backend::{EnergyBackend, GpuBackend, PoseParams};
 use crate::icoscan::{compute_scan, ScanParams};
 use crate::report::{compute_pmf, PmfResult};
 use std::time::Instant;
 
 /// The CLAUDE.md benchmark settings over `[rmin, rmax)` in steps of `dr`.
-fn params(sys: &Lysozyme, rmin: f64, rmax: f64, dr: f64) -> ScanParams {
+fn params(sys: &TestPair, rmin: f64, rmax: f64, dr: f64) -> ScanParams {
     ScanParams {
         rmin,
         rmax,
@@ -39,12 +41,12 @@ fn scan<B: EnergyBackend + Sync>(params: &ScanParams, backend: &B) -> (PmfResult
     (pmf, seconds)
 }
 
-fn gpu_backend(sys: &Lysozyme) -> GpuBackend {
+fn gpu_backend(sys: &TestPair) -> GpuBackend {
     let (a, b) = (sys.ref_a.clone(), sys.ref_b.clone());
     GpuBackend::new(a, b, &sys.splines, &sys.coulomb).unwrap()
 }
 
-fn grid_backend(sys: &Lysozyme, spacing: f64) -> GridBackend {
+fn grid_backend(sys: &TestPair, spacing: f64) -> GridBackend {
     let (a, b) = (sys.ref_a.clone(), sys.ref_b.clone());
     let spec = GridSpec {
         spacing,
@@ -66,9 +68,9 @@ fn worst_weighted_error(reference: &PmfResult, other: &PmfResult) -> f32 {
         .fold(0.0, f32::max)
 }
 
-/// Interpolation error scales as h²: about 0.01 kT at 0.5 Å on 2CDS. So the
-/// bar is set by h², and halving h² must roughly halve the error. A bug
-/// wouldn't converge that way.
+/// Only the prefiltered far map is interpolated: ~1e-3 kT at 2 Å on 2CDS,
+/// halving with each halving of h² down to 1 Å. A bug wouldn't converge
+/// that way.
 #[test]
 #[ignore]
 fn grid_scan_matches_gpu_free_energy() {
@@ -78,14 +80,11 @@ fn grid_scan_matches_gpu_free_energy() {
     let sys = lysozyme();
     let params = params(&sys, 26.0, 40.0, 1.0);
     let (expected, _) = scan(&params, &gpu_backend(&sys));
-    let (coarse, fine) = (
-        grid_backend(&sys, 0.5),
-        grid_backend(&sys, 0.5 / 2f64.sqrt()),
-    );
+    let (coarse, fine) = (grid_backend(&sys, 2.0), grid_backend(&sys, 2f64.sqrt()));
     let err_coarse = worst_weighted_error(&expected, &scan(&params, &coarse).0);
     let err_fine = worst_weighted_error(&expected, &scan(&params, &fine).0);
-    println!("worst |ΔF|: {err_coarse:.3} kT at 0.5 Å, {err_fine:.3} kT at 0.35 Å");
-    assert!(err_coarse < 0.3, "|ΔF| {err_coarse} kT at 0.5 Å");
+    println!("worst |ΔF|: {err_coarse:.4} kT at 2 Å, {err_fine:.4} kT at 1.41 Å");
+    assert!(err_coarse < 5e-3, "|ΔF| {err_coarse} kT at 2 Å");
     assert!(err_fine < 0.65 * err_coarse, "error doesn't scale as h²");
 }
 
@@ -140,78 +139,38 @@ fn grid_kernel_benchmark() {
     }
 }
 
-/// Chymotrypsinogen A (7KTZ), multi-bead, pH 7, 15 mM, at this temperature
-/// (K): a pair whose B₂ is set by contact attraction, unlike lysozyme's
-/// excluded volume. Same settings as the README's grid comparison.
-const CGN_TEMPERATURE: f64 = 300.0;
-
-fn chymotrypsinogen() -> (GridBackend, GpuBackend) {
-    use crate::system::{CgOptions, PairSpec, PairSystem, Source};
-    use faunus::interatomic::coulomb::{Medium, Salt};
-    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let pdb = dir.join("examples/calvados3/7KTZ.pdb");
-    let medium = Medium::salt_water(CGN_TEMPERATURE, Salt::SodiumChloride, 0.015);
-    let cg = CgOptions {
-        single_bead: false,
-        ..Default::default()
-    };
-    let spec = PairSpec {
-        a: Source::File(&pdb),
-        b: None,
-        top: None,
-        chains: [&[], &[]],
-        cg,
-        medium: &medium,
-    };
-    let sys = PairSystem::load(spec).expect("7KTZ example loads");
-    let splines = sr_splines(&sys.pair_matrix, 30.0); // the CLI's default --cutoff
-    let coulomb = sys.pair_matrix.coulomb_params();
-    let (a, b) = (sys.ref_a, sys.ref_b);
-    let grid = GridBackend::new(a.clone(), b.clone(), &splines, coulomb, GridSpec::default());
-    (
-        grid.unwrap(),
-        GpuBackend::new(a, b, &splines, coulomb).unwrap(),
-    )
+/// 7KTZ coarse-grained with `model`, as grid and pair kernel.
+fn cgn_backends(model: &str, single_bead: bool) -> (GridBackend, GpuBackend) {
+    let sys = chymotrypsinogen(model, single_bead);
+    (grid_backend(&sys, DEFAULT_GRID_SPACING), gpu_backend(&sys))
 }
 
-/// Random orientations at contact, R = 33–36 Å; seeded, so runs agree.
-/// Vertex vectors are uniform in the unit ball, so their directions are
-/// uniform on the sphere (`PoseParams` normalises them).
-fn contact_poses(n: usize) -> Vec<PoseParams> {
-    use rand::{Rng, SeedableRng};
-    let mut rng = rand_pcg::Pcg64::seed_from_u64(12345);
-    let direction = |rng: &mut rand_pcg::Pcg64| loop {
-        let v = crate::Vector3::from_fn(|_, _| rng.gen_range(-1.0..1.0));
-        if (1e-6..1.0).contains(&v.norm_squared()) {
-            return v;
-        }
-    };
-    (0..n)
-        .map(|i| PoseParams {
-            r: 33.0 + (i % 4) as f64,
-            omega: rng.gen_range(0.0..std::f64::consts::TAU),
-            vertex_i: direction(&mut rng),
-            vertex_j: direction(&mut rng),
-        })
-        .collect()
-}
-
-/// Pose by pose against exact pairs where B₂ is decided: attractive contacts.
-/// Plain trilinear maps failed this at 1 Å (mean βΔU +2.1, contact Boltzmann
-/// weight 0.5), which gave B₂ the wrong sign; the split, power-transformed
-/// maps pass.
+/// Pose by pose against exact pairs where B₂ is decided: attractive contacts,
+/// for each model and bead policy. Each B bead sees ~100 far pairs, so any
+/// bias of the far map shows here.
 #[test]
 #[ignore]
 fn grid_scan_contact_energies_cgn() {
     if no_gpu() {
         return;
     }
-    let (grid, exact) = chymotrypsinogen();
-    let poses = contact_poses(40_000);
-    let (got, want) = (
-        grid.compute_energies(&poses),
-        exact.compute_energies(&poses),
-    );
+    let poses = contact_poses(40_000, 33.0);
+    for (model, single_bead) in itertools::iproduct!(["calvados3", "kimhummer"], [true, false]) {
+        let (bias, ratio, n) = contact_errors(model, single_bead, &poses);
+        let tag = format!("{model} {}", if single_bead { "single" } else { "multi" });
+        println!(
+            "{tag}: {n} attractive poses, mean βΔU {bias:+.4}; Σe^(−βU) grid/exact {ratio:.4}"
+        );
+        assert!(bias.abs() < 2e-3, "{tag}: contact bias {bias:+.4} kT");
+        assert!((ratio - 1.0).abs() < 3e-3, "{tag}: weight ratio {ratio:.4}");
+    }
+}
+
+/// Mean βΔU over attractive contact poses, the grid/exact ratio of their
+/// summed Boltzmann weights, and the number of attractive poses.
+fn contact_errors(model: &str, single_bead: bool, poses: &[PoseParams]) -> (f64, f64, usize) {
+    let (grid, exact) = cgn_backends(model, single_bead);
+    let (got, want) = (grid.compute_energies(poses), exact.compute_energies(poses));
     let kt = crate::thermal_energy(CGN_TEMPERATURE);
     let attractive: Vec<f64> = (got.iter().zip(&want))
         .filter(|(_, w)| **w < 0.0)
@@ -219,18 +178,9 @@ fn grid_scan_contact_energies_cgn() {
         .collect();
     assert!(
         !attractive.is_empty(),
-        "no attractive contact poses sampled"
+        "{model}: no attractive contact poses sampled"
     );
     let bias = attractive.iter().sum::<f64>() / attractive.len() as f64;
     let weight = |u: &[f64]| u.iter().map(|u| (-u / kt).exp()).sum::<f64>();
-    let ratio = weight(&got) / weight(&want);
-    println!(
-        "{} attractive poses: mean βΔU {bias:+.2}; Σe^(−βU) grid/exact {ratio:.2}",
-        attractive.len()
-    );
-    assert!(bias.abs() < 0.2, "contact bias {bias:+.2} kT");
-    assert!(
-        (ratio - 1.0).abs() < 0.1,
-        "contact Boltzmann weight ratio {ratio:.2}"
-    );
+    (bias, weight(&got) / weight(&want), attractive.len())
 }

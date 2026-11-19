@@ -5,9 +5,13 @@
 // point" with "an affinity grid [...] calculated for each type of atom"
 // (Goodsell & Olson 1990, p. 196).
 //
+// Only the far part (1 − S)·U is stored, prefiltered so trilinear lookups are
+// unbiased: near pairs are summed exactly per pose, so walls and wells never
+// reach the map.
+//
 // Prepended at runtime: the grid-type-specific spline WGSL, spline_eval.wgsl,
-// grid_common.wgsl and `const MAX_SLOTS`, sized to the actual slot count so
-// the per-thread accumulator array stays small.
+// grid_common.wgsl, grid_switch.wgsl, `const MAX_SLOTS`, sized to the
+// actual slot count so the per-thread accumulator array stays small.
 
 @group(0) @binding(0) var<storage, read> spline_coeffs: array<SplineCoeffs>;
 @group(0) @binding(1) var<storage, read> spline_params: array<SplineParams>;
@@ -21,8 +25,29 @@
 // The build is split into dispatches: x = first node pair of this one,
 // y = total node pairs.
 @group(0) @binding(7) var<uniform> pairs: vec4<u32>;
-// (r_m, U_m) per type pair: where each potential splits into repulsion and attraction.
-@group(0) @binding(8) var<storage, read> pair_min: array<vec2<f32>>;
+
+// Radii r − d, r, r + d (d = LAPLACIAN_STEP) and the far weights 1 − S there;
+// they depend on r only, so one serves every slot.
+struct Stencil {
+    r: vec3<f32>,
+    w: vec3<f32>,
+}
+
+fn stencil(r: f32) -> Stencil {
+    let rs = r + LAPLACIAN_STEP * vec3<f32>(-1.0, 0.0, 1.0);
+    let s = vec3<f32>(near_weight(rs.x), near_weight(rs.y), near_weight(rs.z));
+    return Stencil(rs, 1.0 - s);
+}
+
+// f − h²/12·∇²f of the far part f = (1 − S)·U, with ∇²f = f″ + 2f′/r; see
+// the grid module docs. `h2_12` is h²/12.
+fn prefiltered_far(pair: u32, st: Stencil, h2_12: f32) -> f32 {
+    let u = vec3<f32>(spline_energy(pair, st.r.x), spline_energy(pair, st.r.y), spline_energy(pair, st.r.z));
+    let f = st.w * u;
+    let d = LAPLACIAN_STEP;
+    let laplacian = (f.z - 2.0 * f.y + f.x) / (d * d) + (f.z - f.x) / (d * st.r.y);
+    return f.y - h2_12 * laplacian;
+}
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -38,38 +63,30 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let p1 = p0 + vec3<f32>(grid.spacing, 0.0, 0.0);
 
     // A outer, slots inner: one distance per A bead serves every slot.
-    var rep: array<vec2<f32>, MAX_SLOTS>;
-    var att: array<vec2<f32>, MAX_SLOTS>;
+    var far: array<vec2<f32>, MAX_SLOTS>;
+    let h2_12 = grid.spacing * grid.spacing / 12.0;
     let n_slots = grid.dims.w;
     for (var i = 0u; i < grid.n_atoms_a; i++) {
         let a = pos_a[i].xyz;
         let r = vec2<f32>(distance(a, p0), distance(a, p1));
-        let near = r < vec2<f32>(grid.reach);
-        if !any(near) {
+        // The far part is zero inside r1 and beyond reach, but the prefilter's
+        // stencil reaches a step further on both sides.
+        let inner = grid.near_r1 - LAPLACIAN_STEP;
+        let used = r > vec2<f32>(inner) & r < vec2<f32>(grid.support);
+        if !any(used) {
             continue; // most of the box is out of reach of any one bead
         }
         let row = ids_a[i] * grid.n_atom_types;
+        let st = array<Stencil, 2>(stencil(r.x), stencil(r.y));
         for (var s = 0u; s < n_slots; s++) {
             let pair = row + slot_types[s];
-            let e = vec2<f32>(spline_energy(pair, r.x), spline_energy(pair, r.y));
-            let m = pair_min[pair];
-            let inside = r < vec2<f32>(m.x);
-            // f32 splines can dip a hair below the CPU-found U_m near r_m.
-            let e_rep = select(vec2<f32>(0.0), max(e - m.y, vec2<f32>(0.0)), inside);
-            let e_att = select(e, vec2<f32>(m.y), inside);
-            rep[s] += select(vec2<f32>(0.0), e_rep, near);
-            att[s] += select(vec2<f32>(0.0), e_att, near);
+            let e = vec2<f32>(prefiltered_far(pair, st[0], h2_12), prefiltered_far(pair, st[1], h2_12));
+            far[s] += select(vec2<f32>(0.0), e, used);
         }
     }
-    // A flat wall keeps trilinear weights from smearing huge overlap energies
-    // into neighbouring cells; attraction is kept inside f16 range, where pack
-    // is defined, and may be positive past r_m (e.g. a barrier).
+    // Far values stay far below the cap; clamping only keeps pack defined.
+    let cap = vec2<f32>(grid.energy_cap);
     for (var s = 0u; s < n_slots; s++) {
-        // Repulsion as its fourth root, which interpolates nearly linearly up
-        // a steep wall (Minh 2018); attraction plain, as it is smooth.
-        let r4 = sqrt(sqrt(min(rep[s], vec2<f32>(grid.energy_cap))));
-        maps[map_index(s, node) / 2u] = pack2x16float(r4);
-        let a = clamp(att[s], vec2<f32>(-F16_MAX), vec2<f32>(F16_MAX));
-        maps[map_index(attractive_slot(s), node) / 2u] = pack2x16float(a);
+        maps[map_index(s, node) / 2u] = pack2x16float(clamp(far[s], -cap, cap));
     }
 }

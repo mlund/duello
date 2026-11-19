@@ -23,10 +23,7 @@ impl GridDomain {
             "grid spacing must be positive, got {spacing}"
         );
         let pad = Vector3::repeat(reach);
-        let (lo, hi) = points.iter().fold(
-            (Vector3::repeat(f64::MAX), Vector3::repeat(f64::MIN)),
-            |(lo, hi), p| (lo.inf(p), hi.sup(p)),
-        );
+        let (lo, hi) = bounds(points);
         // Snapping to multiples of `spacing` makes node positions independent of
         // the point set, so lattices at one spacing line up.
         let lo = (lo - pad).map(|x| (x / spacing).floor() * spacing);
@@ -68,6 +65,14 @@ impl GridDomain {
     fn top(&self, k: usize) -> f64 {
         self.origin[k] + self.spacing * f64::from(self.dims[k] - 1)
     }
+}
+
+/// Corners (min, max) of the axis-aligned box around `points`.
+pub(super) fn bounds(points: &[Vector3]) -> (Vector3, Vector3) {
+    points.iter().fold(
+        (Vector3::repeat(f64::MAX), Vector3::repeat(f64::MIN)),
+        |(lo, hi), p| (lo.inf(p), hi.sup(p)),
+    )
 }
 
 /// Whole cells from `lo` reaching at least `hi`. Checked the way the top node

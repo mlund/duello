@@ -192,7 +192,7 @@ duello scan \
 | `--gradient-threshold`   | 0.5           | Adaptive resolution threshold (1/rad)                 |
 | `--backend`              | auto          | Compute backend: `auto`, `gpu`, `grid`, `simd`, `reference` |
 | `--grid-spacing`         | 1.0           | Map spacing for `--backend grid` (angstrom)           |
-| `--grid-cap`             | 1000          | Map wall height for `--backend grid` (kJ/mol)         |
+| `--grid-cap`             | 1000          | Cap on large repulsive energies, `--backend grid` (kJ/mol) |
 | `--grid`                 | (see below)   | Spline grid settings (see [Spline Grid](#spline-grid)) |
 | `--pmf`                  | pmf.dat       | Output PMF file                                       |
 | `--savetable`            | --            | Save 6D binary table (`.bin.gz` for compression)      |
@@ -514,37 +514,15 @@ GPU and SIMD backends use cubic Hermite splines for short-range potentials and e
 
 ### Grid backend
 
-`--backend grid` precomputes molecule A's short-range field on a Cartesian map, one per atom type in B, as in AutoDock's affinity grids ([Goodsell & Olson 1990](https://doi.org/10.1002/prot.340080302); [Morris et al. 2009](https://doi.org/10.1002/jcc.21256)).
-Each pose then costs two trilinear lookups per B bead, plus an exact Yukawa sum over charged beads only.
-Electrostatics are not gridded, so low ionic strength doesn't grow the maps.
-Map values are capped at `--grid-cap`, and a pose with any bead in the capped wall counts at least that much; results don't change from about 30 kJ/mol up.
-The box covers A plus the range where the short-range potentials are nonzero, independent of `--cutoff` and `--rmax`.
+The grid backend accelerates repeated pose evaluations by combining direct calculations of nearby bead interactions with precomputed maps of smoother interactions. Screened electrostatics are evaluated directly.
 
-Each pair potential is split at its minimum into a steep repulsive part and a flat-bottomed attractive one, mapped separately.
-The repulsive map holds its fourth root, which interpolates nearly linearly up the wall ([Minh 2018](https://doi.org/10.1002/jcc.25180)); the contact wells that decide an attraction-dominated B₂ are then resolved at 1 Å.
-On the lysozyme benchmark (CLAUDE.md command, Apple M4):
+`--grid-spacing` controls the map resolution. Smaller spacing generally improves accuracy and increases memory use; halving the spacing increases map memory by approximately eightfold. The default is 1 Å.
 
-| Backend                         | B₂ (Å³) | ΔB₂     | Scan time |
-|---------------------------------|---------|---------|-----------|
-| `gpu`                           | 367 543 |   —     | 69 s      |
-| `grid --grid-spacing 0.5`       | 367 517 | −0.01 % | 13 s      |
-| `grid` (default, 1.0 Å)         | 367 480 | −0.02 % |  7 s      |
+Check convergence for your system by reducing the spacing and comparing B₂ with `--backend gpu`, particularly when attraction dominates or B₂ is close to zero, or with a short `--cutoff`. The GPU backend evaluates every bead pair using the configured radial splines.
 
-Chymotrypsinogen A, whose B₂ is set by contact attraction (`grid_scan_contact_energies_cgn`):
+`--grid-cap` limits large repulsive energies. Keep the default unless you have checked that changing it leaves your results unchanged.
 
-~~~
-duello scan -1 7KTZ.pdb -2 7KTZ.pdb --cg multi --rmin 32 --rmax 60 --dr 1 --molarity 0.015 --temperature 300
-~~~
-
-| Backend                         | B₂ (Å³)  | ΔB₂     |
-|---------------------------------|----------|---------|
-| `gpu`                           | −151 706 |   —     |
-| `grid --grid-spacing 0.5`       | −155 181 | +2.3 %  |
-| `grid` (default, 1.0 Å)         | −157 729 | +4.0 %  |
-
-The fourth-root transform suits Calvados-style walls; with `--model kimhummer` the same pair keeps only about two thirds of its exact B₂, so check attraction-dominated Kim–Hummer pairs against `--backend gpu`.
-
-Maps are stored as f16 in 2×2×2 bricks, which keeps lookups cache-friendly; they take about 4 bytes × nodes × B atom types of GPU memory (≈ 400 MB for 2CDS at 0.5 Å); a coarser spacing helps if they don't fit.
+On the lysozyme benchmark the grid at 1 Å is about 9× faster than `--backend gpu`; see [BENCHMARKS.md](BENCHMARKS.md) for accuracy comparisons and [docs/grid-backend.md](docs/grid-backend.md) for the method.
 
 # Interaction Models
 
@@ -603,25 +581,4 @@ A Google Colab notebook is also available: [![Open In Colab](https://colab.resea
 
 # Development
 
-### Publishing to PyPI via Docker
-
-Run on macOS, Linux (x86 and arm) to cover all architectures:
-
-```sh
-docker run --rm -v $(pwd):/io ghcr.io/pyo3/maturin:v1.11.5 publish -u __token__ -p PYPI_TOKEN
-```
-
-### Local Maturin build
-
-```sh
-pip install ziglang pipx
-pipx install maturin
-maturin publish -u __token__ -p PYPI_TOKEN --target=x86_64-unknown-linux-gnu --zig
-```
-
-macOS targets can be built without `--zig`:
-
-```sh
-rustup target add x86_64-apple-darwin aarch64-apple-darwin
-maturin publish -u __token__ -p PYPI_TOKEN --target=aarch64-apple-darwin
-```
+Release instructions for maintainers are in [CONTRIBUTING.md](CONTRIBUTING.md); backend validation is in [BENCHMARKS.md](BENCHMARKS.md).
