@@ -192,7 +192,7 @@ duello scan \
 | `--gradient-threshold`   | 0.5           | Adaptive resolution threshold (1/rad)                 |
 | `--backend`              | auto          | Compute backend: `auto`, `gpu`, `grid`, `simd`, `reference` |
 | `--grid-spacing`         | 1.0           | Map spacing for `--backend grid` (angstrom)           |
-| `--grid-cap`             | 1000          | Map wall height for `--backend grid` (kJ/mol)         |
+| `--grid-cap`             | 1000          | Cap on large repulsive energies, `--backend grid` (kJ/mol) |
 | `--grid`                 | (see below)   | Spline grid settings (see [Spline Grid](#spline-grid)) |
 | `--pmf`                  | pmf.dat       | Output PMF file                                       |
 | `--savetable`            | --            | Save 6D binary table (`.bin.gz` for compression)      |
@@ -514,39 +514,15 @@ GPU and SIMD backends use cubic Hermite splines for short-range potentials and e
 
 ### Grid backend
 
-`--backend grid` precomputes molecule A's short-range field on a Cartesian map, one per atom type in B, as in AutoDock's affinity grids ([Goodsell & Olson 1990](https://doi.org/10.1002/prot.340080302); [Morris et al. 2009](https://doi.org/10.1002/jcc.21256)).
-Trilinear lookups would smear the walls and contact wells, so each pair energy is split by a smooth switch S(r), as in multilevel summation ([Tameling et al. 2014](https://doi.org/10.1063/1.4857735)): the near part S·U, which holds every wall and well, is summed exactly over A's beads within r₂ of each B bead, found by a cell list; only the smooth far part (1 − S)·U is mapped.
-S falls from 1 to 0 over 3 Å, starting 1 Å past the outermost well or wall of the pairs present, so r₂ is about 12 Å for CALVADOS 3 and Kim–Hummer.
-Map nodes hold f − h²/12·∇²f, so interpolation is unbiased on average over a cell (the error at any one point is still O(h²)); otherwise the curved attractive tails, summed over ~100 pairs per bead, shift contact energies by ~0.005 kT.
-Each pose then costs one lookup and a short exact sum per B bead, plus an exact Yukawa sum over charged beads only; electrostatics are not gridded, so low ionic strength doesn't grow the maps.
-Each bead's near energy is capped at `--grid-cap`, and a pose with a bead at the cap counts at least that much; results don't change from about 30 kJ/mol up.
-The box covers A plus the range where the short-range potentials are nonzero, independent of `--cutoff` and `--rmax`.
+The grid backend accelerates repeated pose evaluations by combining direct calculations of nearby bead interactions with precomputed maps of smoother interactions. Screened electrostatics are evaluated directly.
 
-On the lysozyme benchmark (CLAUDE.md command, Apple M4):
+`--grid-spacing` controls the map resolution. Smaller spacing generally improves accuracy and increases memory use; halving the spacing increases map memory by approximately eightfold. The default is 1 Å.
 
-| Backend                         | B₂ (Å³) | ΔB₂     | Scan time |
-|---------------------------------|---------|---------|-----------|
-| `gpu`                           | 367 543 |   —     | 68 s      |
-| `grid --grid-spacing 0.5`       | 367 543 | +0.00 % |  9 s      |
-| `grid` (default, 1.0 Å)         | 367 543 | +0.00 % |  7 s      |
+Check convergence for your system by reducing the spacing and comparing B₂ with `--backend gpu`, particularly when attraction dominates or B₂ is close to zero, or with a short `--cutoff`. The GPU backend evaluates every bead pair using the configured radial splines.
 
-Chymotrypsinogen A, whose B₂ is set by contact attraction, for both force fields and bead policies (`grid_scan_contact_energies_cgn`). Each row scans the same coarse-grained `.xyz` and topology, since titration makes every PDB run differ slightly:
+`--grid-cap` limits large repulsive energies. Keep the default unless you have checked that changing it leaves your results unchanged.
 
-~~~
-duello scan -1 7KTZ.xyz -2 7KTZ.xyz --top 7KTZ_topology.yaml --rmin 32 --rmax 60 --dr 1 \
-    --molarity 0.015 --temperature 300 --gradient-threshold 0
-~~~
-
-| `--model`, `--cg`     | `gpu` B₂ (Å³) | `grid` 1.0 Å − `gpu` | `grid` 0.5 Å − `gpu` |
-|-----------------------|---------------|----------------------|----------------------|
-| `calvados3`, `single` |    10 914     |   −4                 |   −2                 |
-| `calvados3`, `multi`  |  −150 591     |  −12                 |   −7                 |
-| `kimhummer`, `single` |  −154 384     | −451 (0.29 %)        |  −88                 |
-| `kimhummer`, `multi`  |  −184 126     | −279 (0.15 %)        |  −52                 |
-
-At 2 Å the difference reaches 1.6 % of B₂ (Kim–Hummer, single bead).
-
-Maps are stored as f16 in 2×2×2 bricks, which keeps lookups cache-friendly; they take about 2 bytes × nodes × B atom types of GPU memory (≈ 200 MB for 2CDS at 0.5 Å); a coarser spacing helps if they don't fit.
+On the lysozyme benchmark the grid at 1 Å is about 9× faster than `--backend gpu`; see [BENCHMARKS.md](BENCHMARKS.md) for accuracy comparisons and [docs/grid-backend.md](docs/grid-backend.md) for the method.
 
 # Interaction Models
 
@@ -605,25 +581,4 @@ A Google Colab notebook is also available: [![Open In Colab](https://colab.resea
 
 # Development
 
-### Publishing to PyPI via Docker
-
-Run on macOS, Linux (x86 and arm) to cover all architectures:
-
-```sh
-docker run --rm -v $(pwd):/io ghcr.io/pyo3/maturin:v1.11.5 publish -u __token__ -p PYPI_TOKEN
-```
-
-### Local Maturin build
-
-```sh
-pip install ziglang pipx
-pipx install maturin
-maturin publish -u __token__ -p PYPI_TOKEN --target=x86_64-unknown-linux-gnu --zig
-```
-
-macOS targets can be built without `--zig`:
-
-```sh
-rustup target add x86_64-apple-darwin aarch64-apple-darwin
-maturin publish -u __token__ -p PYPI_TOKEN --target=aarch64-apple-darwin
-```
+Release instructions for maintainers are in [CONTRIBUTING.md](CONTRIBUTING.md); backend validation is in [BENCHMARKS.md](BENCHMARKS.md).
