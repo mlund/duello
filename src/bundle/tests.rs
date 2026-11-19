@@ -59,6 +59,23 @@ fn steric_archive() -> ScanArchive {
     scan
 }
 
+/// The symmetry factor survives a save, so K_a isn't doubled on reading back.
+#[test]
+fn a_homodimer_keeps_its_association_constant() {
+    let mut scan = archive();
+    scan.settings.homo_dimer = true;
+    let b2_ref = scan.virial.b2() + 1000.0;
+    scan.virial = scan.virial.clone().with_reference(b2_ref).homo_dimer(true);
+    let bundle = Bundle {
+        scan: Some(scan),
+        ..Default::default()
+    };
+    let restored = round_trip(&bundle).scan.unwrap();
+    let original = bundle.scan.unwrap().virial.association_const();
+    assert!(original.is_some());
+    assert_eq!(restored.virial.association_const(), original);
+}
+
 fn round_trip(bundle: &Bundle) -> Bundle {
     Bundle::from_zip(&bundle.to_zip(&Extracts::default()).unwrap()).unwrap()
 }

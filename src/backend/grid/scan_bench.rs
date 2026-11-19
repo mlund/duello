@@ -37,7 +37,12 @@ fn scan<B: EnergyBackend + Sync>(params: &ScanParams, backend: &B) -> (PmfResult
     let start = Instant::now();
     let result = compute_scan(params, backend, None).unwrap();
     let seconds = start.elapsed().as_secs_f64();
-    let pmf = compute_pmf(&result.samples, [backend.ref_a(), backend.ref_b()]).unwrap();
+    let pmf = compute_pmf(
+        &result.samples,
+        [backend.ref_a(), backend.ref_b()],
+        params.homo_dimer,
+    )
+    .unwrap();
     (pmf, seconds)
 }
 

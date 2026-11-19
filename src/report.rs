@@ -65,12 +65,14 @@ pub fn pmf_csv(points: &[PmfPoint]) -> String {
 pub fn compute_pmf(
     samples: &[(Vector3, Sample)],
     [a, b]: [&Structure; 2],
+    homo_dimer: bool,
 ) -> anyhow::Result<PmfResult> {
     let points: Vec<PmfPoint> = samples
         .iter()
         .filter_map(|(r, sample)| PmfPoint::new(r.norm(), sample))
         .collect();
-    let virial = VirialCoeff::from_pmf(points.iter().map(|p| (p.r, p.free_energy)), None)?;
+    let virial = VirialCoeff::from_pmf(points.iter().map(|p| (p.r, p.free_energy)), None)?
+        .homo_dimer(homo_dimer);
     let b2_ref = Steric::new(a, b).b2();
     let virial = if b2_ref > 0.0 {
         virial.with_reference(b2_ref)
@@ -123,6 +125,7 @@ fn report_reference(result: &PmfResult, temperature: f64) {
 pub fn report_pmf(
     samples: &[(Vector3, Sample)],
     bodies: [&Structure; 2],
+    homo_dimer: bool,
     temperature: f64,
     path: &std::path::PathBuf,
 ) -> anyhow::Result<()> {
@@ -132,7 +135,7 @@ pub fn report_pmf(
     use std::{fs::File, io::Write};
     use textplots::{Chart, ColorPlot, Shape};
 
-    let result = compute_pmf(samples, bodies)?;
+    let result = compute_pmf(samples, bodies, homo_dimer)?;
     let [a, b] = bodies;
 
     // File with F(R) and U(R)

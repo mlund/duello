@@ -460,6 +460,7 @@ pub fn do_icoscan<B: EnergyBackend + Sync>(config: &ScanConfig, backend: &B) -> 
     crate::report::report_pmf(
         &result.samples,
         bodies,
+        config.params.homo_dimer,
         config.params.temperature,
         &config.pmf_file,
     )?;
@@ -820,8 +821,9 @@ mod tests {
             ControlFlow::Continue(())
         };
         let result = compute_scan(&params(1), &backend, Some(&on_progress)).unwrap();
-        let pmf = crate::report::compute_pmf(&result.samples, [backend.ref_a(), backend.ref_b()])
-            .unwrap();
+        let pmf =
+            crate::report::compute_pmf(&result.samples, [backend.ref_a(), backend.ref_b()], false)
+                .unwrap();
 
         let streamed = streamed.into_inner();
         let n = result.samples.len();
