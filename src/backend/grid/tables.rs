@@ -1,8 +1,12 @@
-//! CPU-side tables the grid kernels index: map slots, charged beads, reach.
+//! CPU-side tables the grid kernels index: map slots, bead lists, reach.
 
 use crate::backend::gpu::pack_bead;
 use crate::energy::{CoulombParams, SplinedPotentials};
 use crate::structure::Structure;
+
+/// Atom types the grid supports: B's bead code (slot·2¹⁶ + type) must stay
+/// below f32's 2²⁴ exact integers.
+pub(super) const MAX_TYPES: usize = 256;
 
 /// One map per atom type present in B.
 pub(super) struct SlotTable {
@@ -27,25 +31,6 @@ impl SlotTable {
     }
 }
 
-/// (r_m, U_m) per A–B type pair, row-major over all types; a pair without a
-/// well splits at its range's end, so all of it is repulsion.
-pub(super) fn pair_minima(
-    splines: &SplinedPotentials,
-    a: &Structure,
-    b_types: &[u32],
-) -> Vec<[f32; 2]> {
-    let n = splines.n_types();
-    let mut minima = vec![[0.0; 2]; n * n];
-    let b_types = b_types.iter().map(|&t| t as usize);
-    for (i, j) in itertools::iproduct!(a.unique_atom_types(), b_types) {
-        let (r, u) = splines
-            .minimum(i, j)
-            .unwrap_or((splines.vanishes_beyond(i, j), 0.0));
-        minima[i * n + j] = [r as f32, u as f32];
-    }
-    minima
-}
-
 /// Distance beyond which every A–B type pair's short-range energy vanishes.
 pub(super) fn effective_range(splines: &SplinedPotentials, a: &Structure, b: &Structure) -> f64 {
     itertools::iproduct!(a.unique_atom_types(), b.unique_atom_types())
@@ -53,9 +38,29 @@ pub(super) fn effective_range(splines: &SplinedPotentials, a: &Structure, b: &St
         .fold(0.0, f64::max)
 }
 
+/// Beads of `s` as the pose kernel reads them: all as (x, y, z, `code` of
+/// the bead), then the charged ones as (x, y, z, type); returns the charged
+/// count too. A codes its type, B its slot·2¹⁶ + type, which stays an exact
+/// f32 integer within [`MAX_TYPES`].
+pub(super) fn bead_list(
+    s: &Structure,
+    other: &Structure,
+    coulomb: &CoulombParams,
+    n_types: usize,
+    code: impl Fn(usize) -> u32,
+) -> (Vec<[f32; 4]>, u32) {
+    let mut beads: Vec<_> = (s.pos.iter().enumerate())
+        .map(|(k, p)| pack_bead(p, code(k) as f32))
+        .collect();
+    let charged = charged_beads(s, other, coulomb, n_types);
+    let n_charged = charged.len() as u32;
+    beads.extend(charged);
+    (beads, n_charged)
+}
+
 /// Beads of `s` with a nonzero prefactor towards some type in `other`, as
 /// (x, y, z, type); the rest never enter the Yukawa sum.
-pub(super) fn charged_beads(
+fn charged_beads(
     s: &Structure,
     other: &Structure,
     coulomb: &CoulombParams,

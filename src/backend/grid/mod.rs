@@ -1,7 +1,8 @@
 //! Grid backend: A's short-range field precomputed on a Cartesian map.
 //!
-//! Each pose then costs two trilinear lookups per B bead plus an exact Yukawa
-//! sum over charged pairs, instead of a full N_A·N_B pair sum.
+//! Each pose then costs one trilinear lookup per B bead, an exact sum over
+//! the A beads close to it, and an exact Yukawa sum over charged pairs,
+//! instead of a full N_A·N_B pair sum.
 //!
 //! This is AutoDock's affinity-grid scheme. Goodsell & Olson (1990, p. 196,
 //! doi:10.1002/prot.340080302): "The protein is embedded in a three-dimensional
@@ -17,14 +18,10 @@
 //! also interpolate an electrostatic potential grid): an exact Yukawa sum keeps
 //! low ionic strength from growing the box.
 //!
-//! Plain trilinear lookups overestimate the narrow, curved contact wells. So
-//! each pair potential is split at its minimum into a steep repulsive part and
-//! a flat-bottomed attractive one, mapped separately; the repulsive map holds
-//! its fourth root. This follows Minh (2018, J. Comput. Chem. 39, 1200,
-//! doi:10.1002/jcc.25180): "taking a power transformation of grid point
-//! energies and inverse transformation of the result from trilinear
-//! interpolation", applied to repulsion only, with the inverse power 4 he
-//! recommends.
+//! Trilinear lookups smear the narrow, curved contact wells and the walls.
+//! So each pair energy U is split by a smooth switch S(r) (see `switch`):
+//! S·U, which holds every wall and well, is summed exactly over nearby
+//! pairs; only the smooth remainder (1 − S)·U is gridded.
 //!
 //! Provenance: written from these published descriptions. No AutoDock or
 //! AutoGrid source code (MPL) was copied or adapted.
@@ -33,22 +30,24 @@ mod domain;
 mod maps;
 #[cfg(test)]
 mod scan_bench;
+mod switch;
 mod tables;
 
 pub use domain::GridDomain;
 
-use super::gpu::{pack_positions, PoseKernel};
+use super::gpu::{PoseKernel, SplineTables};
 use super::gpu_context::{Binding, GpuContext, Limits};
 use super::{EnergyBackend, PoseParams};
 use crate::archive::ScanBackend;
 use crate::energy::{CoulombParams, SplinedPotentials};
 use crate::structure::Structure;
 use bytemuck::{Pod, Zeroable};
-use maps::{build_maps, Maps};
-use tables::{charged_beads, effective_range, SlotTable};
+use maps::{build_maps, Field, Maps};
+use switch::Switch;
+use tables::{bead_list, effective_range, SlotTable};
 
-/// Map spacing (Å) when none is given: B₂ within 0.1 % of the pair kernel on
-/// lysozyme and ~3 % on chymotrypsinogen, at about half the time of 0.5 Å.
+/// Map spacing (Å) when none is given: B₂ within 0.01 % of the pair kernel on
+/// lysozyme, at about the time of 0.5 Å.
 pub const DEFAULT_GRID_SPACING: f64 = 1.0;
 
 /// Wall height when none is given. A pose touching the wall counts at least
@@ -88,26 +87,24 @@ struct BatchUniform {
 
 const ENERGY_BINDINGS: [Binding; 10] = [
     Binding::Read,      // maps
-    Binding::Read,      // positions B
-    Binding::Read,      // slot of each B bead
+    Binding::Read,      // A beads, then charged A
+    Binding::Read,      // B beads, then charged B
     Binding::Read,      // poses
     Binding::ReadWrite, // energies
     Binding::Uniform,   // grid
     Binding::Uniform,   // batch
-    Binding::Read,      // charged A
-    Binding::Read,      // charged B
     Binding::Read,      // Coulomb prefactors
+    Binding::Read,      // spline coefficients
+    Binding::Read,      // spline params
 ];
 
-/// Short-range energy from per-B-type maps of A's field; electrostatics exact.
+/// Short-range energy from per-B-type maps of A's far field plus exact near
+/// pairs; electrostatics exact.
 pub struct GridBackend {
     gpu: GpuContext,
     kernel: PoseKernel,
     maps: Maps,
-    /// B positions and the map slot of each B bead.
-    beads_b: [wgpu::Buffer; 2],
-    /// Charged A, charged B, Coulomb prefactors.
-    electrostatic: [wgpu::Buffer; 3],
+    tables: PoseTables,
     /// Pose-independent part of the batch uniform.
     batch: BatchUniform,
     spec: GridSpec,
@@ -170,23 +167,33 @@ impl GridBackend {
         coulomb: &CoulombParams,
         spec: GridSpec,
     ) -> anyhow::Result<Self> {
-        validate(&ref_a, &ref_b, spec)?;
+        validate(&ref_a, &ref_b, splines, spec)?;
         let gpu = GpuContext::new_async(Limits::Adapter).await?;
         let slots = SlotTable::new(&ref_b);
         let reach = effective_range(splines, &ref_a, &ref_b);
-        let domain = GridDomain::covering(&ref_a.pos, reach, spec.spacing);
-        let maps = build_maps(&gpu, &ref_a, splines, &slots, &domain, spec, reach).await?;
-        log::info!(
-            "Grid backend: {:?} nodes × {} slots, reach {reach:.1} Å",
-            domain.dims(),
-            slots.types.len()
-        );
-        let beads_b = [
-            gpu.storage("Positions B", bytemuck::cast_slice(&pack_positions(&ref_b))),
-            gpu.storage("Slots B", bytemuck::cast_slice(&slots.of_bead)),
+        let field = Field {
+            ref_a: &ref_a,
+            n_types: splines.n_types(),
+            slots: &slots,
+            domain: GridDomain::covering(&ref_a.pos, reach, spec.spacing),
+            spec,
+            reach,
+            switch: Switch::new(splines, &ref_a, &ref_b),
+        };
+        let spline_tables = SplineTables::new(splines)?;
+        let spline_buffers = [
+            gpu.storage("Spline Coefficients", &spline_tables.coeffs),
+            gpu.storage("Spline Params", &spline_tables.params),
         ];
-        let (electrostatic, [n_charged_a, n_charged_b]) =
-            electrostatics(&gpu, &ref_a, &ref_b, coulomb, splines.n_types());
+        let maps = build_maps(&gpu, &field, &spline_tables, &spline_buffers).await?;
+        log::info!(
+            "Grid backend: {:?} nodes × {} slots, reach {reach:.1} Å, near pairs within {:.1} Å",
+            field.domain.dims(),
+            slots.types.len(),
+            field.switch.r2
+        );
+        let (tables, [n_charged_a, n_charged_b]) =
+            PoseTables::new(&gpu, &field, &ref_b, coulomb, spline_buffers);
         let batch = BatchUniform {
             n_poses: 0, // set per batch
             n_atoms_b: ref_b.pos.len() as u32,
@@ -196,13 +203,13 @@ impl GridBackend {
             n_charged_b,
             _pad: [0; 2],
         };
-        let kernel = PoseKernel::new(&gpu, "Grid energy", &energy_source(), &ENERGY_BINDINGS);
+        let source = energy_source(spline_tables.wgsl);
+        let kernel = PoseKernel::new(&gpu, "Grid energy", &source, &ENERGY_BINDINGS);
         Ok(Self {
             gpu,
             kernel,
             maps,
-            beads_b,
-            electrostatic,
+            tables,
             batch,
             spec,
             ref_a,
@@ -216,32 +223,72 @@ impl GridBackend {
             ..self.batch
         };
         let batch_uniform = self.gpu.uniform("Batch", bytemuck::bytes_of(&batch));
-        let [pos_b, slot_b] = &self.beads_b;
-        let [charged_a, charged_b, prefactors] = &self.electrostatic;
+        let t = &self.tables;
+        let [coeffs, params] = &t.splines;
         let buffers = [
             &self.maps.values,
-            pos_b,
-            slot_b,
+            &t.beads_a,
+            &t.beads_b,
             poses,
             energies,
             &self.maps.grid_uniform,
             &batch_uniform,
-            charged_a,
-            charged_b,
-            prefactors,
+            &t.prefactors,
+            coeffs,
+            params,
         ];
         self.gpu.bind_group(&self.kernel.layout, &buffers)
     }
 }
 
+/// The pose kernel's buffers besides the maps; see grid_energy.wgsl.
+struct PoseTables {
+    beads_a: wgpu::Buffer,
+    beads_b: wgpu::Buffer,
+    prefactors: wgpu::Buffer,
+    /// Spline coefficients and params, shared with the map build.
+    splines: [wgpu::Buffer; 2],
+}
+
+impl PoseTables {
+    /// The tables, and the charged A and B counts.
+    fn new(
+        gpu: &GpuContext,
+        field: &Field,
+        ref_b: &Structure,
+        coulomb: &CoulombParams,
+        splines: [wgpu::Buffer; 2],
+    ) -> (Self, [u32; 2]) {
+        let (n, ref_a, slots) = (field.n_types, field.ref_a, field.slots);
+        let (a, n_charged_a) = bead_list(ref_a, ref_b, coulomb, n, |k| ref_a.atom_ids[k] as u32);
+        let code_b = |k: usize| slots.of_bead[k] << 16 | ref_b.atom_ids[k] as u32;
+        let (b, n_charged_b) = bead_list(ref_b, ref_a, coulomb, n, code_b);
+        let tables = Self {
+            beads_a: gpu.storage("Beads A", bytemuck::cast_slice(&a)),
+            beads_b: gpu.storage("Beads B", bytemuck::cast_slice(&b)),
+            prefactors: gpu.storage(
+                "Coulomb prefactors",
+                bytemuck::cast_slice(&coulomb.prefactors),
+            ),
+            splines,
+        };
+        (tables, [n_charged_a, n_charged_b])
+    }
+}
+
 /// Errors here rather than panics deeper in, since spacing is user input.
-fn validate(ref_a: &Structure, ref_b: &Structure, spec: GridSpec) -> anyhow::Result<()> {
+fn validate(
+    ref_a: &Structure,
+    ref_b: &Structure,
+    splines: &SplinedPotentials,
+    spec: GridSpec,
+) -> anyhow::Result<()> {
     anyhow::ensure!(
         spec.spacing > 0.0 && spec.spacing.is_finite(),
         "grid spacing must be positive, got {}",
         spec.spacing
     );
-    // Kept within f16, the maps' storage, though repulsion is stored as cap^¼.
+    // Kept within f16, the maps' storage, since stored values are clamped to it.
     anyhow::ensure!(
         spec.energy_cap > 0.0 && spec.energy_cap <= maps::F16_MAX,
         "grid energy cap must be in (0, {}] kJ/mol, got {}",
@@ -252,37 +299,23 @@ fn validate(ref_a: &Structure, ref_b: &Structure, spec: GridSpec) -> anyhow::Res
         !ref_a.pos.is_empty() && !ref_b.pos.is_empty(),
         "grid backend needs beads in both molecules"
     );
+    anyhow::ensure!(
+        splines.n_types() <= tables::MAX_TYPES,
+        "grid backend supports up to {} atom types, got {}",
+        tables::MAX_TYPES,
+        splines.n_types()
+    );
     Ok(())
 }
 
-/// Charged-only bead lists and Coulomb prefactors, plus the list lengths.
-fn electrostatics(
-    gpu: &GpuContext,
-    ref_a: &Structure,
-    ref_b: &Structure,
-    coulomb: &CoulombParams,
-    n_types: usize,
-) -> ([wgpu::Buffer; 3], [u32; 2]) {
-    let charged_a = charged_beads(ref_a, ref_b, coulomb, n_types);
-    let charged_b = charged_beads(ref_b, ref_a, coulomb, n_types);
-    let counts = [charged_a.len() as u32, charged_b.len() as u32];
-    let buffers = [
-        gpu.storage("Charged A", bytemuck::cast_slice(&charged_a)),
-        gpu.storage("Charged B", bytemuck::cast_slice(&charged_b)),
-        gpu.storage(
-            "Coulomb prefactors",
-            bytemuck::cast_slice(&coulomb.prefactors),
-        ),
-    ];
-    (buffers, counts)
-}
-
-fn energy_source() -> String {
+fn energy_source(spline_wgsl: &str) -> String {
     format!(
-        "{}{}\n{}\n{}",
+        "{spline_wgsl}\n{}{}\n{}\n{}\n{}\n{}",
         maps::layout_consts(),
         include_str!("../../shaders/common.wgsl"),
+        include_str!("../../shaders/spline_eval.wgsl"),
         include_str!("../../shaders/grid_common.wgsl"),
+        switch::WGSL,
         include_str!("../../shaders/grid_energy.wgsl")
     )
 }
@@ -323,8 +356,10 @@ impl crate::backend::AsyncEnergyBackend for GridBackend {
 
 #[cfg(test)]
 mod tests {
+    use super::switch::Switch;
     use super::*;
     use crate::backend::test_support::{bead, kt, lysozyme, no_gpu, pose_list};
+    use crate::backend::GpuBackend;
     use crate::Vector3;
 
     const SPEC: GridSpec = GridSpec {
@@ -342,26 +377,44 @@ mod tests {
         }
     }
 
+    /// A neutral pair at the origin and the pair kernel on the same splines,
+    /// so only the grid's own error shows, even up the wall.
+    fn neutral_pair(spec: GridSpec) -> (GridBackend, GpuBackend, Switch) {
+        let sys = lysozyme();
+        let (neutral, _) = sys.types_by_charge();
+        let (a, b) = (bead(neutral[0]), bead(neutral[1]));
+        let switch = Switch::new(&sys.splines, &a, &b);
+        let grid = GridBackend::new(a.clone(), b.clone(), &sys.splines, &sys.coulomb, spec);
+        let pairs = GpuBackend::new(a, b, &sys.splines, &sys.coulomb).unwrap();
+        (grid.unwrap(), pairs, switch)
+    }
+
+    /// Nodes at 0.5 Å from the wall, through the well and switch, to the far
+    /// tail: near pairs are exact, far ones read straight off a node.
     #[test]
     fn bead_on_a_node_matches_exact_pair() {
         if no_gpu() {
             return;
         }
-        let sys = lysozyme();
-        let (neutral, _) = sys.types_by_charge();
-        let (ta, tb) = (neutral[0], neutral[1]);
-        let grid = GridBackend::new(bead(ta), bead(tb), &sys.splines, &sys.coulomb, SPEC).unwrap();
-        // A node at 0.5 Å spacing, outside the AH wall where splines are poorest.
-        let pose = along_x(7.0);
-        let u_grid = grid.compute_energy(&pose);
-        let exact = sys.into_exact(bead(ta), bead(tb));
-        let u_exact = exact.compute_energy(&pose);
-        assert!(
-            u_exact.abs() > 0.05,
-            "pick a pair that interacts at 7 Å: {u_exact}"
-        );
-        // f16 maps resolve ~5e-4 relative; spline error is far below that here.
-        approx::assert_relative_eq!(u_grid, u_exact, max_relative = 1e-3);
+        let (grid, exact, switch) = neutral_pair(SPEC);
+        let far_tail = (2.0 * switch.r2).ceil() / 2.0 + 1.0;
+        for r in [
+            4.0,
+            5.0,
+            6.0,
+            7.0,
+            (switch.r1 + switch.r2).round() / 2.0,
+            far_tail,
+        ] {
+            let pose = along_x(r);
+            let (u_grid, u_exact) = (grid.compute_energy(&pose), exact.compute_energy(&pose));
+            // f16 maps resolve ~5e-4 relative; the floor covers f32 near sums.
+            let tol = 1e-3 * u_exact.abs() + 1e-5;
+            assert!(
+                (u_grid - u_exact).abs() < tol,
+                "r={r}: grid {u_grid}, exact {u_exact}"
+            );
+        }
     }
 
     /// Largest |u''| over [lo, hi] along x, by central differences on `u`.
@@ -395,52 +448,25 @@ mod tests {
         }
     }
 
-    /// Mid-cell is the worst case for trilinear; error ≤ h²/8 · max|u''| there.
+    /// Mid-cell is the worst case for trilinear: error ≤ h²/8 · max|u″| of the
+    /// far part alone, from the wall out past the switch, since near pairs
+    /// are summed exactly.
     #[test]
     fn bead_between_nodes_within_trilinear_bound() {
         if no_gpu() {
             return;
         }
-        let sys = lysozyme();
-        let (neutral, _) = sys.types_by_charge();
-        let (ta, tb) = (neutral[0], neutral[1]);
-        let grid = GridBackend::new(bead(ta), bead(tb), &sys.splines, &sys.coulomb, SPEC).unwrap();
-        let exact = sys.into_exact(bead(ta), bead(tb));
+        let (grid, exact, switch) = neutral_pair(SPEC);
         let u = |r: f64| exact.compute_energy(&along_x(r));
+        let far = |r: f64| (1.0 - switch.near_weight(r)) * u(r);
         let h = SPEC.spacing;
-        for k in 0..10 {
-            let lo = 7.0 + h * f64::from(k);
+        for k in 0..24 {
+            let lo = 4.0 + h * f64::from(k);
             let mid = lo + h / 2.0;
-            let bound = h * h / 8.0 * max_curvature(u, lo, lo + h) + 1e-5;
+            let bound = h * h / 8.0 * max_curvature(far, lo, lo + h) + 1e-5 + 1e-3 * u(mid).abs();
             let err = (grid.compute_energy(&along_x(mid)) - u(mid)).abs();
             assert!(err <= bound, "r={mid}: |ΔU| {err:.2e} > bound {bound:.2e}");
         }
-    }
-
-    /// The repulsive/attractive split sits at each well's bottom, lower than
-    /// both neighbours; a pair without a well (U ≥ 0) is all repulsion.
-    /// Diagonal pairs suffice: they cover every type with and without a well.
-    #[test]
-    fn pair_minima_are_well_bottoms() {
-        use faunus::interatomic::twobody::IsotropicTwobodyEnergy;
-        let sys = lysozyme();
-        let n = sys.splines.n_types();
-        let types = sys.ref_a.unique_atom_types();
-        let slot_types: Vec<u32> = types.iter().map(|&t| t as u32).collect();
-        let minima = tables::pair_minima(&sys.splines, &sys.ref_a, &slot_types);
-        let mut wells = 0;
-        for t in types {
-            let [r, u] = minima[t * n + t].map(f64::from);
-            let at = |r: f64| sys.splines.get(t, t).isotropic_twobody_energy(r * r);
-            if u == 0.0 {
-                assert!(at(r - 0.5) >= 0.0, "type {t} has a well below r_m");
-                continue;
-            }
-            wells += 1;
-            assert!((at(r) - u).abs() < 1e-3);
-            assert!(at(r - 0.05) > u && at(r + 0.05) > u, "type {t}: r_m = {r}");
-        }
-        assert!(wells > 0);
     }
 
     /// Beyond the short-range reach there is nothing to interpolate.
@@ -489,8 +515,8 @@ mod tests {
         }
     }
 
-    /// Capped voxels make the wall flat, so interpolating across it can't
-    /// overshoot or go soft.
+    /// Near pairs are capped, so an overlap reads as the cap, not as a
+    /// spline extrapolated far up the wall.
     #[test]
     fn overlap_sits_on_the_energy_cap() {
         if no_gpu() {
@@ -532,6 +558,39 @@ mod tests {
         let grid = GridBackend::new(bead(t), dimer, &sys.splines, &sys.coulomb, spec).unwrap();
         let u = grid.compute_energy(&along_x(4.0));
         assert!(u >= spec.energy_cap, "overlap read as {u} kJ/mol");
+    }
+
+    /// Overlapping several A beads at once is an overlap too, even when each
+    /// pair alone stays under the cap and many other beads attract.
+    #[test]
+    fn joint_wall_contact_outweighs_attraction() {
+        if no_gpu() {
+            return;
+        }
+        let sys = lysozyme();
+        let t = sys.types_by_charge().0[0];
+        let (r_m, _) = sys.splines.minimum(t, t).unwrap();
+        let pair = GpuBackend::new(bead(t), bead(t), &sys.splines, &sys.coulomb).unwrap();
+        let u_pair = pair.compute_energy(&along_x(r_m - 1.0));
+        assert!(u_pair > 0.0, "r_m − 1 Å should be on the wall: {u_pair}");
+        let mut trimer = bead(t);
+        trimer.pos = vec![Vector3::zeros(); 3];
+        trimer.atom_ids = vec![t; 3];
+        // At R = r_m − ½ the pose turns +z towards A: the first B bead sits
+        // 1 Å up the wall of all three A beads, ten more in the well behind.
+        let mut b = bead(t);
+        b.pos = std::iter::once(0.5)
+            .chain([-0.5; 10])
+            .map(|z| Vector3::new(0.0, 0.0, z))
+            .collect();
+        b.atom_ids = vec![t; 11];
+        let spec = GridSpec {
+            energy_cap: 2.0 * u_pair,
+            ..SPEC
+        };
+        let grid = GridBackend::new(trimer, b, &sys.splines, &sys.coulomb, spec).unwrap();
+        let u = grid.compute_energy(&along_x(r_m - 0.5));
+        assert!(u >= spec.energy_cap, "joint overlap read as {u} kJ/mol");
     }
 
     /// The full multi-type, multi-bead path on the benchmark system: poses that

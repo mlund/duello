@@ -3,14 +3,14 @@
 //! `cargo test --release -p duello --lib grid_scan -- --ignored --nocapture`.
 
 use super::{GridBackend, GridSpec};
-use crate::backend::test_support::{lysozyme, no_gpu, sr_splines, Lysozyme};
+use crate::backend::test_support::{chymotrypsinogen, lysozyme, no_gpu, TestPair, CGN_TEMPERATURE};
 use crate::backend::{EnergyBackend, GpuBackend, PoseParams};
 use crate::icoscan::{compute_scan, ScanParams};
 use crate::report::{compute_pmf, PmfResult};
 use std::time::Instant;
 
 /// The CLAUDE.md benchmark settings over `[rmin, rmax)` in steps of `dr`.
-fn params(sys: &Lysozyme, rmin: f64, rmax: f64, dr: f64) -> ScanParams {
+fn params(sys: &TestPair, rmin: f64, rmax: f64, dr: f64) -> ScanParams {
     ScanParams {
         rmin,
         rmax,
@@ -39,12 +39,12 @@ fn scan<B: EnergyBackend + Sync>(params: &ScanParams, backend: &B) -> (PmfResult
     (pmf, seconds)
 }
 
-fn gpu_backend(sys: &Lysozyme) -> GpuBackend {
+fn gpu_backend(sys: &TestPair) -> GpuBackend {
     let (a, b) = (sys.ref_a.clone(), sys.ref_b.clone());
     GpuBackend::new(a, b, &sys.splines, &sys.coulomb).unwrap()
 }
 
-fn grid_backend(sys: &Lysozyme, spacing: f64) -> GridBackend {
+fn grid_backend(sys: &TestPair, spacing: f64) -> GridBackend {
     let (a, b) = (sys.ref_a.clone(), sys.ref_b.clone());
     let spec = GridSpec {
         spacing,
@@ -140,37 +140,20 @@ fn grid_kernel_benchmark() {
     }
 }
 
-/// Chymotrypsinogen A (7KTZ), multi-bead, pH 7, 15 mM, at this temperature
-/// (K): a pair whose B₂ is set by contact attraction, unlike lysozyme's
-/// excluded volume. Same settings as the README's grid comparison.
-const CGN_TEMPERATURE: f64 = 300.0;
-
-fn chymotrypsinogen() -> (GridBackend, GpuBackend) {
-    use crate::system::{CgOptions, PairSpec, PairSystem, Source};
-    use faunus::interatomic::coulomb::{Medium, Salt};
-    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let pdb = dir.join("examples/calvados3/7KTZ.pdb");
-    let medium = Medium::salt_water(CGN_TEMPERATURE, Salt::SodiumChloride, 0.015);
-    let cg = CgOptions {
-        single_bead: false,
-        ..Default::default()
-    };
-    let spec = PairSpec {
-        a: Source::File(&pdb),
-        b: None,
-        top: None,
-        chains: [&[], &[]],
-        cg,
-        medium: &medium,
-    };
-    let sys = PairSystem::load(spec).expect("7KTZ example loads");
-    let splines = sr_splines(&sys.pair_matrix, 30.0); // the CLI's default --cutoff
-    let coulomb = sys.pair_matrix.coulomb_params();
+/// 7KTZ, multi-bead CALVADOS 3: same settings as the README's grid comparison.
+fn cgn_backends() -> (GridBackend, GpuBackend) {
+    let sys = chymotrypsinogen("calvados3", false);
     let (a, b) = (sys.ref_a, sys.ref_b);
-    let grid = GridBackend::new(a.clone(), b.clone(), &splines, coulomb, GridSpec::default());
+    let grid = GridBackend::new(
+        a.clone(),
+        b.clone(),
+        &sys.splines,
+        &sys.coulomb,
+        GridSpec::default(),
+    );
     (
         grid.unwrap(),
-        GpuBackend::new(a, b, &splines, coulomb).unwrap(),
+        GpuBackend::new(a, b, &sys.splines, &sys.coulomb).unwrap(),
     )
 }
 
@@ -206,7 +189,7 @@ fn grid_scan_contact_energies_cgn() {
     if no_gpu() {
         return;
     }
-    let (grid, exact) = chymotrypsinogen();
+    let (grid, exact) = cgn_backends();
     let poses = contact_poses(40_000);
     let (got, want) = (
         grid.compute_energies(&poses),

@@ -16,8 +16,8 @@ pub fn kt() -> f64 {
     crate::thermal_energy(TEMPERATURE)
 }
 
-/// The CLAUDE.md benchmark system: 2CDS × 2CDS, 20 mM NaCl, 150 Å cutoff.
-pub struct Lysozyme {
+/// A homodimer with its splines and an exact reference.
+pub struct TestPair {
     pub ref_a: Structure,
     pub ref_b: Structure,
     pub splines: SplinedPotentials,
@@ -25,7 +25,7 @@ pub struct Lysozyme {
     pair_matrix: PairMatrix,
 }
 
-impl Lysozyme {
+impl TestPair {
     /// Exact (unsplined) reference for any structures typed by this force field.
     pub fn into_exact(self, a: Structure, b: Structure) -> CpuBackend {
         CpuBackend::new(a, b, self.pair_matrix)
@@ -61,26 +61,54 @@ pub fn bead(id: usize) -> Structure {
     }
 }
 
-pub fn lysozyme() -> Lysozyme {
+/// The CLAUDE.md benchmark system: 2CDS × 2CDS, 20 mM NaCl, 150 Å cutoff.
+pub fn lysozyme() -> TestPair {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/calvados3");
     let (xyz, top) = (dir.join("2CDS.xyz"), dir.join("topology.yaml"));
     let medium = Medium::salt_water(TEMPERATURE, Salt::SodiumChloride, 0.02);
-    let system = PairSystem::load(PairSpec {
+    let spec = PairSpec {
         a: Source::File(&xyz),
         b: None,
         top: Some(&top),
         chains: [&[], &[]],
         cg: CgOptions::default(),
         medium: &medium,
-    })
-    .expect("2CDS example loads");
-    let splines = sr_splines(&system.pair_matrix, 150.0);
-    let coulomb = system.pair_matrix.coulomb_params().clone();
-    Lysozyme {
+    };
+    load(spec, 150.0)
+}
+
+/// Temperature (K) of the chymotrypsinogen fixture.
+pub const CGN_TEMPERATURE: f64 = 300.0;
+
+/// Chymotrypsinogen A (7KTZ) at pH 7, 15 mM, cutoff 30 Å, coarse-grained
+/// with `model`: a pair whose B₂ is set by contact attraction, unlike
+/// lysozyme's excluded volume.
+pub fn chymotrypsinogen(model: &str, single_bead: bool) -> TestPair {
+    let pdb = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/calvados3/7KTZ.pdb");
+    let medium = Medium::salt_water(CGN_TEMPERATURE, Salt::SodiumChloride, 0.015);
+    let cg = CgOptions {
+        model: model.to_string(),
+        single_bead,
+        ..Default::default()
+    };
+    let spec = PairSpec {
+        a: Source::File(&pdb),
+        b: None,
+        top: None,
+        chains: [&[], &[]],
+        cg,
+        medium: &medium,
+    };
+    load(spec, 30.0) // the CLI's default --cutoff
+}
+
+fn load(spec: PairSpec, cutoff: f64) -> TestPair {
+    let system = PairSystem::load(spec).expect("example loads");
+    TestPair {
+        splines: sr_splines(&system.pair_matrix, cutoff),
+        coulomb: system.pair_matrix.coulomb_params().clone(),
         ref_a: system.ref_a,
         ref_b: system.ref_b,
-        splines,
-        coulomb,
         pair_matrix: system.pair_matrix,
     }
 }
