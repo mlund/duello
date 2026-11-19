@@ -903,7 +903,13 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
     );
 
     let test_atom = Structure::single_bead(&topology.atomkinds()[test_atom_id]);
-    report::report_pmf(&samples, [&ref_a, &test_atom], *temperature, pmf_file)?;
+    report::report_pmf(
+        &samples,
+        [&ref_a, &test_atom],
+        false, // an atom is never its protein's twin
+        *temperature,
+        pmf_file,
+    )?;
     Ok(())
 }
 

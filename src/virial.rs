@@ -29,6 +29,8 @@ pub struct VirialCoeff {
     sigma: f64,
     /// Steric B₂₂ʳᵉᶠ (Å³) that B₂₂* and K_a are relative to; 2πσ³/3 until replaced.
     reference: f64,
+    /// Identical partners count each pair once in K_a.
+    homo_dimer: bool,
 }
 
 impl VirialCoeff {
@@ -115,6 +117,7 @@ impl VirialCoeff {
             b2,
             sigma,
             reference: hardsphere(sigma),
+            homo_dimer: false,
         }
     }
 
@@ -124,6 +127,10 @@ impl VirialCoeff {
             reference: b2_ref,
             ..self
         }
+    }
+
+    pub const fn homo_dimer(self, homo_dimer: bool) -> Self {
+        Self { homo_dimer, ..self }
     }
 
     /// Virial coefficient, B2 (Å³)
@@ -146,16 +153,20 @@ impl VirialCoeff {
     pub fn reduced(&self) -> f64 {
         self.b2 / self.reference
     }
-    /// Association constant, 𝐾𝑑⁻¹ = -2(𝐵₂ - 𝐵₂ʳᵉᶠ)
-    /// See "Colloidal Domain" by Evans and Wennerström, 2nd Ed, p. 408
+    /// Association constant 𝐾𝑑⁻¹ = −s(𝐵₂ − 𝐵₂ʳᵉᶠ) in 1/M: s = 2 for A + B ⇌ AB
+    /// (Evans and Wennerström, "The Colloidal Domain", 2nd Ed, eq. 8.1.3), s = 1 for
+    /// P + P ⇌ P₂, whose identical partners count each pair once.
     pub fn association_const(&self) -> Option<f64> {
+        let pairs = if self.homo_dimer { 1.0 } else { 2.0 };
         Some(
-            -2.0 * (self.b2 - self.reference) * crate::LITER_PER_CUBIC_ANGSTROM * AVOGADRO_CONSTANT,
+            -pairs
+                * (self.b2 - self.reference)
+                * crate::LITER_PER_CUBIC_ANGSTROM
+                * AVOGADRO_CONSTANT,
         )
         .filter(|x| x.is_sign_positive())
     }
     /// Dissociation constant, 𝐾𝑑
-    /// See "Colloidal Domain" by Evans and Wennerström, 2nd Ed, p. 408
     pub fn dissociation_const(&self) -> Option<f64> {
         self.association_const().map(Inv::inv)
     }
@@ -166,7 +177,7 @@ impl VirialCoeff {
     }
 }
 
-/// Association defined from B₂₂ alone, K_a = −2(B₂₂ − B₂₂ʳᵉᶠ), so it needs no
+/// Association defined from B₂₂ alone, K_a = −s(B₂₂ − B₂₂ʳᵉᶠ), so it needs no
 /// contact criterion. Energies are in kT at a 1 M standard state.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Association {
@@ -271,12 +282,14 @@ pub(crate) fn shell(r: f64, dr: f64, sigma: f64) -> Option<f64> {
 // Implement serialize which writes B2, hardsphere, and dissociation constant
 impl serde::Serialize for VirialCoeff {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("VirialCoeff", 6)?;
+        let mut state = serializer.serialize_struct("VirialCoeff", 7)?;
         state.serialize_field("B2", &self.b2)?;
         state.serialize_field("B2_ref", &self.reference)?;
         state.serialize_field("sigma_eff", &self.sigma_eff())?;
         state.serialize_field("B2_reduced", &self.reduced())?;
         state.serialize_field("sigma", &self.sigma())?;
+        // Says which symmetry factor kD used.
+        state.serialize_field("homo_dimer", &self.homo_dimer)?;
         if let Some(kd) = self.dissociation_const() {
             state.serialize_field("kD", &kd)?;
         }
@@ -411,6 +424,21 @@ mod tests {
         assert_eq!(virial.reference(), 500.0);
         assert_relative_eq!(virial.reduced(), -2.0);
         let ka = 3000.0 * 1e-27 * AVOGADRO_CONSTANT;
+        assert_relative_eq!(
+            virial.association_const().unwrap(),
+            ka,
+            max_relative = 1e-12
+        );
+    }
+
+    /// For P + P ⇌ P₂, Π/kT = [P] + [P₂] with c = [P] + 2[P₂] gives
+    /// B₂ − B₂ʳᵉᶠ = −K for K = [P₂]/[P]²: half the distinct-partner value above.
+    #[test]
+    fn a_homodimer_counts_each_pair_once() {
+        let virial = VirialCoeff::from_raw_parts(-1000.0, 10.0)
+            .with_reference(500.0)
+            .homo_dimer(true);
+        let ka = 1500.0 * 1e-27 * AVOGADRO_CONSTANT;
         assert_relative_eq!(
             virial.association_const().unwrap(),
             ka,

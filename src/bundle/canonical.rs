@@ -155,6 +155,9 @@ pub fn scan_entries(scan: &ScanArchive) -> Result<Vec<Entry<'static>>> {
 
 pub fn read_scan(zip: &mut Reader) -> Result<ScanArchive> {
     let json: ScanJson = zip.json(SCAN)?;
+    let virial = VirialCoeff::from_raw_parts(json.b2, json.sigma)
+        .with_reference(json.b2_ref)
+        .homo_dimer(json.settings.homo_dimer);
     let scan = ScanArchive {
         table: Table6DAdaptive::from_bytes(&zip.bytes(TABLE)?)?,
         topology_yaml: zip.text(TOPOLOGY)?,
@@ -162,7 +165,7 @@ pub fn read_scan(zip: &mut Reader) -> Result<ScanArchive> {
         backend: json.backend,
         bodies: json.bodies,
         points: json.points,
-        virial: VirialCoeff::from_raw_parts(json.b2, json.sigma).with_reference(json.b2_ref),
+        virial,
     };
     check_scan(&scan)?;
     Ok(scan)
