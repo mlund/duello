@@ -111,7 +111,7 @@ fn fill_maps(
     // f16 pairs packed in u32 words; `map_values` is even since BRICK is.
     let values = gpu.output("Grid maps", map_values(&field.domain, field.slots) / 2);
     let source = format!(
-        "{}\nconst MAX_SLOTS: u32 = {}u;\n{}{}\n{}\n{}\n{}",
+        "{}\nconst MAX_SLOTS: u32 = {}u;\nconst LAPLACIAN_STEP: f32 = {LAPLACIAN_STEP};\n{}{}\n{}\n{}\n{}",
         tables.wgsl,
         field.slots.types.len(),
         layout_consts(),
@@ -145,6 +145,11 @@ fn fill_maps(
         grid_uniform,
     }
 }
+
+/// Radial step (Å) of the build's finite-difference Laplacian: wide enough
+/// that f32 cancellation stays ~1e-5 relative, narrow enough that the
+/// truncation error on an r⁻⁶ tail is ~1e-3 of f″.
+pub(super) const LAPLACIAN_STEP: f64 = 0.1;
 
 /// Maps hold f16; `map_index` counts values, so u32 caps values, not bytes.
 const BYTES_PER_VALUE: u64 = 2;

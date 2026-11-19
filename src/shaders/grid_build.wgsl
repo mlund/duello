@@ -5,11 +5,12 @@
 // point" with "an affinity grid [...] calculated for each type of atom"
 // (Goodsell & Olson 1990, p. 196).
 //
-// Only the far part (1 − S)·U is stored: near pairs are summed exactly per
-// pose, so walls and wells never reach the map and plain trilinear suffices.
+// Only the far part (1 − S)·U is stored, prefiltered so trilinear lookups are
+// unbiased: near pairs are summed exactly per pose, so walls and wells never
+// reach the map.
 //
 // Prepended at runtime: the grid-type-specific spline WGSL, spline_eval.wgsl,
-// grid_common.wgsl, grid_switch.wgsl and `const MAX_SLOTS`, sized to the
+// grid_common.wgsl, grid_switch.wgsl, `const MAX_SLOTS`, sized to the
 // actual slot count so the per-thread accumulator array stays small.
 
 @group(0) @binding(0) var<storage, read> spline_coeffs: array<SplineCoeffs>;
@@ -24,6 +25,29 @@
 // The build is split into dispatches: x = first node pair of this one,
 // y = total node pairs.
 @group(0) @binding(7) var<uniform> pairs: vec4<u32>;
+
+// Radii r − d, r, r + d (d = LAPLACIAN_STEP) and the far weights 1 − S there;
+// they depend on r only, so one serves every slot.
+struct Stencil {
+    r: vec3<f32>,
+    w: vec3<f32>,
+}
+
+fn stencil(r: f32) -> Stencil {
+    let rs = r + LAPLACIAN_STEP * vec3<f32>(-1.0, 0.0, 1.0);
+    let s = vec3<f32>(near_weight(rs.x), near_weight(rs.y), near_weight(rs.z));
+    return Stencil(rs, 1.0 - s);
+}
+
+// f − h²/12·∇²f of the far part f = (1 − S)·U, with ∇²f = f″ + 2f′/r; see
+// the grid module docs. `h2_12` is h²/12.
+fn prefiltered_far(pair: u32, st: Stencil, h2_12: f32) -> f32 {
+    let u = vec3<f32>(spline_energy(pair, st.r.x), spline_energy(pair, st.r.y), spline_energy(pair, st.r.z));
+    let f = st.w * u;
+    let d = LAPLACIAN_STEP;
+    let laplacian = (f.z - 2.0 * f.y + f.x) / (d * d) + (f.z - f.x) / (d * st.r.y);
+    return f.y - h2_12 * laplacian;
+}
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -40,6 +64,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // A outer, slots inner: one distance per A bead serves every slot.
     var far: array<vec2<f32>, MAX_SLOTS>;
+    let h2_12 = grid.spacing * grid.spacing / 12.0;
     let n_slots = grid.dims.w;
     for (var i = 0u; i < grid.n_atoms_a; i++) {
         let a = pos_a[i].xyz;
@@ -49,11 +74,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if !any(used) {
             continue; // most of the box is out of reach of any one bead
         }
-        let w = vec2<f32>(1.0 - near_weight(r.x), 1.0 - near_weight(r.y));
         let row = ids_a[i] * grid.n_atom_types;
+        let st = array<Stencil, 2>(stencil(r.x), stencil(r.y));
         for (var s = 0u; s < n_slots; s++) {
             let pair = row + slot_types[s];
-            let e = w * vec2<f32>(spline_energy(pair, r.x), spline_energy(pair, r.y));
+            let e = vec2<f32>(prefiltered_far(pair, st[0], h2_12), prefiltered_far(pair, st[1], h2_12));
             far[s] += select(vec2<f32>(0.0), e, used);
         }
     }

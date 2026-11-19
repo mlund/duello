@@ -1,4 +1,10 @@
 //! Near/far split of each pair energy: S·U summed exactly, (1 − S)·U gridded.
+//!
+//! S is C², which Tameling et al. (2014, p. 024105-8) found best for
+//! splitting r⁻⁶: "optimal results are obtained for C2 continuity with
+//! interpolation order p = 3, as higher continuities and interpolation
+//! orders increase the run time of the program without significantly
+//! improving accuracy".
 
 use crate::energy::SplinedPotentials;
 use crate::structure::Structure;

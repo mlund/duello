@@ -20,8 +20,20 @@
 //!
 //! Trilinear lookups smear the narrow, curved contact wells and the walls.
 //! So each pair energy U is split by a smooth switch S(r) (see `switch`):
-//! S·U, which holds every wall and well, is summed exactly over nearby
-//! pairs; only the smooth remainder (1 − S)·U is gridded.
+//! S·U, which holds every wall and well, is summed exactly over the A beads
+//! near each B bead (see `near`); only the smooth remainder (1 − S)·U is
+//! gridded. This is the kernel split of multilevel summation at one level.
+//! Tameling et al. (2014, J. Chem. Phys. 140, 024105, p. 024105-3,
+//! doi:10.1063/1.4857735) split r⁻⁶ "into a smooth term and a remainder
+//! term. The smooth part can be calculated using MLS, while the
+//! asymptotically smooth remainder term decays much faster than the
+//! original"; here the smooth part goes on the map and the remainder is
+//! summed exactly.
+//!
+//! The far part's tail (e.g. −r⁻⁶) is curved one way, so plain trilinear
+//! lookups would be biased one way too, and each B bead sums ~100 such
+//! pairs. Nodes therefore hold f − h²/12·∇²f: linear interpolation errs by
+//! h²/12·f″ on average over a cell, so these values reproduce f on average.
 //!
 //! Provenance: written from these published descriptions. No AutoDock or
 //! AutoGrid source code (MPL) was copied or adapted.
@@ -48,20 +60,21 @@ use near::{CellsUniform, NearCells};
 use switch::Switch;
 use tables::{bead_list, effective_range, SlotTable};
 
-/// Map spacing (Å) when none is given: B₂ within 0.01 % of the pair kernel on
-/// lysozyme, at about the time of 0.5 Å.
+/// Map spacing (Å) when none is given: B₂ within 0.3 % of the pair kernel on
+/// chymotrypsinogen (CALVADOS 3 and Kim–Hummer), ~1 % at 2 Å.
 pub const DEFAULT_GRID_SPACING: f64 = 1.0;
 
-/// Wall height when none is given. A pose touching the wall counts at least
-/// this much, so it only needs to be many kT; results match from ~30 kJ/mol up.
+/// Overlap cap when none is given. A pose with a bead reaching it counts at
+/// least this much, so it only needs to be many kT; results match from ~30
+/// kJ/mol up.
 pub const DEFAULT_ENERGY_CAP: f64 = 1000.0;
 
-/// Map resolution and wall height; recorded in scan sessions as is.
+/// Map resolution and overlap cap; recorded in scan sessions as is.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GridSpec {
     /// Node spacing (Å).
     pub spacing: f64,
-    /// Voxel energies are capped here (kJ/mol) so walls don't wreck interpolation.
+    /// Each B bead's near energy is capped here (kJ/mol), so overlaps stay finite.
     pub energy_cap: f64,
 }
 
@@ -411,29 +424,29 @@ mod tests {
     }
 
     /// Nodes at 0.5 Å from the wall, through the well and switch, to the far
-    /// tail: near pairs are exact, far ones read straight off a node.
+    /// tail: near pairs are exact, and a node holds the far part prefiltered
+    /// as f − h²/12·∇²f, with ∇²f = f″ + 2f′/r for a single pair.
     #[test]
     fn bead_on_a_node_matches_exact_pair() {
         if no_gpu() {
             return;
         }
         let (grid, exact, switch) = neutral_pair(SPEC);
+        let u = |r: f64| exact.compute_energy(&along_x(r));
+        let far = |r: f64| (1.0 - switch.near_weight(r)) * u(r);
+        // The build's step, so both apply one operator.
+        let laplacian = |r: f64| radial_laplacian(far, r, maps::LAPLACIAN_STEP);
+        let h = SPEC.spacing;
         let far_tail = (2.0 * switch.r2).ceil() / 2.0 + 1.0;
-        for r in [
-            4.0,
-            5.0,
-            6.0,
-            7.0,
-            (switch.r1 + switch.r2).round() / 2.0,
-            far_tail,
-        ] {
-            let pose = along_x(r);
-            let (u_grid, u_exact) = (grid.compute_energy(&pose), exact.compute_energy(&pose));
-            // f16 maps resolve ~5e-4 relative; the floor covers f32 near sums.
-            let tol = 1e-3 * u_exact.abs() + 1e-5;
+        let mid_switch = (switch.r1 + switch.r2).round() / 2.0;
+        for r in [4.0, 5.0, 6.0, 7.0, mid_switch, far_tail] {
+            let u_grid = grid.compute_energy(&along_x(r));
+            let want = u(r) - h * h / 12.0 * laplacian(r);
+            // f16 maps resolve ~5e-4 relative; the floor covers f32 sums.
+            let tol = 1e-3 * want.abs() + 1e-5;
             assert!(
-                (u_grid - u_exact).abs() < tol,
-                "r={r}: grid {u_grid}, exact {u_exact}"
+                (u_grid - want).abs() < tol,
+                "r={r}: grid {u_grid}, want {want}"
             );
         }
     }
@@ -441,10 +454,24 @@ mod tests {
     /// Largest |u''| over [lo, hi] along x, by central differences on `u`.
     fn max_curvature(u: impl Fn(f64) -> f64, lo: f64, hi: f64) -> f64 {
         const D: f64 = 0.01;
+        max_over(
+            |x| ((u(x + D) - 2.0 * u(x) + u(x - D)) / (D * D)).abs(),
+            lo,
+            hi,
+        )
+    }
+
+    /// Largest of `g` at 11 points spanning [lo, hi].
+    fn max_over(g: impl Fn(f64) -> f64, lo: f64, hi: f64) -> f64 {
         (0..=10)
-            .map(|k| lo + (hi - lo) * f64::from(k) / 10.0)
-            .map(|x| ((u(x + D) - 2.0 * u(x) + u(x - D)) / (D * D)).abs())
-            .fold(0.0, f64::max)
+            .map(|k| g(lo + (hi - lo) * f64::from(k) / 10.0))
+            .fold(f64::MIN, f64::max)
+    }
+
+    /// ∇²f = f″ + 2f′/r of a radial `f` at `r`, by central differences of step `d`.
+    fn radial_laplacian(f: impl Fn(f64) -> f64, r: f64, d: f64) -> f64 {
+        let (lo, mid, hi) = (f(r - d), f(r), f(r + d));
+        (hi - 2.0 * mid + lo) / (d * d) + (hi - lo) / (d * r)
     }
 
     /// Spec values come from users (CLI, web UI); bad ones must error, not
@@ -469,9 +496,9 @@ mod tests {
         }
     }
 
-    /// Mid-cell is the worst case for trilinear: error ≤ h²/8 · max|u″| of the
-    /// far part alone, from the wall out past the switch, since near pairs
-    /// are summed exactly.
+    /// Mid-cell is the worst case for trilinear: error ≤ h²/8·max|f″| of the
+    /// far part f alone, from the wall out past the switch, since near pairs
+    /// are summed exactly; plus the prefilter's shift, h²/12·max|∇²f|.
     #[test]
     fn bead_between_nodes_within_trilinear_bound() {
         if no_gpu() {
@@ -484,7 +511,11 @@ mod tests {
         for k in 0..24 {
             let lo = 4.0 + h * f64::from(k);
             let mid = lo + h / 2.0;
-            let bound = h * h / 8.0 * max_curvature(far, lo, lo + h) + 1e-5 + 1e-3 * u(mid).abs();
+            let shift = max_over(|r| radial_laplacian(far, r, 0.01).abs(), lo, lo + h);
+            let bound = h * h / 8.0 * max_curvature(far, lo, lo + h)
+                + h * h / 12.0 * shift
+                + 1e-5
+                + 1e-3 * u(mid).abs();
             let err = (grid.compute_energy(&along_x(mid)) - u(mid)).abs();
             assert!(err <= bound, "r={mid}: |ΔU| {err:.2e} > bound {bound:.2e}");
         }
