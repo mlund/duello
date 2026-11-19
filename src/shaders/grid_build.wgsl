@@ -69,8 +69,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     for (var i = 0u; i < grid.n_atoms_a; i++) {
         let a = pos_a[i].xyz;
         let r = vec2<f32>(distance(a, p0), distance(a, p1));
-        // The far part is zero inside r1 and beyond reach.
-        let used = r > vec2<f32>(grid.near_r1) & r < vec2<f32>(grid.reach);
+        // The far part is zero inside r1 and beyond reach, but the prefilter's
+        // stencil reaches a step further on both sides.
+        let inner = grid.near_r1 - LAPLACIAN_STEP;
+        let used = r > vec2<f32>(inner) & r < vec2<f32>(grid.support);
         if !any(used) {
             continue; // most of the box is out of reach of any one bead
         }

@@ -31,6 +31,13 @@ impl TestPair {
         CpuBackend::new(a, b, self.pair_matrix)
     }
 
+    /// The same system with splines cut at `cutoff` (Å), as `--cutoff`;
+    /// [`Self::into_exact`] stays uncut.
+    pub fn with_cutoff(mut self, cutoff: f64) -> Self {
+        self.splines = sr_splines(&self.pair_matrix, cutoff);
+        self
+    }
+
     /// Atom types in A, split by whether they carry charge.
     pub fn types_by_charge(&self) -> (Vec<usize>, Vec<usize>) {
         let n = self.splines.n_types();
@@ -149,18 +156,23 @@ pub fn pose_list() -> Vec<PoseParams> {
         .collect()
 }
 
-/// Random orientations at R = `r_min` … `r_min` + 3 Å; seeded, so runs agree.
-/// Vertex vectors are uniform in the unit ball, so their directions are
-/// uniform on the sphere (`PoseParams` normalises them).
-pub fn contact_poses(n: usize, r_min: f64) -> Vec<PoseParams> {
-    use rand::{Rng, SeedableRng};
-    let mut rng = rand_pcg::Pcg64::seed_from_u64(12345);
-    let direction = |rng: &mut rand_pcg::Pcg64| loop {
-        let v = crate::Vector3::from_fn(|_, _| rng.gen_range(-1.0..1.0));
+/// A vertex vector uniform in the unit ball, so its direction is uniform on
+/// the sphere (`PoseParams` normalises it); never near zero.
+pub fn random_direction(rng: &mut rand_pcg::Pcg64) -> Vector3 {
+    use rand::Rng;
+    loop {
+        let v = Vector3::from_fn(|_, _| rng.gen_range(-1.0..1.0));
         if (1e-6..1.0).contains(&v.norm_squared()) {
             return v;
         }
-    };
+    }
+}
+
+/// Random orientations at R = `r_min` … `r_min` + 3 Å; seeded, so runs agree.
+pub fn contact_poses(n: usize, r_min: f64) -> Vec<PoseParams> {
+    use rand::{Rng, SeedableRng};
+    let mut rng = rand_pcg::Pcg64::seed_from_u64(12345);
+    let direction = random_direction;
     (0..n)
         .map(|i| PoseParams {
             r: r_min + (i % 4) as f64,

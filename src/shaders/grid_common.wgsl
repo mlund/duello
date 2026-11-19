@@ -8,8 +8,9 @@ struct Grid {
     n_atom_types: u32,
     energy_cap: f32,
     n_atoms_a: u32,
-    // Short-range energy is zero beyond this distance from an A bead.
-    reach: f32,
+    // The far map is zero beyond this distance from an A bead: the potentials'
+    // range plus the prefilter's stencil.
+    support: f32,
     // Pairs closer than near_r2 are summed exactly, the rest gridded; see grid_switch.wgsl.
     near_r1: f32,
     near_r2: f32,

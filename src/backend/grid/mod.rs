@@ -33,7 +33,10 @@
 //! The far part's tail (e.g. −r⁻⁶) is curved one way, so plain trilinear
 //! lookups would be biased one way too, and each B bead sums ~100 such
 //! pairs. Nodes therefore hold f − h²/12·∇²f: linear interpolation errs by
-//! h²/12·f″ on average over a cell, so these values reproduce f on average.
+//! h²/12·f″ on average over a cell, so these values cancel that leading error
+//! where f is smooth. At a cutoff's kink the finite differences are right
+//! only on average over node positions, so the map keeps the stencil's full
+//! support: one step beyond the potentials' range, and inside r₁.
 //!
 //! Provenance: written from these published descriptions. No AutoDock or
 //! AutoGrid source code (MPL) was copied or adapted.
@@ -60,8 +63,8 @@ use near::{CellsUniform, NearCells};
 use switch::Switch;
 use tables::{bead_list, effective_range, SlotTable};
 
-/// Map spacing (Å) when none is given: B₂ within 0.3 % of the pair kernel on
-/// chymotrypsinogen (CALVADOS 3 and Kim–Hummer), ~1 % at 2 Å.
+/// Map spacing (Å) when none is given: B₂ within ≈0.2 % of the pair kernel on
+/// chymotrypsinogen (CALVADOS 3 and Kim–Hummer), 1.2 % at 2 Å.
 pub const DEFAULT_GRID_SPACING: f64 = 1.0;
 
 /// Overlap cap when none is given. A pose with a bead reaching it counts at
@@ -105,7 +108,9 @@ struct BatchUniform {
 impl BatchUniform {
     /// The parts that don't depend on the bead lists; counts are zero.
     fn new(field: &Field, ref_b: &Structure, coulomb: &CoulombParams) -> Self {
-        let sr_range = field.ref_a.radius() + field.reach + ref_b.radius();
+        // Lookups interpolate up to a cell diagonal past the last nonzero node.
+        let map_range = field.support + 3f64.sqrt() * field.domain.spacing();
+        let sr_range = field.ref_a.radius() + map_range + ref_b.radius();
         Self {
             n_atoms_b: ref_b.pos.len() as u32,
             sr_range: sr_range as f32,
@@ -201,13 +206,16 @@ impl GridBackend {
         let gpu = GpuContext::new_async(Limits::Adapter).await?;
         let slots = SlotTable::new(&ref_b);
         let reach = effective_range(splines, &ref_a, &ref_b);
+        // The prefilter's stencil reaches one step past where the potentials
+        // vanish (e.g. a cutoff's kink), and its correction there counts too.
+        let support = reach + maps::LAPLACIAN_STEP;
         let field = Field {
             ref_a: &ref_a,
             n_types: splines.n_types(),
             slots: &slots,
-            domain: GridDomain::covering(&ref_a.pos, reach, spec.spacing),
+            domain: GridDomain::covering(&ref_a.pos, support, spec.spacing),
             spec,
-            reach,
+            support,
             switch: Switch::new(splines, &ref_a, &ref_b),
         };
         let spline_tables = SplineTables::new(splines)?;
@@ -392,7 +400,9 @@ impl crate::backend::AsyncEnergyBackend for GridBackend {
 mod tests {
     use super::switch::Switch;
     use super::*;
-    use crate::backend::test_support::{bead, contact_poses, kt, lysozyme, no_gpu, pose_list};
+    use crate::backend::test_support::{
+        bead, contact_poses, kt, lysozyme, no_gpu, pose_list, random_direction,
+    };
     use crate::backend::GpuBackend;
     use crate::Vector3;
 
@@ -682,6 +692,60 @@ mod tests {
         let grid = GridBackend::new(a, bead(t), &sys.splines, &sys.coulomb, spec).unwrap();
         let u = grid.compute_energy(&pose);
         assert!((u - u_exact).abs() < 1e-3, "grid {u}, exact {u_exact}");
+    }
+
+    /// A short `--cutoff` puts a kink in the far part. The prefilter's
+    /// finite differences straddle it, which is right on average over node
+    /// positions only if the map keeps the stencil's full support. Checked
+    /// over the far part out past the cutoff, with A beads off the lattice
+    /// as in any protein.
+    #[test]
+    fn prefilter_stays_unbiased_across_a_cutoff() {
+        if no_gpu() {
+            return;
+        }
+        let sys = lysozyme().with_cutoff(12.0);
+        let (neutral, _) = sys.types_by_charge();
+        let spec = GridSpec {
+            spacing: 1.0,
+            ..SPEC
+        };
+        let offsets = [[0.37, 0.61, 0.13], [0.81, 0.22, 0.55], [0.5, 0.5, 0.5]];
+        let (mut bias, mut scale) = (0.0, 0.0);
+        for offset in offsets {
+            let mut a = bead(neutral[0]);
+            a.pos = vec![Vector3::from(offset)];
+            let b = bead(neutral[1]);
+            let grid = GridBackend::new(a.clone(), b.clone(), &sys.splines, &sys.coulomb, spec);
+            let pairs = GpuBackend::new(a, b, &sys.splines, &sys.coulomb).unwrap();
+            let poses = shell_poses(9.0, 13.0, 40_000);
+            let got = grid.unwrap().compute_energies(&poses);
+            let want = pairs.compute_energies(&poses);
+            bias += got.iter().zip(&want).map(|(g, w)| g - w).sum::<f64>();
+            scale += want.iter().map(|w| w.abs()).sum::<f64>();
+        }
+        let relative = bias / scale;
+        // Without the stencil's support kept, −0.5 %.
+        assert!(
+            relative.abs() < 3e-3,
+            "far part biased by {:.2} %",
+            100.0 * relative
+        );
+    }
+
+    /// Poses uniform in the volume of the shell [lo, hi] around A; seeded.
+    fn shell_poses(lo: f64, hi: f64, n: usize) -> Vec<PoseParams> {
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand_pcg::Pcg64::seed_from_u64(3);
+        let (lo3, hi3) = (lo.powi(3), hi.powi(3));
+        (0..n)
+            .map(|_| PoseParams {
+                r: rng.gen_range(lo3..hi3).cbrt(),
+                omega: 0.0,
+                vertex_i: random_direction(&mut rng),
+                vertex_j: Vector3::z(),
+            })
+            .collect()
     }
 
     /// Pose by pose against the pair kernel on the same splines: near pairs

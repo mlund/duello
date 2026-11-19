@@ -15,8 +15,9 @@ pub(super) struct Field<'a> {
     pub slots: &'a SlotTable,
     pub domain: GridDomain,
     pub spec: GridSpec,
-    /// Short-range energy vanishes beyond this distance (Å).
-    pub reach: f64,
+    /// The far map is nonzero within this distance (Å) of an A bead: where the
+    /// short-range energy vanishes, plus the prefilter's stencil.
+    pub support: f64,
     pub switch: Switch,
 }
 
@@ -31,7 +32,7 @@ pub(super) struct GridUniform {
     n_atom_types: u32,
     energy_cap: f32,
     n_atoms_a: u32,
-    reach: f32,
+    support: f32,
     near_r1: f32,
     near_r2: f32,
     _pad: u32,
@@ -49,7 +50,7 @@ impl GridUniform {
             n_atom_types: field.n_types as u32,
             energy_cap: field.spec.energy_cap as f32,
             n_atoms_a: field.ref_a.pos.len() as u32,
-            reach: field.reach as f32,
+            support: field.support as f32,
             near_r1: field.switch.r1 as f32,
             near_r2: field.switch.r2 as f32,
             _pad: 0,
