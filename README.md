@@ -307,7 +307,7 @@ production sweeps. The copies are independent runs, which the error columns comp
 | File               | Contents |
 |--------------------|----------|
 | `PREFIX.csv`       | `#` lines with run and move statistics, then `q/Å⁻¹,I,P,S_eff,S_eff_error,S_com,S_com_error,S_HSY` |
-| `PREFIX.rdf.csv`   | Mass-centre radial distribution, `r/Å,g,g_error`  |
+| `PREFIX.rdf.csv`   | `#` lines with the Kirkwood–Buff _G22_ and _S(0)_, then `r/Å,g,g_error,w/kT,h·r²/Å²,N,G22_raw/Å³,G22_V/Å³` ([method](docs/kirkwood-buff.md)) |
 | `PREFIX.traj`      | Poses of all copies (compact; see `nbody-expand`)  |
 
 `I` and the form factor `P` are per molecule and averaged over frames; `S_eff` = `I`/`P` is the

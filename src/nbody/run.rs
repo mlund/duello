@@ -7,8 +7,8 @@
 use super::trajectory::{TrajectoryHeader, TrajectoryWriter};
 use super::{
     box_length, Criteria, Device, EnergyStats, EnergySummary, Equilibration, Frame, HsyFluid,
-    MoveStats, MsaOverrides, PairCorrelation, PairEnergy, RdfCurve, RunRecord, Sampler,
-    SamplerSpec, Scattering, ScatteringCurve, Status, StepTuner,
+    MoveStats, MsaOverrides, PairCorrelation, PairEnergy, RdfAnalysis, RdfCurve, RunRecord,
+    Sampler, SamplerSpec, Scattering, ScatteringCurve, Status, StepTuner,
 };
 use crate::archive::{CgBody, ScanArchive};
 use anyhow::{ensure, Result};
@@ -130,6 +130,11 @@ impl RunSpec {
             centres_only: false,
             device: Device::Cpu,
         }
+    }
+
+    pub(super) fn rdf_analysis(&self, curve: RdfCurve) -> RdfAnalysis {
+        let box_length = box_length(self.n_bodies, self.molarity);
+        RdfAnalysis::new(curve, self.n_bodies, box_length)
     }
 }
 
@@ -557,6 +562,11 @@ impl NBodyRun {
     /// Mass-centre g(r) over production frames; empty before the first.
     pub fn pair_correlation(&self) -> RdfCurve {
         self.pair_correlation.curve()
+    }
+
+    /// Kirkwood–Buff reading of [`Self::pair_correlation`].
+    pub fn rdf_analysis(&self) -> RdfAnalysis {
+        self.spec.rdf_analysis(self.pair_correlation())
     }
 
     pub fn stats(&self) -> RunStats {

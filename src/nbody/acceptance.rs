@@ -6,8 +6,8 @@
 
 use super::test_tables::{table, KT};
 use super::{
-    Criteria, Device, EnergyStats, Equilibration, Frame, PairEnergy, Sampler, SamplerSpec,
-    Scattering, ScatteringCurve, Status,
+    Criteria, Device, EnergyStats, Equilibration, Frame, PairCorrelation, PairEnergy, RdfAnalysis,
+    Sampler, SamplerSpec, Scattering, ScatteringCurve, Status,
 };
 use crate::archive::CgBody;
 use std::f64::consts::PI;
@@ -62,7 +62,7 @@ fn structure_factor(
     spec: &SamplerSpec,
     q_max: f64,
     copies: usize,
-    (equilibration, production, every): (u64, u64, u64),
+    schedule: (u64, u64, u64),
 ) -> ScatteringCurve {
     let mut scattering = pollster::block_on(Scattering::new(
         &point_body(),
@@ -75,19 +75,44 @@ fn structure_factor(
         Device::Cpu,
     ))
     .unwrap();
+    for_each_frame(energy, spec, copies, schedule, |frame| {
+        scattering.observe(frame).unwrap()
+    });
+    scattering.curve()
+}
+
+/// Production frames of independent copies, each seeded by its index and
+/// run for (equilibration, production, sweeps per frame).
+fn for_each_frame(
+    energy: Arc<PairEnergy>,
+    spec: &SamplerSpec,
+    copies: usize,
+    (equilibration, production, every): (u64, u64, u64),
+    mut observe: impl FnMut(&Frame),
+) {
     for copy in 0..copies {
         let mut sampler = Sampler::new(energy.clone(), spec.clone(), copy as u64 + 1).unwrap();
         sampler.advance(equilibration);
         for _ in 0..production / every {
             sampler.advance(every);
-            let frame = Frame {
+            observe(&Frame {
                 copy,
                 ..sampler.frame()
-            };
-            scattering.observe(&frame).unwrap();
+            });
         }
     }
-    scattering.curve()
+}
+
+/// Kirkwood–Buff reading of the mass-centre g(r) of independent copies.
+fn rdf_analysis(
+    energy: Arc<PairEnergy>,
+    spec: &SamplerSpec,
+    copies: usize,
+    schedule: (u64, u64, u64),
+) -> RdfAnalysis {
+    let mut rdf = PairCorrelation::new(spec.n_bodies, spec.box_length);
+    for_each_frame(energy, spec, copies, schedule, |frame| rdf.observe(frame));
+    RdfAnalysis::new(rdf.curve(), spec.n_bodies, spec.box_length)
 }
 
 /// Percus–Yevick S(q) for hard spheres of diameter σ at packing fraction φ:
@@ -177,6 +202,47 @@ fn hard_spheres_match_percus_yevick() {
             "q = {q:.3}: S = {s:.3} ± {e:.3}, PY {expected:.3}"
         );
     }
+}
+
+/// G₂₂ → ∫f = −2B₂ as ρ → 0 (Hill 1955, Eq. 89). At ρ∫f = 0.03 the next
+/// order, ρ(∫f)² plus three-body terms, adds several per cent; the fixed
+/// seeds give +8 %; 15 % still catches a missing correction (raw: −51 %).
+#[test]
+#[ignore = "slow: run in release with --ignored"]
+fn dilute_attractive_fluid_has_g22_of_minus_twice_b2() {
+    let density = 0.03 / well_mayer_integral(0.0);
+    let spec = spec(100, density, 20.0);
+    let energy = Arc::new(PairEnergy::new(table(|_, _, _| WELL * KT)).unwrap());
+    let g22 = rdf_analysis(energy, &spec, 16, (200, 8000, 4))
+        .g22()
+        .expect("converged");
+    let expected = well_mayer_integral(0.0);
+    assert!(
+        (g22.value / expected - 1.0).abs() < 0.15,
+        "G22 = {:.0} Å³ (fit {:?}), −2B2 = {expected:.0} Å³",
+        g22.value,
+        g22.fit
+    );
+}
+
+/// Compressibility route: S(0) = 1 + ρG₂₂ matches PY's (1 − φ)⁴/(1 + 2φ)².
+/// 400 bodies give L/2 = 25 Å, five diameters, to extrapolate over.
+#[test]
+#[ignore = "slow: run in release with --ignored"]
+fn hard_sphere_g22_gives_the_percus_yevick_compressibility() {
+    let (sigma, phi) = (5.0, 0.2);
+    let spec = spec(400, hard_sphere_density(sigma, phi), 1.5);
+    let energy = Arc::new(PairEnergy::new(table(|_, _, _| 0.0)).unwrap());
+    let analysis = rdf_analysis(energy, &spec, 8, (300, 3000, 5));
+    let (s0, expected) = (
+        analysis.s0().expect("converged"),
+        percus_yevick(0.0, sigma, phi),
+    );
+    assert!(
+        (s0 - expected).abs() < 0.03,
+        "S(0) = {s0:.3} (G22 {:?}), PY {expected:.3}",
+        analysis.g22()
+    );
 }
 
 /// From random insertion, the drift test must declare convergence, and the

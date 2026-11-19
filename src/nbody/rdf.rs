@@ -13,21 +13,8 @@ pub struct RdfCurve {
     pub error: Option<Vec<f64>>,
 }
 
-impl RdfCurve {
-    /// One row per bin; the error is NaN without enough copies for one.
-    pub fn to_csv(&self) -> String {
-        let mut csv = String::from("r/Å,g,g_error\n");
-        let error = self.error.as_deref().unwrap_or_default();
-        for k in 0..self.r.len() {
-            let e = error.get(k).copied().unwrap_or(f64::NAN);
-            csv += &format!("{:.2},{:.5},{:.5}\n", self.r[k], self.g[k], e);
-        }
-        csv
-    }
-}
-
 /// Bin width in Å.
-const DR: f64 = 0.5;
+pub(super) const DR: f64 = 0.5;
 
 /// Mass-centre pair distances binned per copy, out to L/2 where the minimum
 /// image is still unique. Copies stay apart so their spread gives the error.
@@ -130,9 +117,17 @@ impl PairCorrelation {
 /// Using N − 1, not N, makes g → 1 exactly at any N.
 fn ideal_pairs(n_bodies: usize, box_length: f64, k: usize) -> f64 {
     let n = n_bodies as f64;
-    let (inner, outer) = (k as f64 * DR, (k + 1) as f64 * DR);
-    let shell = 4.0 / 3.0 * std::f64::consts::PI * (outer.powi(3) - inner.powi(3));
+    let shell = shell(k as f64 * DR, (k + 1) as f64 * DR);
     n * (n - 1.0) / 2.0 * shell / box_length.powi(3)
+}
+
+pub(super) fn ball(r: f64) -> f64 {
+    4.0 / 3.0 * std::f64::consts::PI * r.powi(3)
+}
+
+/// Volume between radii a and b.
+pub(super) fn shell(a: f64, b: f64) -> f64 {
+    ball(b) - ball(a)
 }
 
 #[cfg(test)]
@@ -280,17 +275,5 @@ mod tests {
         let mut rdf = PairCorrelation::new(1, 100.0);
         rdf.observe(&frame(0, &[[0.0, 0.0, 0.0]], 100.0));
         assert_eq!(rdf.curve(), RdfCurve::default());
-    }
-
-    #[test]
-    fn csv_has_a_header_and_one_row_per_bin() {
-        let mut rdf = two_bodies();
-        rdf.observe(&pair_at(0, 10.0));
-        let csv = rdf.curve().to_csv();
-        let mut lines = csv.lines();
-        assert_eq!(lines.next(), Some("r/Å,g,g_error"));
-        let rows: Vec<&str> = lines.collect();
-        assert_eq!(rows.len(), 100, "0.5 Å bins to L/2 = 50 Å");
-        assert_eq!(rows[20], "10.25,1514.55933,NaN");
     }
 }
