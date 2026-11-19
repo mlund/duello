@@ -76,19 +76,15 @@ fn far_energy(slot: u32, p: vec3<f32>) -> f32 {
 
 struct Near {
     u: f32,
-    // Some pair reached the cap: the pose is an overlap.
+    // The bead's near energy reached the cap: the pose is an overlap.
     in_wall: bool,
 }
 
-// Running near sum of one B bead.
-struct NearSum {
-    u: f32,
-    pair_in_wall: bool,
-}
-
-// Adds S·U of A beads [span.x, span.y) within near_r2 of `p`; pairs are
-// capped so no sum can overflow.
-fn add_span(sum: ptr<function, NearSum>, span: vec2<u32>, type_b: u32, p: vec3<f32>, r2_max: f32) {
+// S·U of A beads [span.x, span.y) within near_r2 of `p`, uncapped. Walls are
+// finite (splines extrapolate linearly); one big enough to swamp the f32 sum
+// also puts its bead over the cap, so the lost digits never matter.
+fn span_energy(span: vec2<u32>, type_b: u32, p: vec3<f32>, r2_max: f32) -> f32 {
+    var u = 0.0;
     for (var i = span.x; i < span.y; i++) {
         let a = bead_a(i);
         let d = a.xyz - p;
@@ -97,29 +93,27 @@ fn add_span(sum: ptr<function, NearSum>, span: vec2<u32>, type_b: u32, p: vec3<f
         if d2 < r2_max {
             let r = sqrt(d2);
             let pair = u32(a.w) * grid.n_atom_types + type_b;
-            let e = near_weight(r) * spline_energy(pair, r);
-            (*sum).pair_in_wall = (*sum).pair_in_wall || e >= grid.energy_cap;
-            (*sum).u += min(e, grid.energy_cap);
+            u += near_weight(r) * spline_energy(pair, r);
         }
     }
+    return u;
 }
 
-// S·U over A beads within near_r2 of `p`, capped per bead as the maps were
-// per voxel: a bead in the wall, of one A bead or of several together, is
-// an overlap.
+// S·U over A beads within near_r2 of `p`, then capped as a whole: a bead
+// whose net near energy reaches the cap is an overlap, while a wall pair
+// offset by attraction from other A beads stays as summed.
 fn near_energy(type_b: u32, p: vec3<f32>) -> Near {
-    var sum = NearSum(0.0, false);
+    var u = 0.0;
     let r2_max = grid.near_r2 * grid.near_r2;
     let box = near_box(batch.cells, p);
     if !box.empty {
         for (var z = box.lo.z; z <= box.hi.z; z++) {
             for (var y = box.lo.y; y <= box.hi.y; y++) {
-                add_span(&sum, row_span(batch.cells, box, y, z), type_b, p, r2_max);
+                u += span_energy(row_span(batch.cells, box, y, z), type_b, p, r2_max);
             }
         }
     }
-    let cap = grid.energy_cap;
-    return Near(min(sum.u, cap), sum.pair_in_wall || sum.u >= cap);
+    return Near(min(u, grid.energy_cap), u >= grid.energy_cap);
 }
 
 // Exact screened Coulomb over charged pairs; not gridded, so it holds at any

@@ -645,6 +645,45 @@ mod tests {
         assert!(u >= spec.energy_cap, "joint overlap read as {u} kJ/mol");
     }
 
+    /// The cap applies to a bead's whole near energy, not pair by pair: a
+    /// bead up one A bead's wall but held in the wells of many others is
+    /// attractive overall, whatever the cap.
+    #[test]
+    fn wall_pair_offset_by_attraction_is_not_an_overlap() {
+        if no_gpu() {
+            return;
+        }
+        let sys = lysozyme();
+        let t = sys.types_by_charge().0[0];
+        let (r_m, u_m) = sys.splines.minimum(t, t).unwrap();
+        let pair = GpuBackend::new(bead(t), bead(t), &sys.splines, &sys.coulomb).unwrap();
+        let r_wall = r_m - 1.0;
+        let u_wall = pair.compute_energy(&along_x(r_wall));
+        // B sits at x = r_wall: one A bead at the origin, 40 at r_m beyond B.
+        let mut a = bead(t);
+        a.pos = std::iter::once(Vector3::zeros())
+            .chain(std::iter::repeat_n(
+                Vector3::new(r_wall + r_m, 0.0, 0.0),
+                40,
+            ))
+            .collect();
+        a.atom_ids = vec![t; 41];
+        let pose = along_x(r_wall);
+        let exact = GpuBackend::new(a.clone(), bead(t), &sys.splines, &sys.coulomb).unwrap();
+        let u_exact = exact.compute_energy(&pose);
+        assert!(
+            u_wall > 0.0 && u_exact < 0.0,
+            "wall {u_wall}, net {u_exact}, U_m {u_m}"
+        );
+        let spec = GridSpec {
+            energy_cap: 0.5 * u_wall, // below the wall pair, far above the net
+            ..SPEC
+        };
+        let grid = GridBackend::new(a, bead(t), &sys.splines, &sys.coulomb, spec).unwrap();
+        let u = grid.compute_energy(&pose);
+        assert!((u - u_exact).abs() < 1e-3, "grid {u}, exact {u_exact}");
+    }
+
     /// Pose by pose against the pair kernel on the same splines: near pairs
     /// are exact, so only the far map's trilinear error remains: ≤ 5e-3 kT
     /// at 0.5 Å on lysozyme, falling as h². Random contacts sweep B beads through every
