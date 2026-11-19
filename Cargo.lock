@@ -423,9 +423,9 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "coulomb"
-version = "0.5.2"
+version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8dc64f8062c9626c219724bdfc37c788c983ef38d82a20cf4bc2f2d779912d5"
+checksum = "11394ff8983406035dc26a92d8a7d93e92af4a09de32c3d9227e966ad298cab9"
 dependencies = [
  "mint",
  "nalgebra 0.34.2",
@@ -1431,8 +1431,8 @@ dependencies = [
 
 [[package]]
 name = "interatomic"
-version = "0.6.1"
-source = "git+https://github.com/mlund/interatomic.git#4685c47f3f103c4001345567599bd736d841d8f8"
+version = "0.6.2"
+source = "git+https://github.com/mlund/interatomic.git#30532bdad6009181451ef3f04bda355ffdfcf971"
 dependencies = [
  "bytemuck",
  "coulomb",
