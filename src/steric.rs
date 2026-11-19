@@ -253,7 +253,7 @@ impl PlaneGrid {
 
 /// Stable counting sort of indices by key in `0..n_keys`: the start of each
 /// key's run (plus a final end) and the indices in key order.
-fn counting_sort(keys: &[usize], n_keys: usize) -> (Vec<usize>, Vec<usize>) {
+pub(crate) fn counting_sort(keys: &[usize], n_keys: usize) -> (Vec<usize>, Vec<usize>) {
     let mut starts = vec![0; n_keys + 1];
     for &k in keys {
         starts[k + 1] += 1;

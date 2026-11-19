@@ -2,7 +2,7 @@
 // lookup plus the near part summed exactly over A; electrostatics exact.
 //
 // Prepended at runtime: the grid-type-specific spline WGSL, common.wgsl,
-// spline_eval.wgsl, grid_common.wgsl and grid_switch.wgsl.
+// spline_eval.wgsl, grid_common.wgsl, grid_switch.wgsl and grid_near.wgsl.
 
 struct Batch {
     n_poses: u32,
@@ -12,17 +12,35 @@ struct Batch {
     kappa: f32,
     n_charged_a: u32,
     n_charged_b: u32,
-    _pad: vec2<u32>,
+    // Where B's beads start in `beads`.
+    b_offset: u32,
+    _pad: u32,
+    cells: Cells,
 }
 
 // f16 pairs; see grid_build.wgsl.
 @group(0) @binding(0) var<storage, read> maps: array<u32>;
-// A beads (xyz, type), then the charged ones again from grid.n_atoms_a on.
-@group(0) @binding(1) var<storage, read> beads_a: array<vec4<f32>>;
-// B beads (xyz, slot·2¹⁶ + type), then the charged ones (xyz, type) from
-// batch.n_atoms_b on. Lists share a buffer to stay within WebGPU's default
-// of 8 storage buffers per stage.
-@group(0) @binding(2) var<storage, read> beads_b: array<vec4<f32>>;
+// One list, to stay within WebGPU's default of 8 storage buffers per stage:
+// A beads (xyz, type) in cell order, then the charged ones again from
+// grid.n_atoms_a; B beads (xyz, slot·2¹⁶ + type) from batch.b_offset, then
+// its charged ones (xyz, type).
+@group(0) @binding(1) var<storage, read> beads: array<vec4<f32>>;
+// Start of each cell's A beads; see grid_near.wgsl.
+@group(0) @binding(2) var<storage, read> cell_start: array<u32>;
+
+// The four lists in `beads`; only these know the layout.
+fn bead_a(i: u32) -> vec4<f32> {
+    return beads[i];
+}
+fn charged_a(i: u32) -> vec4<f32> {
+    return beads[grid.n_atoms_a + i];
+}
+fn bead_b(j: u32) -> vec4<f32> {
+    return beads[batch.b_offset + j];
+}
+fn charged_b(j: u32) -> vec4<f32> {
+    return beads[batch.b_offset + batch.n_atoms_b + j];
+}
 @group(0) @binding(3) var<storage, read> poses: array<PoseParams>;
 @group(0) @binding(4) var<storage, read_write> energies: array<f32>;
 @group(0) @binding(5) var<uniform> grid: Grid;
@@ -62,26 +80,46 @@ struct Near {
     in_wall: bool,
 }
 
-// S·U over A beads within near_r2 of `p`, capped per bead as the maps were
-// per voxel: a bead in the wall, of one A bead or of several together, is
-// an overlap. Pairs are capped first so no sum can overflow.
-fn near_energy(type_b: u32, p: vec3<f32>) -> Near {
-    var u = 0.0;
-    var pair_in_wall = false;
-    let r2_max = grid.near_r2 * grid.near_r2;
-    for (var i = 0u; i < grid.n_atoms_a; i++) {
-        let a = beads_a[i];
+// Running near sum of one B bead.
+struct NearSum {
+    u: f32,
+    pair_in_wall: bool,
+}
+
+// Adds S·U of A beads [span.x, span.y) within near_r2 of `p`; pairs are
+// capped so no sum can overflow.
+fn add_span(sum: ptr<function, NearSum>, span: vec2<u32>, type_b: u32, p: vec3<f32>, r2_max: f32) {
+    for (var i = span.x; i < span.y; i++) {
+        let a = bead_a(i);
         let d = a.xyz - p;
-        // Most beads are out of range: test r² before paying for the sqrt.
-        if dot(d, d) < r2_max {
-            let r = sqrt(dot(d, d));
+        // A cell box is ~6× the range sphere: test r² before paying for the sqrt.
+        let d2 = dot(d, d);
+        if d2 < r2_max {
+            let r = sqrt(d2);
             let pair = u32(a.w) * grid.n_atom_types + type_b;
             let e = near_weight(r) * spline_energy(pair, r);
-            pair_in_wall = pair_in_wall || e >= grid.energy_cap;
-            u += min(e, grid.energy_cap);
+            (*sum).pair_in_wall = (*sum).pair_in_wall || e >= grid.energy_cap;
+            (*sum).u += min(e, grid.energy_cap);
         }
     }
-    return Near(min(u, grid.energy_cap), pair_in_wall || u >= grid.energy_cap);
+}
+
+// S·U over A beads within near_r2 of `p`, capped per bead as the maps were
+// per voxel: a bead in the wall, of one A bead or of several together, is
+// an overlap.
+fn near_energy(type_b: u32, p: vec3<f32>) -> Near {
+    var sum = NearSum(0.0, false);
+    let r2_max = grid.near_r2 * grid.near_r2;
+    let box = near_box(batch.cells, p);
+    if !box.empty {
+        for (var z = box.lo.z; z <= box.hi.z; z++) {
+            for (var y = box.lo.y; y <= box.hi.y; y++) {
+                add_span(&sum, row_span(batch.cells, box, y, z), type_b, p, r2_max);
+            }
+        }
+    }
+    let cap = grid.energy_cap;
+    return Near(min(sum.u, cap), sum.pair_in_wall || sum.u >= cap);
 }
 
 // Exact screened Coulomb over charged pairs; not gridded, so it holds at any
@@ -89,10 +127,10 @@ fn near_energy(type_b: u32, p: vec3<f32>) -> Near {
 fn yukawa(tf: RigidTransform) -> f32 {
     var u: f32 = 0.0;
     for (var j = 0u; j < batch.n_charged_b; j++) {
-        let b = beads_b[batch.n_atoms_b + j];
+        let b = charged_b(j);
         let pb = quat_rotate(tf.q, b.xyz) + tf.c;
         for (var i = 0u; i < batch.n_charged_a; i++) {
-            let a = beads_a[grid.n_atoms_a + i];
+            let a = charged_a(i);
             let r = distance(a.xyz, pb);
             let prefactor = coulomb_prefactors[u32(a.w) * grid.n_atom_types + u32(b.w)];
             // A kept bead can still be neutral towards this type; skipping avoids
@@ -117,7 +155,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var in_wall = false;
     if pose.r <= batch.sr_range {
         for (var j = 0u; j < batch.n_atoms_b; j++) {
-            let b = beads_b[j];
+            let b = bead_b(j);
             let p = quat_rotate(tf.q, b.xyz) + tf.c;
             let code = u32(b.w);
             let near = near_energy(code & 0xffffu, p);

@@ -28,6 +28,7 @@
 
 mod domain;
 mod maps;
+mod near;
 #[cfg(test)]
 mod scan_bench;
 mod switch;
@@ -43,6 +44,7 @@ use crate::energy::{CoulombParams, SplinedPotentials};
 use crate::structure::Structure;
 use bytemuck::{Pod, Zeroable};
 use maps::{build_maps, Field, Maps};
+use near::{CellsUniform, NearCells};
 use switch::Switch;
 use tables::{bead_list, effective_range, SlotTable};
 
@@ -82,13 +84,28 @@ struct BatchUniform {
     kappa: f32,
     n_charged_a: u32,
     n_charged_b: u32,
-    _pad: [u32; 2],
+    b_offset: u32,
+    _pad: u32,
+    cells: CellsUniform,
+}
+
+impl BatchUniform {
+    /// The parts that don't depend on the bead lists; counts are zero.
+    fn new(field: &Field, ref_b: &Structure, coulomb: &CoulombParams) -> Self {
+        let sr_range = field.ref_a.radius() + field.reach + ref_b.radius();
+        Self {
+            n_atoms_b: ref_b.pos.len() as u32,
+            sr_range: sr_range as f32,
+            kappa: coulomb.kappa,
+            ..Self::zeroed()
+        }
+    }
 }
 
 const ENERGY_BINDINGS: [Binding; 10] = [
     Binding::Read,      // maps
-    Binding::Read,      // A beads, then charged A
-    Binding::Read,      // B beads, then charged B
+    Binding::Read,      // A, charged A, B, charged B beads
+    Binding::Read,      // cell starts
     Binding::Read,      // poses
     Binding::ReadWrite, // energies
     Binding::Uniform,   // grid
@@ -192,17 +209,7 @@ impl GridBackend {
             slots.types.len(),
             field.switch.r2
         );
-        let (tables, [n_charged_a, n_charged_b]) =
-            PoseTables::new(&gpu, &field, &ref_b, coulomb, spline_buffers);
-        let batch = BatchUniform {
-            n_poses: 0, // set per batch
-            n_atoms_b: ref_b.pos.len() as u32,
-            sr_range: (ref_a.radius() + reach + ref_b.radius()) as f32,
-            kappa: coulomb.kappa,
-            n_charged_a,
-            n_charged_b,
-            _pad: [0; 2],
-        };
+        let (tables, batch) = PoseTables::new(&gpu, &field, &ref_b, coulomb, spline_buffers);
         let source = energy_source(spline_tables.wgsl);
         let kernel = PoseKernel::new(&gpu, "Grid energy", &source, &ENERGY_BINDINGS);
         Ok(Self {
@@ -227,8 +234,8 @@ impl GridBackend {
         let [coeffs, params] = &t.splines;
         let buffers = [
             &self.maps.values,
-            &t.beads_a,
-            &t.beads_b,
+            &t.beads,
+            &t.cell_start,
             poses,
             energies,
             &self.maps.grid_uniform,
@@ -243,36 +250,49 @@ impl GridBackend {
 
 /// The pose kernel's buffers besides the maps; see grid_energy.wgsl.
 struct PoseTables {
-    beads_a: wgpu::Buffer,
-    beads_b: wgpu::Buffer,
+    beads: wgpu::Buffer,
+    cell_start: wgpu::Buffer,
     prefactors: wgpu::Buffer,
     /// Spline coefficients and params, shared with the map build.
     splines: [wgpu::Buffer; 2],
 }
 
 impl PoseTables {
-    /// The tables, and the charged A and B counts.
+    /// The tables, and the batch uniform that indexes them, less its pose count.
     fn new(
         gpu: &GpuContext,
         field: &Field,
         ref_b: &Structure,
         coulomb: &CoulombParams,
         splines: [wgpu::Buffer; 2],
-    ) -> (Self, [u32; 2]) {
+    ) -> (Self, BatchUniform) {
         let (n, ref_a, slots) = (field.n_types, field.ref_a, field.slots);
-        let (a, n_charged_a) = bead_list(ref_a, ref_b, coulomb, n, |k| ref_a.atom_ids[k] as u32);
+        let cells = NearCells::new(&ref_a.pos, field.switch.r2);
+        let order_a = cells.order().iter().map(|&i| i as usize);
+        let (mut beads, n_charged_a) = bead_list(ref_a, ref_b, coulomb, n, order_a, |k| {
+            ref_a.atom_ids[k] as u32
+        });
         let code_b = |k: usize| slots.of_bead[k] << 16 | ref_b.atom_ids[k] as u32;
-        let (b, n_charged_b) = bead_list(ref_b, ref_a, coulomb, n, code_b);
+        let b_offset = beads.len() as u32;
+        let (b, n_charged_b) = bead_list(ref_b, ref_a, coulomb, n, 0..ref_b.pos.len(), code_b);
+        beads.extend(b);
         let tables = Self {
-            beads_a: gpu.storage("Beads A", bytemuck::cast_slice(&a)),
-            beads_b: gpu.storage("Beads B", bytemuck::cast_slice(&b)),
+            beads: gpu.storage("Beads", bytemuck::cast_slice(&beads)),
+            cell_start: gpu.storage("Cell starts", bytemuck::cast_slice(cells.starts())),
             prefactors: gpu.storage(
                 "Coulomb prefactors",
                 bytemuck::cast_slice(&coulomb.prefactors),
             ),
             splines,
         };
-        (tables, [n_charged_a, n_charged_b])
+        let batch = BatchUniform {
+            n_charged_a,
+            n_charged_b,
+            b_offset,
+            cells: cells.uniform(),
+            ..BatchUniform::new(field, ref_b, coulomb)
+        };
+        (tables, batch)
     }
 }
 
@@ -310,12 +330,13 @@ fn validate(
 
 fn energy_source(spline_wgsl: &str) -> String {
     format!(
-        "{spline_wgsl}\n{}{}\n{}\n{}\n{}\n{}",
+        "{spline_wgsl}\n{}{}\n{}\n{}\n{}\n{}\n{}",
         maps::layout_consts(),
         include_str!("../../shaders/common.wgsl"),
         include_str!("../../shaders/spline_eval.wgsl"),
         include_str!("../../shaders/grid_common.wgsl"),
         switch::WGSL,
+        near::WGSL,
         include_str!("../../shaders/grid_energy.wgsl")
     )
 }
@@ -358,7 +379,7 @@ impl crate::backend::AsyncEnergyBackend for GridBackend {
 mod tests {
     use super::switch::Switch;
     use super::*;
-    use crate::backend::test_support::{bead, kt, lysozyme, no_gpu, pose_list};
+    use crate::backend::test_support::{bead, contact_poses, kt, lysozyme, no_gpu, pose_list};
     use crate::backend::GpuBackend;
     use crate::Vector3;
 
@@ -591,6 +612,41 @@ mod tests {
         let grid = GridBackend::new(trimer, b, &sys.splines, &sys.coulomb, spec).unwrap();
         let u = grid.compute_energy(&along_x(r_m - 0.5));
         assert!(u >= spec.energy_cap, "joint overlap read as {u} kJ/mol");
+    }
+
+    /// Pose by pose against the pair kernel on the same splines: near pairs
+    /// are exact, so only the far map's trilinear error remains: ≤ 5e-3 kT
+    /// at 0.5 Å on lysozyme, falling as h². Random contacts sweep B beads through every
+    /// cell neighbourhood the GPU's cell list returns.
+    #[test]
+    fn lysozyme_poses_match_pair_kernel() {
+        if no_gpu() {
+            return;
+        }
+        let sys = lysozyme();
+        let (a, b) = (sys.ref_a.clone(), sys.ref_b.clone());
+        // No bead reaches this cap, so overlaps aren't clamped either.
+        let spec = GridSpec {
+            energy_cap: maps::F16_MAX,
+            ..SPEC
+        };
+        let grid = GridBackend::new(a.clone(), b.clone(), &sys.splines, &sys.coulomb, spec);
+        let pairs = GpuBackend::new(a, b, &sys.splines, &sys.coulomb).unwrap();
+        let poses = [pose_list(), contact_poses(200, 28.0)].concat();
+        let got = grid.unwrap().compute_energies(&poses);
+        let want = pairs.compute_energies(&poses);
+        for ((pose, g), w) in poses.iter().zip(got).zip(want) {
+            let err = (g - w).abs() / kt();
+            // Overlaps sum large f32 terms, so their error scales with |βU|.
+            let tol = 1e-2 + 1e-4 * (w / kt()).abs();
+            assert!(
+                err < tol,
+                "R={} ω={}: βΔU {err:.2e}, βU {:.1}",
+                pose.r,
+                pose.omega,
+                w / kt()
+            );
+        }
     }
 
     /// The full multi-type, multi-bead path on the benchmark system: poses that

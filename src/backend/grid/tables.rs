@@ -38,19 +38,21 @@ pub(super) fn effective_range(splines: &SplinedPotentials, a: &Structure, b: &St
         .fold(0.0, f64::max)
 }
 
-/// Beads of `s` as the pose kernel reads them: all as (x, y, z, `code` of
-/// the bead), then the charged ones as (x, y, z, type); returns the charged
-/// count too. A codes its type, B its slot·2¹⁶ + type, which stays an exact
-/// f32 integer within [`MAX_TYPES`].
+/// Beads of `s` as the pose kernel reads them: all, in `order`, as (x, y,
+/// z, `code` of the bead), then the charged ones, in their own order, as
+/// (x, y, z, type); returns
+/// the charged count too. A codes its type, B its slot·2¹⁶ + type, which
+/// stays an exact f32 integer within [`MAX_TYPES`].
 pub(super) fn bead_list(
     s: &Structure,
     other: &Structure,
     coulomb: &CoulombParams,
     n_types: usize,
+    order: impl Iterator<Item = usize>,
     code: impl Fn(usize) -> u32,
 ) -> (Vec<[f32; 4]>, u32) {
-    let mut beads: Vec<_> = (s.pos.iter().enumerate())
-        .map(|(k, p)| pack_bead(p, code(k) as f32))
+    let mut beads: Vec<_> = order
+        .map(|k| pack_bead(&s.pos[k], code(k) as f32))
         .collect();
     let charged = charged_beads(s, other, coulomb, n_types);
     let n_charged = charged.len() as u32;

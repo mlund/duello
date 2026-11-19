@@ -148,3 +148,25 @@ pub fn pose_list() -> Vec<PoseParams> {
         })
         .collect()
 }
+
+/// Random orientations at R = `r_min` … `r_min` + 3 Å; seeded, so runs agree.
+/// Vertex vectors are uniform in the unit ball, so their directions are
+/// uniform on the sphere (`PoseParams` normalises them).
+pub fn contact_poses(n: usize, r_min: f64) -> Vec<PoseParams> {
+    use rand::{Rng, SeedableRng};
+    let mut rng = rand_pcg::Pcg64::seed_from_u64(12345);
+    let direction = |rng: &mut rand_pcg::Pcg64| loop {
+        let v = crate::Vector3::from_fn(|_, _| rng.gen_range(-1.0..1.0));
+        if (1e-6..1.0).contains(&v.norm_squared()) {
+            return v;
+        }
+    };
+    (0..n)
+        .map(|i| PoseParams {
+            r: r_min + (i % 4) as f64,
+            omega: rng.gen_range(0.0..std::f64::consts::TAU),
+            vertex_i: direction(&mut rng),
+            vertex_j: direction(&mut rng),
+        })
+        .collect()
+}

@@ -3,8 +3,10 @@
 //! `cargo test --release -p duello --lib grid_scan -- --ignored --nocapture`.
 
 use super::{GridBackend, GridSpec};
-use crate::backend::test_support::{chymotrypsinogen, lysozyme, no_gpu, TestPair, CGN_TEMPERATURE};
-use crate::backend::{EnergyBackend, GpuBackend, PoseParams};
+use crate::backend::test_support::{
+    chymotrypsinogen, contact_poses, lysozyme, no_gpu, TestPair, CGN_TEMPERATURE,
+};
+use crate::backend::{EnergyBackend, GpuBackend};
 use crate::icoscan::{compute_scan, ScanParams};
 use crate::report::{compute_pmf, PmfResult};
 use std::time::Instant;
@@ -157,28 +159,6 @@ fn cgn_backends() -> (GridBackend, GpuBackend) {
     )
 }
 
-/// Random orientations at contact, R = 33–36 Å; seeded, so runs agree.
-/// Vertex vectors are uniform in the unit ball, so their directions are
-/// uniform on the sphere (`PoseParams` normalises them).
-fn contact_poses(n: usize) -> Vec<PoseParams> {
-    use rand::{Rng, SeedableRng};
-    let mut rng = rand_pcg::Pcg64::seed_from_u64(12345);
-    let direction = |rng: &mut rand_pcg::Pcg64| loop {
-        let v = crate::Vector3::from_fn(|_, _| rng.gen_range(-1.0..1.0));
-        if (1e-6..1.0).contains(&v.norm_squared()) {
-            return v;
-        }
-    };
-    (0..n)
-        .map(|i| PoseParams {
-            r: 33.0 + (i % 4) as f64,
-            omega: rng.gen_range(0.0..std::f64::consts::TAU),
-            vertex_i: direction(&mut rng),
-            vertex_j: direction(&mut rng),
-        })
-        .collect()
-}
-
 /// Pose by pose against exact pairs where B₂ is decided: attractive contacts.
 /// Plain trilinear maps failed this at 1 Å (mean βΔU +2.1, contact Boltzmann
 /// weight 0.5), which gave B₂ the wrong sign; the split, power-transformed
@@ -190,7 +170,7 @@ fn grid_scan_contact_energies_cgn() {
         return;
     }
     let (grid, exact) = cgn_backends();
-    let poses = contact_poses(40_000);
+    let poses = contact_poses(40_000, 33.0);
     let (got, want) = (
         grid.compute_energies(&poses),
         exact.compute_energies(&poses),
