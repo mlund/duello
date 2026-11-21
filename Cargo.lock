@@ -855,7 +855,7 @@ dependencies = [
 [[package]]
 name = "faunus"
 version = "3.0.0-beta.3"
-source = "git+https://github.com/mlund/faunus-rs.git#b30ff93d84a383459c64b44521067ef7f23e476b"
+source = "git+https://github.com/mlund/faunus-rs.git#a720538fcd93b7bd1f6f527e777bfaebe1b8f447"
 dependencies = [
  "anyhow",
  "average 0.13.1",
@@ -1268,8 +1268,8 @@ dependencies = [
 
 [[package]]
 name = "icotable"
-version = "0.2.0"
-source = "git+https://github.com/mlund/icotable.git#e750074441f6695ba0245198022da7369f67ab61"
+version = "0.3.0"
+source = "git+https://github.com/mlund/icotable.git#68468f24956562ce131dc91769b5e0d9eae34bf9"
 dependencies = [
  "anyhow",
  "bincode",
