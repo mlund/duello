@@ -1269,7 +1269,7 @@ dependencies = [
 [[package]]
 name = "icotable"
 version = "0.2.0"
-source = "git+https://github.com/mlund/icotable.git#04e40bac78978118aff4a846921dd8a6af34a6cc"
+source = "git+https://github.com/mlund/icotable.git#e750074441f6695ba0245198022da7369f67ab61"
 dependencies = [
  "anyhow",
  "bincode",

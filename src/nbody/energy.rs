@@ -3,7 +3,7 @@
 use super::Pose;
 use crate::Table6DAdaptive;
 use anyhow::{anyhow, ensure, Result};
-use icotable::lookup::{Lookup6D, TabulatedInteraction};
+use icotable::lookup::Lookup6D;
 use icotable::PointGroup;
 
 /// Energy of one pair in kT, or a configuration the table forbids.
@@ -46,41 +46,19 @@ impl PairEnergy {
     }
 
     /// Separation is `b − a`: icotable's `orient` places B there relative to A.
-    /// Range rules follow faunus: the table's own lookup returns 0 outside
-    /// `[rmin, rmax]`, which would let bodies pass through each other.
+    /// The table is exchange symmetric, so this is the same energy whichever
+    /// body comes first, as detailed balance needs (see
+    /// [`icotable::lookup::Lookup6D::pair_energy`]).
     pub fn energy(&self, a: &Pose, b: &Pose, box_length: f64) -> PairValue {
         debug_assert!(
             box_length >= self.min_box_length(),
             "box {box_length} Å is below twice the table range"
         );
         let separation = minimum_image(b.position - a.position, box_length);
-        let r = separation.norm();
-        // A NaN distance passes both range checks and would read the contact bin.
-        assert!(r.is_finite(), "pair separation must be finite, got {r}");
-        let (rmin, rmax) = (self.table.rmin, self.table.rmax);
-        let u = if r < rmin {
-            f64::INFINITY
-        } else if r > rmax {
-            self.table.tail_energy(r)
-        } else {
-            self.lookup(&separation, a, b)
-        };
-        to_pair_value(u * self.beta)
-    }
-
-    /// Averages both orderings, as faunus does for identical molecules:
-    /// interpolation on different grid points breaks exchange symmetry, and
-    /// detailed balance needs one energy per pair whichever body comes first.
-    fn lookup(&self, separation: &crate::Vector3, a: &Pose, b: &Pose) -> f64 {
-        let forward = self.lookup_ordered(separation, a, b);
-        let reverse = self.lookup_ordered(&-separation, b, a);
-        0.5 * (forward + reverse)
-    }
-
-    fn lookup_ordered(&self, separation: &crate::Vector3, a: &Pose, b: &Pose) -> f64 {
-        let (r, omega, dir_a, dir_b) =
-            icotable::inverse_orient(separation, &a.orientation, &b.orientation);
-        self.table.lookup(r, omega, &dir_a, &dir_b, Some(self.beta))
+        let pair = self
+            .table
+            .pair_energy(&separation, &a.orientation, &b.orientation, self.beta);
+        to_pair_value(pair.energy * self.beta)
     }
 }
 
@@ -102,7 +80,7 @@ fn to_pair_value(u: f64) -> PairValue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nbody::test_tables::{physical_table, table};
+    use crate::nbody::test_tables::{physical_table, table, KT};
     use crate::{UnitQuaternion, Vector3};
 
     fn pose(x: f64, y: f64, z: f64) -> Pose {
@@ -162,6 +140,42 @@ mod tests {
             expected,
             max_relative = 0.02
         );
+    }
+
+    /// Random poses at fixed R must average exp(−u) to the exact value, as the
+    /// scan's PMF does. Coarse dihedral bins make the two lookup orders
+    /// disagree by many kT, so how they are combined matters.
+    #[test]
+    fn random_poses_average_the_exact_boltzmann_factor() {
+        use rand::{Rng, SeedableRng};
+        // Exchange symmetric; steep in directions and in the dihedral.
+        let g = |v: &Vector3| v.x + 2.0 * v.y + 3.0 * v.z;
+        let exact = |a: &Pose, b: &Pose| {
+            let d = b.position - a.position;
+            let r = d.norm();
+            let towards_b = a.orientation.inverse() * d / r;
+            let towards_a = b.orientation.inverse() * -d / r;
+            let twist = (a.orientation * Vector3::x()).dot(&(b.orientation * Vector3::x()));
+            KT * (2.0 * (g(&towards_b) + g(&towards_a)) + 12.0 * twist)
+        };
+        let energy = PairEnergy::new(physical_table(exact)).unwrap();
+        let mut rng = rand_pcg::Pcg64::seed_from_u64(7);
+        let (mut table_sum, mut exact_sum) = (0.0, 0.0);
+        for _ in 0..20_000 {
+            let a = Pose {
+                position: Vector3::zeros(),
+                orientation: crate::random_orientation(&mut rng),
+            };
+            let dir = crate::random_orientation(&mut rng) * Vector3::z();
+            let b = Pose {
+                position: dir * (6.0 + rng.gen_range(-0.1..0.1)),
+                orientation: crate::random_orientation(&mut rng),
+            };
+            table_sum += (-finite(energy.energy(&a, &b, BIG_BOX))).exp();
+            exact_sum += (-exact(&a, &b) / KT).exp();
+        }
+        // Averaging the two orders' energies instead reads 0.81 of the exact value.
+        approx::assert_relative_eq!(table_sum, exact_sum, max_relative = 0.05);
     }
 
     /// Averaging both lookup orders is only valid for identical bodies.
