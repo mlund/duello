@@ -43,7 +43,7 @@ fn pair_costs(energy: &PairEnergy, rmax: f64) {
         let mut sink = 0.0;
         for (a, b) in &pairs {
             if let super::PairValue::Finite(u) = energy.energy(a, b, l) {
-                sink += u;
+                sink += u.energy;
             }
         }
         let ns = start.elapsed().as_nanos() as f64 / pairs.len() as f64;

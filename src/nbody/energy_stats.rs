@@ -88,7 +88,7 @@ impl EnergyStats {
         for (i, a) in frame.poses.iter().enumerate() {
             for (j, b) in frame.poses.iter().enumerate().skip(i + 1) {
                 match self.energy.energy(a, b, frame.box_length) {
-                    PairValue::Finite(u) => total += u,
+                    PairValue::Finite(u) => total += u.mean_energy,
                     PairValue::Overlap => {
                         bail!("bodies {i} and {j} overlap in frame {}", frame.sweep)
                     }

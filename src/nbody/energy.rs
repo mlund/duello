@@ -3,13 +3,14 @@
 use super::Pose;
 use crate::Table6DAdaptive;
 use anyhow::{anyhow, ensure, Result};
-use icotable::lookup::Lookup6D;
+use icotable::lookup::{Interpolated, Lookup6D};
 use icotable::PointGroup;
 
-/// Energy of one pair in kT, or a configuration the table forbids.
+/// Energies of one pair in kT, or a configuration the table forbids. The free
+/// energy decides acceptance; the mean energy is what ⟨U⟩ sums.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PairValue {
-    Finite(f64),
+    Finite(Interpolated),
     Overlap,
 }
 
@@ -58,7 +59,10 @@ impl PairEnergy {
         let pair = self
             .table
             .pair_energy(&separation, &a.orientation, &b.orientation, self.beta);
-        to_pair_value(pair.energy * self.beta)
+        to_pair_value(Interpolated {
+            energy: pair.energy * self.beta,
+            mean_energy: pair.mean_energy * self.beta,
+        })
     }
 }
 
@@ -68,9 +72,9 @@ pub(super) fn minimum_image(d: crate::Vector3, box_length: f64) -> crate::Vector
 
 /// Repulsive slabs and contact give +∞; callers get a variant to branch on.
 /// NaN would mean a broken table, and must not pass as an ordinary rejection.
-fn to_pair_value(u: f64) -> PairValue {
-    debug_assert!(!u.is_nan(), "pair energy is NaN");
-    if u == f64::INFINITY {
+fn to_pair_value(u: Interpolated) -> PairValue {
+    debug_assert!(!u.energy.is_nan(), "pair energy is NaN");
+    if u.energy == f64::INFINITY {
         PairValue::Overlap
     } else {
         PairValue::Finite(u)
@@ -97,7 +101,7 @@ mod tests {
         let energy = PairEnergy::new(table(|r, _, _| 2.0 * r)).unwrap();
         // R = 6.2 Å snaps to the R = 6 bin: 12 kJ/mol = 4.8407456 kT.
         let u = energy.energy(&pose(0.0, 0.0, 0.0), &pose(6.2, 0.0, 0.0), BIG_BOX);
-        approx::assert_relative_eq!(finite(u), 4.8407456, max_relative = 1e-6);
+        approx::assert_relative_eq!(finite(u).energy, 4.8407456, max_relative = 1e-6);
     }
 
     /// Pins the frame convention: B placed with `icotable::orient` must read
@@ -136,46 +140,76 @@ mod tests {
         // bins and vertices, so allow table-resolution error. A mirrored
         // separation is off by far more (g changes sign).
         approx::assert_relative_eq!(
-            finite(energy.energy(&a, &b, BIG_BOX)),
+            finite(energy.energy(&a, &b, BIG_BOX)).energy,
             expected,
             max_relative = 0.02
         );
     }
 
+    /// Exchange symmetric; steep in directions and in the dihedral, so coarse
+    /// dihedral bins make the two lookup orders disagree by many kT.
+    fn steep(a: &Pose, b: &Pose) -> f64 {
+        let g = |v: &Vector3| v.x + 2.0 * v.y + 3.0 * v.z;
+        let d = b.position - a.position;
+        let r = d.norm();
+        let towards_b = a.orientation.inverse() * d / r;
+        let towards_a = b.orientation.inverse() * -d / r;
+        let twist = (a.orientation * Vector3::x()).dot(&(b.orientation * Vector3::x()));
+        KT * (2.0 * (g(&towards_b) + g(&towards_a)) + 12.0 * twist)
+    }
+
+    /// Uniform random poses with the mass centres about 6 Å apart.
+    fn random_poses(n: usize) -> Vec<(Pose, Pose)> {
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand_pcg::Pcg64::seed_from_u64(7);
+        (0..n)
+            .map(|_| {
+                let a = Pose {
+                    position: Vector3::zeros(),
+                    orientation: crate::random_orientation(&mut rng),
+                };
+                let dir = crate::random_orientation(&mut rng) * Vector3::z();
+                let b = Pose {
+                    position: dir * (6.0 + rng.gen_range(-0.1..0.1)),
+                    orientation: crate::random_orientation(&mut rng),
+                };
+                (a, b)
+            })
+            .collect()
+    }
+
     /// Random poses at fixed R must average exp(−u) to the exact value, as the
-    /// scan's PMF does. Coarse dihedral bins make the two lookup orders
-    /// disagree by many kT, so how they are combined matters.
+    /// scan's PMF does, so how the two lookup orders are combined matters.
     #[test]
     fn random_poses_average_the_exact_boltzmann_factor() {
-        use rand::{Rng, SeedableRng};
-        // Exchange symmetric; steep in directions and in the dihedral.
-        let g = |v: &Vector3| v.x + 2.0 * v.y + 3.0 * v.z;
-        let exact = |a: &Pose, b: &Pose| {
-            let d = b.position - a.position;
-            let r = d.norm();
-            let towards_b = a.orientation.inverse() * d / r;
-            let towards_a = b.orientation.inverse() * -d / r;
-            let twist = (a.orientation * Vector3::x()).dot(&(b.orientation * Vector3::x()));
-            KT * (2.0 * (g(&towards_b) + g(&towards_a)) + 12.0 * twist)
-        };
-        let energy = PairEnergy::new(physical_table(exact)).unwrap();
-        let mut rng = rand_pcg::Pcg64::seed_from_u64(7);
+        let energy = PairEnergy::new(physical_table(steep)).unwrap();
         let (mut table_sum, mut exact_sum) = (0.0, 0.0);
-        for _ in 0..20_000 {
-            let a = Pose {
-                position: Vector3::zeros(),
-                orientation: crate::random_orientation(&mut rng),
-            };
-            let dir = crate::random_orientation(&mut rng) * Vector3::z();
-            let b = Pose {
-                position: dir * (6.0 + rng.gen_range(-0.1..0.1)),
-                orientation: crate::random_orientation(&mut rng),
-            };
-            table_sum += (-finite(energy.energy(&a, &b, BIG_BOX))).exp();
-            exact_sum += (-exact(&a, &b) / KT).exp();
+        for (a, b) in random_poses(20_000) {
+            table_sum += (-finite(energy.energy(&a, &b, BIG_BOX)).energy).exp();
+            exact_sum += (-steep(&a, &b) / KT).exp();
         }
         // Averaging the two orders' energies instead reads 0.81 of the exact value.
         approx::assert_relative_eq!(table_sum, exact_sum, max_relative = 0.05);
+    }
+
+    /// Sampling with the free energy w, the mean energy must give the exact
+    /// ⟨u⟩. The free energy can't: it exceeds the mean wherever the stencil
+    /// or the two lookup orders disagree.
+    #[test]
+    fn boltzmann_weighted_mean_energy_is_the_exact_mean_energy() {
+        let energy = PairEnergy::new(physical_table(steep)).unwrap();
+        let (mut weight, mut mean, mut exact_weight, mut exact_mean) = (0.0, 0.0, 0.0, 0.0);
+        for (a, b) in random_poses(20_000) {
+            let e = finite(energy.energy(&a, &b, BIG_BOX));
+            let x = (-e.energy).exp();
+            weight += x;
+            mean += x * e.mean_energy;
+            let u = steep(&a, &b) / KT;
+            exact_weight += (-u).exp();
+            exact_mean += (-u).exp() * u;
+        }
+        // Within 0.05 kT here; the free energy reads 0.9 kT high.
+        approx::assert_abs_diff_eq!(mean / weight, exact_mean / exact_weight, epsilon = 0.2);
     }
 
     /// Averaging both lookup orders is only valid for identical bodies.
@@ -213,7 +247,7 @@ mod tests {
         r + 3.0 * a.x - 2.0 * b.y + a.z * b.z
     }
 
-    fn finite(u: PairValue) -> f64 {
+    fn finite(u: PairValue) -> Interpolated {
         let PairValue::Finite(u) = u else {
             panic!("expected finite, got {u:?}")
         };
@@ -232,7 +266,8 @@ mod tests {
         };
         let before = finite(energy.energy(&a, &b, BIG_BOX));
         let after = finite(energy.energy(&moved(&a), &moved(&b), BIG_BOX));
-        approx::assert_relative_eq!(before, after, max_relative = 1e-9);
+        approx::assert_relative_eq!(before.energy, after.energy, max_relative = 1e-9);
+        approx::assert_relative_eq!(before.mean_energy, after.mean_energy, max_relative = 1e-9);
     }
 
     /// Detailed balance needs one energy per pair, whichever body is "first".
@@ -255,7 +290,7 @@ mod tests {
         let energy = PairEnergy::new(table(|r, _, _| 2.0 * r)).unwrap();
         // 13.8 Å apart in a 20 Å box: the nearest image is 6.2 Å away.
         let u = energy.energy(&pose(0.5, 0.0, 0.0), &pose(14.3, 0.0, 0.0), 20.0);
-        approx::assert_relative_eq!(finite(u), 4.8407456, max_relative = 1e-6);
+        approx::assert_relative_eq!(finite(u).energy, 4.8407456, max_relative = 1e-6);
     }
 
     /// Without it there is no kT to convert to.
@@ -295,6 +330,6 @@ mod tests {
         let energy = PairEnergy::new(t).unwrap();
         // 5 · 2 · exp(-0.1 · 10) / 10 = 0.3678794 kJ/mol = 0.1484010 kT
         let u = energy.energy(&pose(0.0, 0.0, 0.0), &pose(0.0, 0.0, 10.0), BIG_BOX);
-        approx::assert_relative_eq!(finite(u), 0.1484010, max_relative = 1e-5);
+        approx::assert_relative_eq!(finite(u).energy, 0.1484010, max_relative = 1e-5);
     }
 }
