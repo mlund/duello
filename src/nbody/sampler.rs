@@ -4,6 +4,7 @@ use super::pair_cache::PairCache;
 use super::{PairEnergy, PairValue, Pose};
 use crate::{UnitQuaternion, Vector3};
 use anyhow::{bail, ensure, Result};
+use icotable::lookup::Interpolated;
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64;
 use std::sync::Arc;
@@ -128,7 +129,7 @@ impl Sampler {
         let mut sampler = Self {
             energy,
             poses: Vec::with_capacity(spec.n_bodies),
-            pairs: PairCache::new(0, |_, _| 0.0),
+            pairs: PairCache::new(0, |_, _| unreachable!()),
             spec,
             sweep: 0,
             rng: Pcg64::seed_from_u64(seed),
@@ -166,10 +167,11 @@ impl Sampler {
         std::mem::take(&mut self.stats)
     }
 
-    /// Total energy (kT) of the current poses, kept by the pair cache
-    /// instead of N²/2 table lookups.
+    /// Total mean energy (kT) of the current poses, the one to report as ⟨U⟩;
+    /// acceptance uses the free energy. Kept by the pair cache instead of
+    /// N²/2 table lookups.
     pub fn total_energy(&self) -> f64 {
-        self.pairs.total()
+        self.pairs.mean_total()
     }
 
     pub fn frame(&self) -> Frame {
@@ -196,9 +198,9 @@ impl Sampler {
         Ok(())
     }
 
-    fn accept(&mut self, i: usize, trial: Pose, du: f64) {
+    fn accept(&mut self, i: usize, trial: Pose) {
         self.poses[i] = trial;
-        self.pairs.commit(i, du);
+        self.pairs.commit(i);
     }
 
     fn overlaps_any(&self, pose: &Pose) -> bool {
@@ -219,8 +221,8 @@ impl Sampler {
         };
         let du = self.energy_change(i, &trial);
         let accepted = self.metropolis(du);
-        if let (true, Some(du)) = (accepted, du) {
-            self.accept(i, trial, du);
+        if accepted {
+            self.accept(i, trial);
         }
         let counter = match translate {
             true => &mut self.stats.translate,
@@ -313,7 +315,7 @@ fn wrap(x: f64, l: f64) -> f64 {
 }
 
 /// The current state never overlaps, as overlapping moves are always rejected.
-fn finite_or_zero(u: PairValue, j: usize) -> f64 {
+fn finite_or_zero(u: PairValue, j: usize) -> Interpolated {
     match u {
         PairValue::Finite(u) => u,
         PairValue::Overlap => unreachable!("accepted state overlaps body {j}"),
