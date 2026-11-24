@@ -328,7 +328,6 @@ mod tests {
                 temperature: 298.15,
                 max_ndiv: 2,
                 gradient_threshold: 0.5,
-                cutoff: 30.0,
                 grid_size: 200,
                 homo_dimer: true,
                 subdivision: Default::default(),

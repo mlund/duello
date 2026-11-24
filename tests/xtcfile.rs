@@ -29,8 +29,6 @@ fn scan_writes_coupled_trajectory_and_energies() {
             "2",
             "--max-ndiv",
             "0",
-            "--cutoff",
-            "2000",
             "--molarity",
             "0.05",
         ])

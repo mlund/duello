@@ -17,10 +17,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// Not exhaustive. CLI-only inputs that also shape the table are not recorded:
 /// fixed dielectric, pKa overrides, hydrophobic scaling, chain selection,
-/// locator, and spline grid type/shift/energy cap. A `--top` file is kept in
+/// locator, and spline grid type/energy cap. A `--top` file is kept in
 /// [`ScanArchive::topology_yaml`]; it replaces coarse-graining, so `model` is
-/// then `"custom topology"` and `ph` has no meaning. `cutoff` is the
-/// short-range spline cutoff actually used.
+/// then `"custom topology"` and `ph` has no meaning.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ScanSettings {
     pub ph: f64,
@@ -38,7 +37,6 @@ pub struct ScanSettings {
     pub temperature: f64,
     pub max_ndiv: usize,
     pub gradient_threshold: f64,
-    pub cutoff: f64,
     pub grid_size: usize,
     pub homo_dimer: bool,
     /// Angular mesh scheme of the table. Defaulted so trajectory headers
@@ -388,7 +386,6 @@ pub(crate) mod tests {
                 temperature: 298.15,
                 max_ndiv: 1,
                 gradient_threshold: 0.5,
-                cutoff: 30.0,
                 grid_size: 200,
                 homo_dimer: false,
                 subdivision: Default::default(),

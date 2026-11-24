@@ -23,14 +23,7 @@ fn scan(dir: &Path) {
             "--max-ndiv",
             "0",
         ])
-        .args([
-            "--cutoff",
-            "60",
-            "--ionic-strength",
-            "0.05",
-            "--backend",
-            "simd",
-        ])
+        .args(["--ionic-strength", "0.05", "--backend", "simd"])
         .args(["--savescan", "scan.duello.zip"]));
 }
 

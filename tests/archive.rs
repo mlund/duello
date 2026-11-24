@@ -26,14 +26,7 @@ fn cli_scan_archive_loads_with_its_results() {
             "--max-ndiv",
             "1",
         ])
-        .args([
-            "--cutoff",
-            "2000",
-            "--ionic-strength",
-            "0.05",
-            "--backend",
-            "reference",
-        ])
+        .args(["--ionic-strength", "0.05", "--backend", "reference"])
         .args(["--savescan", "scan.duello.zip"]));
 
     let bytes = std::fs::read(dir.join("scan.duello.zip")).unwrap();
@@ -48,7 +41,6 @@ fn cli_scan_archive_loads_with_its_results() {
     assert!(archive.settings.homo_dimer);
     assert_eq!(archive.settings.ionic_strength, 0.05);
     assert_eq!(archive.settings.model, "custom topology");
-    assert_eq!(archive.settings.cutoff, 2000.0); // reference backend: full cutoff
     assert!(!archive.bodies[0].kinds.is_empty());
     let meta = archive.table.metadata.as_ref().unwrap();
     assert_eq!(meta.temperature, Some(298.15));

@@ -12,13 +12,11 @@ use std::process::Command;
 const REL_TOL: f64 = 1e-9;
 
 /// Small and fast; resolution is irrelevant to a behaviour check.
-const COARSE: [&str; 10] = [
+const COARSE: [&str; 8] = [
     "--dr",
     "2",
     "--max-ndiv",
     "1",
-    "--cutoff",
-    "2000",
     "--molarity",
     "0.05",
     "--backend",
@@ -108,7 +106,7 @@ fn atom_scan_b2() {
         .arg("--top")
         .arg(example("cppm/topology.yaml"))
         .args(["--rmin", "24", "--rmax", "30"])
-        .args(&COARSE[..8])); // atom-scan has no --backend
+        .args(&COARSE[..6])); // atom-scan has no --backend
     assert_rel_eq(b2(&dir), 4971.167881205227);
 }
 
@@ -189,4 +187,21 @@ fn colliding_input_stems_are_rejected() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("share the file name"));
     assert!(!dir.join("pmf.dat").exists());
+}
+
+/// The topology sets every pair's range, so the CLI has no cutoff to give.
+#[test]
+fn spline_cutoff_options_are_gone() {
+    let dir = workdir("no_cutoff");
+    for flag in [
+        ["--cutoff", "30"],
+        ["--sr-cutoff", "30"],
+        ["--grid", "shift=false"],
+    ] {
+        let out = cppm_scan(&dir, "cppm/cppm-p00.xyz", &example("cppm/cppm-p00.xyz"))
+            .args(flag)
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{flag:?} was accepted");
+    }
 }

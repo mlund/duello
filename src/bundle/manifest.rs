@@ -1,15 +1,20 @@
 //! `manifest.json`: what the archive holds, and the format version readers check.
 
 use super::zipio::{Entry, Reader};
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
 use zip::DateTime;
 
 const PATH: &str = "manifest.json";
 const FORMAT: &str = "duello-session";
-/// Bumped on any layout or JSON shape change; readers refuse other versions.
-pub const FORMAT_VERSION: u32 = 9;
+/// Bumped on any layout or JSON shape change; readers refuse versions outside
+/// [`OLDEST_READ`]..=this.
+pub const FORMAT_VERSION: u32 = 10;
+
+/// Oldest version still read. Version 9 also recorded a global spline cutoff,
+/// dropped on read: its stored tables were splined and shifted at that cutoff,
+/// so they load as computed then, not as the recorded topology alone implies.
+const OLDEST_READ: u32 = 9;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -54,17 +59,17 @@ impl Manifest {
         let json: serde_json::Value = zip.json(PATH)?;
         let head = Head::deserialize(&json).context(PATH)?;
         ensure!(head.format == FORMAT, "not a duello session file");
-        match head.version.cmp(&FORMAT_VERSION) {
-            Ordering::Less => bail!(
-                "session format version {} is older than this duello reads ({FORMAT_VERSION}); re-run the scan",
-                head.version
-            ),
-            Ordering::Greater => bail!(
-                "session format version {} is newer than this duello reads ({FORMAT_VERSION}); update duello",
-                head.version
-            ),
-            Ordering::Equal => Ok(Self::deserialize(json).context(PATH)?),
-        }
+        ensure!(
+            head.version >= OLDEST_READ,
+            "session format version {} is older than this duello reads ({OLDEST_READ}); re-run the scan",
+            head.version
+        );
+        ensure!(
+            head.version <= FORMAT_VERSION,
+            "session format version {} is newer than this duello reads ({FORMAT_VERSION}); update duello",
+            head.version
+        );
+        Self::deserialize(json).context(PATH)
     }
 }
 

@@ -102,7 +102,7 @@ impl PairSystem {
             anyhow::bail!("no structure loaded");
         };
         let nonbonded = origin.nonbonded(&topology, spec.medium)?;
-        let pair_matrix = PairMatrix::new(nonbonded, topology.atomkinds(), spec.medium);
+        let pair_matrix = PairMatrix::new(nonbonded, topology.atomkinds(), spec.medium)?;
         Ok(Self {
             ref_a,
             ref_b,

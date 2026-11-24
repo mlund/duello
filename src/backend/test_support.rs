@@ -7,7 +7,7 @@ use crate::system::{CgOptions, PairSpec, PairSystem, Source};
 use crate::Vector3;
 use faunus::interatomic::coulomb::{Medium, Salt};
 use faunus::interatomic::twobody::{GridType, SplineConfig};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const TEMPERATURE: f64 = 298.15;
 
@@ -29,13 +29,6 @@ impl TestPair {
     /// Exact (unsplined) reference for any structures typed by this force field.
     pub fn into_exact(self, a: Structure, b: Structure) -> CpuBackend {
         CpuBackend::new(a, b, self.pair_matrix)
-    }
-
-    /// The same system with splines cut at `cutoff` (Å), as `--cutoff`;
-    /// [`Self::into_exact`] stays uncut.
-    pub fn with_cutoff(mut self, cutoff: f64) -> Self {
-        self.splines = sr_splines(&self.pair_matrix, cutoff);
-        self
     }
 
     /// Atom types in A, split by whether they carry charge.
@@ -68,26 +61,52 @@ pub fn bead(id: usize) -> Structure {
     }
 }
 
-/// The CLAUDE.md benchmark system: 2CDS × 2CDS, 20 mM NaCl, 150 Å cutoff.
+fn calvados_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/calvados3")
+}
+
+/// The CLAUDE.md benchmark system: 2CDS × 2CDS, 20 mM NaCl.
 pub fn lysozyme() -> TestPair {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/calvados3");
-    let (xyz, top) = (dir.join("2CDS.xyz"), dir.join("topology.yaml"));
+    lysozyme_with_topology(&calvados_dir().join("topology.yaml"))
+}
+
+/// Lysozyme with its Ashbaugh–Hatch pairs cut at `range` (Å) instead of 20 Å.
+pub fn lysozyme_with_range(range: f64) -> TestPair {
+    let yaml =
+        std::fs::read_to_string(calvados_dir().join("topology.yaml")).expect("topology reads");
+    assert!(yaml.contains("cutoff: 20.0"), "fixture's AH range moved");
+    let top = std::env::temp_dir().join(format!(
+        "duello-lysozyme-{range}-{}.yaml",
+        std::process::id()
+    ));
+    std::fs::write(
+        &top,
+        yaml.replace("cutoff: 20.0", &format!("cutoff: {range}")),
+    )
+    .unwrap();
+    let pair = lysozyme_with_topology(&top);
+    let _ = std::fs::remove_file(top);
+    pair
+}
+
+fn lysozyme_with_topology(top: &Path) -> TestPair {
+    let xyz = calvados_dir().join("2CDS.xyz");
     let medium = Medium::salt_water(TEMPERATURE, Salt::SodiumChloride, 0.02);
     let spec = PairSpec {
         a: Source::File(&xyz),
         b: None,
-        top: Some(&top),
+        top: Some(top),
         chains: [&[], &[]],
         cg: CgOptions::default(),
         medium: &medium,
     };
-    load(spec, 150.0)
+    load(spec)
 }
 
 /// Temperature (K) of the chymotrypsinogen fixture.
 pub const CGN_TEMPERATURE: f64 = 300.0;
 
-/// Chymotrypsinogen A (7KTZ) at pH 7, 15 mM, cutoff 30 Å, coarse-grained
+/// Chymotrypsinogen A (7KTZ) at pH 7, 15 mM, coarse-grained
 /// with `model`: a pair whose B₂ is set by contact attraction, unlike
 /// lysozyme's excluded volume.
 pub fn chymotrypsinogen(model: &str, single_bead: bool) -> TestPair {
@@ -106,13 +125,13 @@ pub fn chymotrypsinogen(model: &str, single_bead: bool) -> TestPair {
         cg,
         medium: &medium,
     };
-    load(spec, 30.0) // the CLI's default --cutoff
+    load(spec)
 }
 
-fn load(spec: PairSpec, cutoff: f64) -> TestPair {
+fn load(spec: PairSpec) -> TestPair {
     let system = PairSystem::load(spec).expect("example loads");
     TestPair {
-        splines: sr_splines(&system.pair_matrix, cutoff),
+        splines: sr_splines(&system.pair_matrix),
         coulomb: system.pair_matrix.coulomb_params().clone(),
         ref_a: system.ref_a,
         ref_b: system.ref_b,
@@ -120,15 +139,16 @@ fn load(spec: PairSpec, cutoff: f64) -> TestPair {
     }
 }
 
-/// Short-range splines as the CLI builds them by default, out to `cutoff` (Å).
-pub fn sr_splines(pair_matrix: &PairMatrix, cutoff: f64) -> SplinedPotentials {
+/// Short-range splines as the CLI builds them by default.
+pub fn sr_splines(pair_matrix: &PairMatrix) -> SplinedPotentials {
     let config = SplineConfig {
         n_points: 200,
-        shift_energy: true,
         grid_type: GridType::PowerLaw2,
         ..Default::default()
     };
-    pair_matrix.create_sr_splines(cutoff, config)
+    pair_matrix
+        .create_sr_splines(config)
+        .expect("splines build")
 }
 
 /// 21 poses (3 R × 7 orientations) spanning contact (30 Å), mid (40 Å) and tail (55 Å) separations.
@@ -181,4 +201,31 @@ pub fn contact_poses(n: usize, r_min: f64) -> Vec<PoseParams> {
             vertex_j: direction(&mut rng),
         })
         .collect()
+}
+
+/// Kernel changes must keep agreeing with the exact pair sum. Poses that carry
+/// Boltzmann weight match to the spline error (1e-3, with a floor for f32 noise
+/// near U = 0). Overlaps differ by the spline's linear extrapolation below
+/// r_min, so they only need to stay repulsive.
+pub fn assert_matches_exact(label: &str, poses: &[PoseParams], got: &[f64], exact: &CpuBackend) {
+    use super::EnergyBackend;
+    let u_weighted = 10.0 * kt();
+    let mut n_weighted = 0;
+    for (pose, &u) in poses.iter().zip(got) {
+        let u_exact = exact.compute_energy(pose);
+        let weighted = u_exact < u_weighted;
+        n_weighted += usize::from(weighted);
+        let ok = if weighted {
+            (u - u_exact).abs() < 1e-3 * u_exact.abs() + 0.05
+        } else {
+            u > u_weighted
+        };
+        assert!(
+            ok,
+            "R={} ω={}: {label} {u:.4} vs exact {u_exact:.4} kJ/mol",
+            pose.r, pose.omega
+        );
+    }
+    // Guards against a pose list that only exercises the repulsive branch.
+    assert!(n_weighted >= 14, "only {n_weighted} weighted poses");
 }
