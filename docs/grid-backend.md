@@ -23,7 +23,7 @@ The far part's attractive tail is curved, so plain trilinear lookups would be bi
 Map nodes therefore hold f − h²/12·∇²f, where h is the spacing and ∇²f = f″ + 2f′/r is computed per pair by central differences (step 0.1 Å).
 Linear interpolation errs by h²/12·f″ on average over a cell, so this cancels the leading error on average where f is smooth.
 The error at any single point is still O(h²), and B₂ is not guaranteed to be unbiased.
-A short `--cutoff` leaves a kink where the stencil crosses it; there the correction is right only on average over node positions, so check convergence when using one.
+A pair range shorter than the far part leaves a kink where the stencil crosses it; there the correction is right only on average over node positions, so check convergence.
 
 ## Overlaps
 
@@ -34,6 +34,6 @@ The cap acts on a bead's net near energy, so a bead pressed into one A bead but 
 
 Maps are stored as f16 in 2×2×2 bricks, which keeps lookups cache-friendly.
 They take about 2 bytes × nodes × B atom types of GPU memory, about 200 MB for lysozyme (2CDS) at 0.5 Å.
-The box covers A plus the range where the short-range potentials are nonzero, independent of `--cutoff` and `--rmax`.
+The box covers A plus the range where the short-range potentials are nonzero, independent of `--rmax`.
 
 Accuracy and speed comparisons are in [BENCHMARKS.md](../BENCHMARKS.md).

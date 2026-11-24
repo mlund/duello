@@ -22,7 +22,6 @@ for mol in $MOLARITIES; do
             --rmin 24 --rmax 60 --dr 2.0 \
             --top topology.yaml \
             --max-ndiv 0 \
-            --cutoff 2000 \
             --molarity $mol \
             --temperature 293.15 \
             --savetable $table \

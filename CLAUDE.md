@@ -1,8 +1,10 @@
 - Performance benchmarks should be based on:
 ~~~
 cd examples/calvados3/
-duello scan -1 2CDS.xyz -2 2CDS.xyz --rmin 26 --rmax 60 --dr 0.5 --top topology.yaml --cutoff 150 --molarity 0.02
+duello scan -1 2CDS.xyz -2 2CDS.xyz --rmin 26 --rmax 60 --dr 0.5 --top topology.yaml --molarity 0.02
 ~~~
+  Timings from before the topology set each pair's spline range (`--cutoff 150`
+  splined out to 150 Å) are not comparable.
   With a GPU this runs the grid backend (1.0 Å maps); pin `--backend gpu` for the
   exact-pair GPU kernel, e.g. to compare with baselines from before the grid.
   The `--savescan` archive below is then grid-filled too.

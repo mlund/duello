@@ -51,7 +51,7 @@
 - [Tuning and Options](#tuning-and-options)
   - [Angular Resolution](#angular-resolution)
   - [Adaptive Resolution](#adaptive-resolution)
-  - [Cutoff Settings](#cutoff-settings)
+  - [Interaction Range](#interaction-range)
   - [Spline Grid](#spline-grid)
   - [Compute Backends](#compute-backends)
 - [Interaction Models](#interaction-models)
@@ -169,11 +169,10 @@ duello scan \
     --rmin 37 --rmax 50 --dr 0.5 \
     --top topology.yaml \
     --max-ndiv 3 \
-    --cutoff 30 \
     --ionic-strength 0.05 \
     --temperature 298.15 \
     --backend auto \
-    --grid "type=powerlaw2,size=200,shift=true"
+    --grid "type=powerlaw2,size=200"
 ```
 
 ### Key Options
@@ -186,8 +185,6 @@ duello scan \
 | `-a, --top`              | --            | Topology YAML (required for XYZ, auto-generated for PDB/CIF) |
 | `-M, --ionic-strength`   | 0.1           | Ionic strength (mol/L) for titration, pair energy and HSY; alias `--molarity` |
 | `-T, --temperature`      | 298.15        | Temperature (K)                                       |
-| `--cutoff`               | 30.0          | Short-range spline cutoff (angstrom)                  |
-| `--sr-cutoff`            | = `--cutoff`  | Fine-tuned SR potential range (angstrom)              |
 | `--max-ndiv`             | 3             | Icosphere subdivision level (see [Angular Resolution](#angular-resolution)) |
 | `--gradient-threshold`   | 0.5           | Adaptive resolution threshold (1/rad)                 |
 | `--backend`              | auto          | Compute backend: `auto`, `gpu`, `grid`, `simd`, `reference` |
@@ -248,8 +245,7 @@ duello atom-scan \
     --atom Na \
     --rmin 2.0 --rmax 60 --dr 0.5 \
     --top topology.yaml \
-    --ionic-strength 0.02 \
-    --cutoff 150
+    --ionic-strength 0.02
 ```
 
 The output is a flat binary table (`Table3DFlat`) with barycentric interpolation on the icosphere mesh.
@@ -475,16 +471,14 @@ Duello automatically classifies each radial slab into tiers based on the angular
 
 The `--gradient-threshold` flag (default: 0.5 1/rad) controls when resolution is reduced. A summary is printed after table generation.
 
-## Cutoff Settings
+## Interaction Range
 
-The `--cutoff` flag (default 30 angstrom) sets the spline range for short-range pair potentials in GPU/SIMD backends. Beyond this distance the spline returns zero.
-It does **not** affect the analytical Coulomb/Yukawa evaluation, which has no cutoff.
-
-Important rules:
-- `--cutoff` must be >= the largest cutoff defined in the topology (otherwise the spline silently truncates the potential).
-- Setting `--cutoff` much larger than needed wastes spline points but is otherwise harmless.
-- Use `--sr-cutoff` to match the actual SR potential range for best accuracy (e.g. `--sr-cutoff 20` when AshbaughHatch has cutoff 20).
-- The `reference` backend ignores `--cutoff` and evaluates potentials with their native cutoffs.
+The topology sets each short-range pair's range, so every backend evaluates the
+same model: splines are tabulated over each pair's own range, unshifted, and are
+zero beyond it. Every pair must therefore be bounded, and the topology must not
+contain Coulomb terms, since duello adds Yukawa electrostatics from the medium.
+For Lennard-Jones cut and shifted at rc, use
+`!AshbaughHatch {mixing: …, cutoff: rc}` with `hydrophobicity: !Lambda 1.0` atoms.
 
 ## Spline Grid
 
@@ -494,10 +488,9 @@ The `--grid` flag controls spline interpolation of short-range potentials (GPU/S
 |--------------|----------------------|-------------|-----------------------------------------------|
 | `type`       | `powerlaw2`, `invr2` | `powerlaw2` | Grid spacing (`invr2` avoids sqrt in lookup)  |
 | `size`       | integer              | `200`       | Number of grid points                         |
-| `shift`      | `true`, `false`      | `true`      | Shift energy to zero at cutoff                |
 | `energy_cap` | float or `none`      | `none`      | Cap repulsive wall (kJ/mol) for f32 precision |
 
-Example: `--grid "type=invr2,size=1000,shift=false,energy_cap=50"`
+Example: `--grid "type=invr2,size=1000,energy_cap=50"`
 
 ## Compute Backends
 
@@ -518,7 +511,7 @@ The grid backend accelerates repeated pose evaluations by combining direct calcu
 
 `--grid-spacing` controls the map resolution. Smaller spacing generally improves accuracy and increases memory use; halving the spacing increases map memory by approximately eightfold. The default is 1 Å.
 
-Check convergence for your system by reducing the spacing and comparing B₂ with `--backend gpu`, particularly when attraction dominates or B₂ is close to zero, or with a short `--cutoff`. The GPU backend evaluates every bead pair using the configured radial splines.
+Check convergence for your system by reducing the spacing and comparing B₂ with `--backend gpu`, particularly when attraction dominates or B₂ is close to zero, or with short pair ranges. The GPU backend evaluates every bead pair using the configured radial splines.
 
 `--grid-cap` limits large repulsive energies. Keep the default unless you have checked that changing it leaves your results unchanged.
 
