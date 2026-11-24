@@ -81,13 +81,10 @@ fn prepare_scan(req: &WebScanRequest) -> anyhow::Result<PreparedScan> {
 
     let spline_config = SplineConfig {
         n_points: settings.grid_size,
-        shift_energy: true,
         grid_type: faunus::interatomic::twobody::GridType::PowerLaw2,
         ..Default::default()
     };
-    let sr_splines = system
-        .pair_matrix
-        .create_sr_splines(settings.cutoff, spline_config);
+    let sr_splines = system.pair_matrix.create_sr_splines(spline_config)?;
 
     let rmin = crate::steric::resolve_rmin(
         (!settings.rmin_auto).then_some(settings.rmin),
@@ -265,7 +262,6 @@ pub(crate) mod tests {
                 temperature: 298.15,
                 max_ndiv: 0,
                 gradient_threshold: 0.5,
-                cutoff: 30.0,
                 grid_size: 200,
                 homo_dimer: mol1 == mol2,
                 subdivision: Subdivision::default(),
@@ -409,6 +405,25 @@ pub(crate) mod tests {
             .collect();
         assert!(names.contains(&"ALA"), "{names:?}");
         assert!(!names.contains(&"LEU"), "{names:?}");
+    }
+
+    /// D3: the built-in bounded models scan, and their splines stop at the model's range.
+    #[test]
+    fn built_in_models_spline_to_their_range() {
+        use cgkitten::forcefield::MODEL_RANGE;
+        use faunus::interatomic::twobody::IsotropicTwobodyEnergy;
+        use faunus::topology::FindByName;
+        for model in ["kimhummer", "pasquier"] {
+            let mut req = request(&["LEU", "LYS"], &["ALA", "LYS"]);
+            req.settings.model = model.into();
+            let prep = prepare_scan(&req).unwrap_or_else(|e| panic!("{model}: {e:#}"));
+            let kinds = prep.system.topology.atomkinds();
+            let id = |name| kinds.find_name(name).unwrap().id();
+            let u = prep.sr_splines.get(id("LEU"), id("ALA"));
+            assert_ne!(u.isotropic_twobody_energy(36.0), 0.0, "{model}");
+            let beyond = (MODEL_RANGE + 0.1).powi(2);
+            assert_eq!(u.isotropic_twobody_energy(beyond), 0.0, "{model}");
+        }
     }
 
     /// Kim-Hummer lists pairs explicitly, so a kind only B has (ALA) must still meet

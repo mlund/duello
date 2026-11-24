@@ -132,12 +132,11 @@ impl From<SplineGrid> for GridType {
     }
 }
 
-/// Grid interpolation options parsed from "type=X,size=Y,shift=bool" format
+/// Grid interpolation options parsed from "type=X,size=Y" format
 #[derive(Clone, Copy, Debug)]
 pub struct GridOptions {
     pub grid_type: SplineGrid,
     pub size: usize,
-    pub shift: bool,
     /// If set, cap |U(r_min)| to reduce f32 precision loss on GPU/SIMD
     pub energy_cap: Option<f64>,
 }
@@ -147,7 +146,6 @@ impl Default for GridOptions {
         Self {
             grid_type: SplineGrid::Powerlaw2,
             size: 200,
-            shift: true,
             energy_cap: None,
         }
     }
@@ -175,13 +173,6 @@ impl std::str::FromStr for GridOptions {
                         .trim()
                         .parse()
                         .map_err(|_| format!("invalid size '{value}'"))?;
-                }
-                "shift" => {
-                    opts.shift = match value.trim().to_lowercase().as_str() {
-                        "true" | "1" | "yes" => true,
-                        "false" | "0" | "no" => false,
-                        _ => return Err(format!("invalid shift value '{value}'")),
-                    };
                 }
                 "energy_cap" => {
                     let v = value.trim();
@@ -280,9 +271,6 @@ enum Commands {
         /// pair energy and the HSY reference; estimate it yourself, e.g. from free salt.
         #[arg(short = 'M', long, visible_alias = "molarity", default_value = "0.1")]
         ionic_strength: f64,
-        /// Cutoff distance for pair-wise interactions (angstroms)
-        #[arg(long, default_value = "30.0")]
-        cutoff: f64,
         /// Temperature in K
         #[arg(short = 'T', long, default_value = "298.15")]
         temperature: f64,
@@ -321,9 +309,6 @@ enum Commands {
         /// pair energy and the HSY reference; estimate it yourself, e.g. from free salt.
         #[arg(short = 'M', long, visible_alias = "molarity", default_value = "0.1")]
         ionic_strength: f64,
-        /// Cutoff distance for pair-wise interactions (angstroms)
-        #[arg(long, default_value = "30.0")]
-        cutoff: f64,
         /// Temperature in K
         #[arg(short = 'T', long, default_value = "298.15")]
         temperature: f64,
@@ -364,9 +349,6 @@ enum Commands {
         /// pair energy and the HSY reference; estimate it yourself, e.g. from free salt.
         #[arg(short = 'M', long, visible_alias = "molarity", default_value = "0.1")]
         ionic_strength: f64,
-        /// Cutoff distance for pair-wise interactions (angstroms)
-        #[arg(long, default_value = "30.0")]
-        cutoff: f64,
         /// Temperature in K
         #[arg(short = 'T', long, default_value = "298.15")]
         temperature: f64,
@@ -399,16 +381,10 @@ enum Commands {
         /// Compute backend
         #[arg(long, value_enum, default_value = "auto")]
         backend: Backend,
-        /// Grid interpolation: type=powerlaw2|invr2,size=N,shift=bool
-        #[arg(
-            long,
-            default_value = "type=powerlaw2,size=200,shift=true,energy_cap=none"
-        )]
+        /// Spline grid: type=powerlaw2|invr2,size=N,energy_cap=none|kJ/mol.
+        /// Each pair is tabulated over its own range from the topology.
+        #[arg(long, default_value = "type=powerlaw2,size=200,energy_cap=none")]
         grid: GridOptions,
-        /// Short-range spline cutoff for GPU/SIMD split path (angstroms).
-        /// Defaults to --cutoff if not set. Set to SR potential range for best accuracy.
-        #[arg(long)]
-        sr_cutoff: Option<f64>,
         /// Map node spacing of the grid backend (used by `auto` on a GPU), in
         /// angstroms; its error scales as the square. Ignored by gpu/simd/reference
         #[arg(long, default_value_t = DEFAULT_GRID_SPACING)]
@@ -509,13 +485,10 @@ fn save_scan_request(
         dr,
         topology: top_file,
         ionic_strength,
-        cutoff,
         temperature,
         max_ndiv,
         gradient_threshold,
-        backend,
         grid,
-        sr_cutoff,
         cg,
         locator,
         ..
@@ -524,11 +497,6 @@ fn save_scan_request(
         bail!("Unknown command");
     };
     let cg = cg.options()?;
-    // Mirrors do_scan: only the reference backend splines the full cutoff.
-    let spline_cutoff = match backend {
-        Backend::Reference => *cutoff,
-        _ => sr_cutoff.unwrap_or(*cutoff),
-    };
     // Without generated CG, a --top file defined the system, not cg.model.
     let model = match generated {
         Some(_) => cg.model,
@@ -546,7 +514,6 @@ fn save_scan_request(
         temperature: *temperature,
         max_ndiv: *max_ndiv,
         gradient_threshold: *gradient_threshold,
-        cutoff: spline_cutoff,
         grid_size: grid.size,
         homo_dimer,
         subdivision: (*locator).into(),
@@ -575,7 +542,6 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         dr,
         topology: top_file,
         ionic_strength,
-        cutoff,
         temperature,
         fixed_dielectric,
         pmf_file,
@@ -587,7 +553,6 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         locator,
         backend: backend_type,
         grid,
-        sr_cutoff,
         grid_spacing,
         grid_cap,
         cg,
@@ -701,32 +666,23 @@ fn do_scan(cmd: &Commands) -> Result<()> {
             .transpose()?,
     };
 
-    // energy_cap only applies to SR-only splines (GPU/SIMD split path).
-    // The combined spline (CPU) includes Coulomb which diverges as 1/r,
-    // so capping it would corrupt the potential.
-    let sr_grid_trim = grid
-        .energy_cap
-        .map_or(GridTrim::NoTrim, |cap| GridTrim::RepulsiveDecay {
-            energy_cap: cap,
-        });
-    let base_spline_config = SplineConfig {
-        n_points: grid.size,
-        shift_energy: grid.shift,
-        grid_type: grid.grid_type.into(),
-        ..Default::default()
-    };
-
     if let Backend::Reference = backend_type {
         let backend = backend::cpu::CpuBackend::new(ref_a, ref_b, pair_matrix);
         return icoscan::do_icoscan(&scan_config, &backend);
     }
-    let sr_cut = sr_cutoff.unwrap_or(*cutoff);
-    info!("Split path: SR spline (cutoff={sr_cut:.1} Å) + analytical Coulomb");
-    let sr_spline_config = SplineConfig {
-        grid_trim: sr_grid_trim,
-        ..base_spline_config
+    info!("Split path: SR splines over each pair's range + analytical Coulomb");
+    // Safe to cap: Coulomb is evaluated analytically, outside the splines.
+    let spline_config = SplineConfig {
+        n_points: grid.size,
+        grid_type: grid.grid_type.into(),
+        grid_trim: grid
+            .energy_cap
+            .map_or(GridTrim::NoTrim, |cap| GridTrim::RepulsiveDecay {
+                energy_cap: cap,
+            }),
+        ..Default::default()
     };
-    let splined = pair_matrix.create_sr_splines(sr_cut, sr_spline_config);
+    let splined = pair_matrix.create_sr_splines(spline_config)?;
     let split = SplitPath {
         ref_a,
         ref_b,
@@ -798,7 +754,6 @@ fn do_atom_scan(cmd: &Commands) -> Result<()> {
         dr,
         topology: top_file,
         ionic_strength,
-        cutoff: _,
         temperature,
         output,
         pmf_file,
@@ -1009,7 +964,6 @@ fn do_potential(cmd: &Commands) -> Result<()> {
         radius,
         topology,
         ionic_strength,
-        cutoff: _,
         temperature,
     } = cmd
     else {

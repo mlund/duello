@@ -287,9 +287,9 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "cgkitten"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61743d20e18a41b4b48674af5be493a25bde1a52e599961db4c9a7c41f246b00"
+checksum = "2d5dd4482343e048c665a8ebe9edffd7650a5ce1b9c8b264c7621bcd3e5f86ff"
 dependencies = [
  "log",
  "rand",
@@ -423,9 +423,9 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "coulomb"
-version = "0.5.4"
+version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11394ff8983406035dc26a92d8a7d93e92af4a09de32c3d9227e966ad298cab9"
+checksum = "df3ddf8d893cddcd9d5abbc8999eba6c40f9020e069fef86cb6c0fe88d86ee40"
 dependencies = [
  "mint",
  "nalgebra 0.34.2",
@@ -855,7 +855,7 @@ dependencies = [
 [[package]]
 name = "faunus"
 version = "3.0.0-beta.3"
-source = "git+https://github.com/mlund/faunus-rs.git#a720538fcd93b7bd1f6f527e777bfaebe1b8f447"
+source = "git+https://github.com/mlund/faunus-rs.git#36a15bbf5921c3b21688b1b71ed08f009f7b5203"
 dependencies = [
  "anyhow",
  "average 0.13.1",
@@ -1431,8 +1431,8 @@ dependencies = [
 
 [[package]]
 name = "interatomic"
-version = "0.6.2"
-source = "git+https://github.com/mlund/interatomic.git#30532bdad6009181451ef3f04bda355ffdfcf971"
+version = "0.7.0"
+source = "git+https://github.com/mlund/interatomic.git#3475ec7f117b8b979c4b6e674499980dcf7a76f9"
 dependencies = [
  "bytemuck",
  "coulomb",
@@ -1441,6 +1441,7 @@ dependencies = [
  "nalgebra 0.35.0",
  "num",
  "serde",
+ "thiserror",
  "wide 1.5.0",
 ]
 
@@ -1467,7 +1468,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1892,7 +1893,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3408,7 +3409,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -538,3 +538,35 @@ fn a_run_with_mismatched_curve_lengths_is_refused() {
     let error = load_error(&short_g);
     assert!(error.contains("g(r)"), "{error}");
 }
+
+fn entry_json(zip: &[u8], path: &str) -> serde_json::Value {
+    let mut reader = super::zipio::Reader::new(zip).unwrap();
+    reader.json(path).unwrap()
+}
+
+/// Version 9 recorded a global spline cutoff; the topology now fixes every
+/// pair's range, so v9 still reads (the legacy key is ignored) and v10 drops it.
+#[test]
+fn a_version_9_scan_with_a_spline_cutoff_reads() {
+    let bundle = Bundle {
+        scan: Some(archive()),
+        ..Default::default()
+    };
+    let zip = bundle.to_zip(&Extracts::default()).unwrap();
+    assert!(entry_json(&zip, "twobody/scan.json")["settings"]
+        .get("cutoff")
+        .is_none());
+    assert_eq!(entry_json(&zip, "manifest.json")["version"], 10);
+
+    let v9 = with_entry_edited(&zip, "manifest.json", |_, bytes| {
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        *bytes = text.replace("\"version\":10", "\"version\":9").into_bytes();
+    });
+    let v9 = with_entry_edited(&v9, "twobody/scan.json", |_, bytes| {
+        let mut json: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        json["settings"]["cutoff"] = 2000.0.into();
+        *bytes = serde_json::to_vec(&json).unwrap();
+    });
+    let restored = Bundle::from_zip(&v9).unwrap().scan.unwrap();
+    assert_eq!(restored.settings, bundle.scan.unwrap().settings);
+}

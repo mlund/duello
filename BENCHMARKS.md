@@ -11,8 +11,11 @@ Validation and timing of the compute backends. All timings are on an Apple M4.
 The benchmark command, from `examples/calvados3/`:
 
 ~~~
-duello scan -1 2CDS.xyz -2 2CDS.xyz --rmin 26 --rmax 60 --dr 0.5 --top topology.yaml --cutoff 150 --molarity 0.02
+duello scan -1 2CDS.xyz -2 2CDS.xyz --rmin 26 --rmax 60 --dr 0.5 --top topology.yaml --molarity 0.02
 ~~~
+
+Measured before the topology set each pair's spline range (then `--cutoff 150`);
+not comparable with the command above until re-run.
 
 | Backend                         | B₂ (Å³) | ΔB₂     | Scan time |
 |---------------------------------|---------|---------|-----------|
@@ -29,6 +32,8 @@ Coarse-graining titrates charges by Monte Carlo, so each run from the PDB differ
 duello scan -1 7KTZ.xyz -2 7KTZ.xyz --top 7KTZ_topology.yaml --rmin 32 --rmax 60 --dr 1 \
     --molarity 0.015 --temperature 300 --gradient-threshold 0
 ~~~
+
+Kim–Hummer rows predate cgkitten 0.6, whose model is cut and shifted at 30 Å.
 
 | `--model`, `--cg`     | `gpu` B₂ (Å³) | `grid` 1.0 Å − `gpu` | `grid` 0.5 Å − `gpu` |
 |-----------------------|---------------|----------------------|----------------------|

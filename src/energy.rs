@@ -17,7 +17,10 @@ use crate::Vector3;
 use faunus::interatomic::coulomb::pairwise::{MultipolePotential as _, Plain};
 use faunus::interatomic::coulomb::permittivity::ConstantPermittivity;
 use faunus::interatomic::coulomb::{DebyeLength as _, Medium};
-use faunus::interatomic::twobody::{IsotropicTwobodyEnergy, SplineConfig, SplinedPotential};
+use faunus::interatomic::twobody::{
+    IsotropicTwobodyEnergy, NoInteraction, SplineConfig, SplinedPotential,
+};
+use faunus::interatomic::Cutoff;
 use faunus::topology::CustomProperty;
 use faunus::{energy::NonbondedMatrix, topology::AtomKind};
 
@@ -112,27 +115,38 @@ pub struct SplinedPotentials {
     n_types: usize,
 }
 
+/// Tabulate one pair over its own range. An absent pair (zero range) becomes an
+/// all-zero table, so backends need no special case for it.
+fn spline_pair<P: IsotropicTwobodyEnergy + Cutoff>(
+    pair: &P,
+    config: SplineConfig,
+) -> anyhow::Result<SplinedPotential> {
+    const ZERO_RANGE_TABLE: f64 = 1.0; // Å; any positive extent tabulates zero
+    let spline = if pair.cutoff() == 0.0 {
+        SplinedPotential::with_cutoff(&NoInteraction, ZERO_RANGE_TABLE, config)
+    } else {
+        SplinedPotential::new(pair, config)
+    };
+    Ok(spline?)
+}
+
 impl SplinedPotentials {
     /// Spline potentials from `NonbondedMatrix`, treating entries opaquely
     /// via [`IsotropicTwobodyEnergy`].
-    fn from_nonbonded(nonbonded: &NonbondedMatrix, cutoff: f64, config: SplineConfig) -> Self {
+    fn from_nonbonded(nonbonded: &NonbondedMatrix, config: SplineConfig) -> anyhow::Result<Self> {
         let source = nonbonded.get_potentials();
         let n_types = source.order();
         let mut potentials = Vec::with_capacity(n_types * n_types);
         for i in 0..n_types {
             for j in 0..n_types {
-                potentials.push(SplinedPotential::with_cutoff(
-                    &source[(i, j)],
-                    cutoff,
-                    config.clone(),
-                ));
+                potentials.push(spline_pair(&source[(i, j)], config.clone())?);
             }
         }
         debug_assert_eq!(potentials.len(), n_types * n_types);
-        Self {
+        Ok(Self {
             potentials,
             n_types,
-        }
+        })
     }
 
     /// Number of atom types (matrix side length).
@@ -147,9 +161,9 @@ impl SplinedPotentials {
 
     /// Distance beyond which the `(i, j)` energy is negligible (< 1 µJ/mol).
     ///
-    /// The spline cutoff can sit far past the potential's own range (e.g.
-    /// `--cutoff 150` with a 20 Å Ashbaugh–Hatch), so callers that size or cull
-    /// by range should use this rather than `r_max`.
+    /// A pair can vanish well inside its nominal range (e.g. Ashbaugh–Hatch with
+    /// λ ≈ 0), so callers that size or cull by range should use this rather
+    /// than `r_max`.
     pub fn vanishes_beyond(&self, i: usize, j: usize) -> f64 {
         const STEP: f64 = 0.05;
         const NEGLIGIBLE: f64 = 1e-6; // kJ/mol
@@ -195,9 +209,16 @@ pub struct PairMatrix {
 impl PairMatrix {
     /// Build from SR potentials + medium (determines Coulomb parameters).
     ///
+    /// Fails unless every pair is short-ranged only: duello adds electrostatics
+    /// from the medium itself, and each pair's own range sizes its spline.
     /// If ion-induced dipole interactions are detected, Coulomb is set to zero
     /// with a warning (polarization not supported in the split-path design).
-    pub fn new(nonbonded: NonbondedMatrix, atomkinds: &[AtomKind], medium: &Medium) -> Self {
+    pub fn new(
+        nonbonded: NonbondedMatrix,
+        atomkinds: &[AtomKind],
+        medium: &Medium,
+    ) -> anyhow::Result<Self> {
+        validate_pairs(&nonbonded, atomkinds)?;
         // κ = 1/λ_D where λ_D is the Debye screening length from the electrolyte
         let kappa = medium.debye_length().map(|dl| 1.0 / dl);
         let coulomb_params = extract_coulomb_params(atomkinds, medium.permittivity().into(), kappa)
@@ -205,10 +226,10 @@ impl PairMatrix {
                 log::warn!("Ion-induced dipole detected; Coulomb contribution will be zero");
                 CoulombParams::zero(atomkinds.len())
             });
-        Self {
+        Ok(Self {
             nonbonded,
             coulomb_params,
-        }
+        })
     }
 
     /// Sum energy between two structures (kJ/mol): SR + analytical Coulomb.
@@ -228,15 +249,40 @@ impl PairMatrix {
     }
 
     /// Create splined SR potentials for GPU/SIMD backends.
-    pub fn create_sr_splines(&self, cutoff: f64, config: SplineConfig) -> SplinedPotentials {
-        log::info!("Creating SR-only spline with cutoff {cutoff:.1} Å");
-        SplinedPotentials::from_nonbonded(&self.nonbonded, cutoff, config)
+    ///
+    /// Each pair is tabulated over its own range, unshifted, so splines and the
+    /// exact reference evaluate the same model.
+    pub fn create_sr_splines(&self, config: SplineConfig) -> anyhow::Result<SplinedPotentials> {
+        let config = SplineConfig {
+            shift_energy: false,
+            ..config
+        };
+        SplinedPotentials::from_nonbonded(&self.nonbonded, config)
     }
 
     /// Coulomb parameters for analytical evaluation in backends.
     pub const fn coulomb_params(&self) -> &CoulombParams {
         &self.coulomb_params
     }
+}
+
+/// Every pair must be Coulomb-free with a finite range; the error names the pair.
+fn validate_pairs(nonbonded: &NonbondedMatrix, atomkinds: &[AtomKind]) -> anyhow::Result<()> {
+    let pairs = nonbonded.get_potentials();
+    for (i, j) in itertools::iproduct!(0..pairs.order(), 0..pairs.order()) {
+        let names = (atomkinds[i].name(), atomkinds[j].name());
+        anyhow::ensure!(
+            !pairs[(i, j)].has_coulomb(),
+            "pair {names:?}: the topology has a Coulomb term; remove it, \
+             duello adds electrostatics from the medium"
+        );
+        anyhow::ensure!(
+            pairs[(i, j)].cutoff().is_finite(),
+            "pair {names:?} has unbounded range; give it a cutoff, e.g. Lennard-Jones \
+             cut and shifted as !AshbaughHatch {{mixing: …, cutoff: rc}} with !Lambda 1.0"
+        );
+    }
+    Ok(())
 }
 
 /// Compute pairwise energy between two structures using a potential matrix.
@@ -328,6 +374,82 @@ pub fn electric_potential(structure: &Structure, r: &Vector3, multipole: &Plain)
 mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
+
+    /// Two bead kinds, A (σ = 4) and B (σ = 6), whose every pair is `terms`.
+    fn pair_matrix(terms: &str) -> anyhow::Result<PairMatrix> {
+        let yaml = format!(
+            "atoms:\n  \
+             - {{name: A, mass: 1.0, charge: 1.0, σ: 4.0, ε: 1.0, hydrophobicity: !Lambda 0.5}}\n  \
+             - {{name: B, mass: 1.0, charge: -1.0, σ: 6.0, ε: 1.0, hydrophobicity: !Lambda 0.5}}\n\
+             system:\n  energy:\n    - !Nonbonded\n      default: [{terms}]\n"
+        );
+        let mut topology = faunus::topology::Topology::from_str_partial(&yaml)?;
+        topology.finalize_atoms()?;
+        let medium = Medium::salt_water(
+            298.15,
+            faunus::interatomic::coulomb::Salt::SodiumChloride,
+            0.02,
+        );
+        let nonbonded = NonbondedMatrix::from_str(&yaml, &topology, Some(medium.clone()))?;
+        PairMatrix::new(nonbonded, topology.atomkinds(), &medium)
+    }
+
+    fn error_of(terms: &str) -> String {
+        format!(
+            "{:#}",
+            pair_matrix(terms).err().expect("topology is refused")
+        )
+    }
+
+    /// An unbounded pair can't size its spline; the error names it and the bounded form.
+    #[test]
+    fn unbounded_pair_is_refused() {
+        let err = error_of("!LennardJones {mixing: LB}");
+        assert!(
+            err.contains("\"A\"") && err.contains("!AshbaughHatch") && err.contains("!Lambda 1"),
+            "{err}"
+        );
+        assert!(pair_matrix("!AshbaughHatch {mixing: arithmetic, cutoff: 20.0}").is_ok());
+    }
+
+    /// Each pair's spline spans exactly its own range: exact inside, zero beyond.
+    #[test]
+    fn spline_range_is_the_pair_range() {
+        let matrix = pair_matrix("!AshbaughHatch {mixing: arithmetic, cutoff: 12.0}").unwrap();
+        let splines = matrix.create_sr_splines(SplineConfig::default()).unwrap();
+        let (spline, exact) = (
+            splines.get(0, 1),
+            &matrix.nonbonded.get_potentials()[(0, 1)],
+        );
+        assert_eq!(spline.r_max(), 12.0);
+        let u = |p: &dyn IsotropicTwobodyEnergy, r: f64| p.isotropic_twobody_energy(r * r);
+        assert_abs_diff_eq!(u(spline, 11.9), u(exact, 11.9), epsilon = 1e-6);
+        assert_eq!(u(spline, 12.1), 0.0);
+    }
+
+    /// A pair without any term is exactly zero at every distance.
+    #[test]
+    fn absent_pair_splines_to_zero() {
+        let splines = pair_matrix("")
+            .unwrap()
+            .create_sr_splines(SplineConfig::default())
+            .unwrap();
+        for r in [1.0, 5.0, 50.0] {
+            assert_eq!(
+                splines.get(0, 1).isotropic_twobody_energy(r * r),
+                0.0,
+                "r = {r}"
+            );
+        }
+    }
+
+    /// Electrostatics belong to duello, not the topology: a Coulomb term is refused by name.
+    #[test]
+    fn coulomb_in_topology_is_refused() {
+        let err =
+            error_of("!AshbaughHatch {mixing: arithmetic, cutoff: 20.0}, !Coulomb {cutoff: 50.0}");
+        assert!(err.contains("A") && err.contains("Coulomb"), "{err}");
+    }
 
     #[test]
     fn test_coulomb_params_zero() {

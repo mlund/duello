@@ -25,14 +25,7 @@ fn nbody_runs_from_a_scan_and_expands_to_xtc() {
             "--max-ndiv",
             "1",
         ])
-        .args([
-            "--cutoff",
-            "50",
-            "--molarity",
-            "0.05",
-            "--backend",
-            "reference",
-        ])
+        .args(["--molarity", "0.05", "--backend", "reference"])
         .args(["--savescan", "scan.duello.zip"]));
 
     run(duello(&dir)

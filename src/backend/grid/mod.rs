@@ -401,7 +401,7 @@ mod tests {
     use super::switch::Switch;
     use super::*;
     use crate::backend::test_support::{
-        bead, contact_poses, kt, lysozyme, no_gpu, pose_list, random_direction,
+        bead, contact_poses, kt, lysozyme, lysozyme_with_range, no_gpu, pose_list, random_direction,
     };
     use crate::backend::GpuBackend;
     use crate::Vector3;
@@ -694,7 +694,7 @@ mod tests {
         assert!((u - u_exact).abs() < 1e-3, "grid {u}, exact {u_exact}");
     }
 
-    /// A short `--cutoff` puts a kink in the far part. The prefilter's
+    /// A short pair range puts a kink in the far part. The prefilter's
     /// finite differences straddle it, which is right on average over node
     /// positions only if the map keeps the stencil's full support. Checked
     /// over the far part out past the cutoff, with A beads off the lattice
@@ -704,7 +704,7 @@ mod tests {
         if no_gpu() {
             return;
         }
-        let sys = lysozyme().with_cutoff(12.0);
+        let sys = lysozyme_with_range(12.0);
         let (neutral, _) = sys.types_by_charge();
         let spec = GridSpec {
             spacing: 1.0,

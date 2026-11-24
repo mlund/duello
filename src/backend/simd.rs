@@ -283,3 +283,22 @@ impl EnergyBackend for SimdBackend {
         &self.ref_b
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::test_support::{assert_matches_exact, lysozyme, pose_list};
+
+    /// The splined SIMD kernel evaluates the reference model: with no cutoff
+    /// argument anywhere, both read the pair ranges from the topology. Weighted
+    /// poses match to the spline error; overlaps only need to stay repulsive.
+    #[test]
+    fn simd_matches_exact_reference_on_lysozyme() {
+        let sys = lysozyme();
+        let (a, b) = (sys.ref_a.clone(), sys.ref_b.clone());
+        let simd = SimdBackend::new(a.clone(), b.clone(), &sys.splines, &sys.coulomb);
+        let poses = pose_list();
+        let got = simd.compute_energies(&poses);
+        assert_matches_exact("simd", &poses, &got, &sys.into_exact(a, b));
+    }
+}

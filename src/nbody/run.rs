@@ -801,7 +801,6 @@ pub(crate) mod tests {
                 temperature: 298.15,
                 max_ndiv: 1,
                 gradient_threshold: 0.5,
-                cutoff: 30.0,
                 grid_size: 200,
                 homo_dimer,
                 subdivision: Default::default(),
