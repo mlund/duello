@@ -47,6 +47,10 @@ pub struct ScanParams {
     pub subdivision: Subdivision,
     /// True when mol1 and mol2 are identical (homo-dimer).
     pub homo_dimer: bool,
+    /// Separation (Å) beyond which the pair doesn't interact, from
+    /// [`crate::energy::PairMatrix::reach`]. Finite: the table must reach it and
+    /// needs no tail. ∞: a tail is fitted to extend it.
+    pub reach: f64,
 }
 
 /// CLI-specific scan configuration extending ScanParams with file paths.
@@ -143,11 +147,10 @@ pub(crate) fn omega_step(subdivision: Subdivision, max_n_div: usize) -> f64 {
 
 /// Build the adaptive 6D table builder for `params` and log its resolution.
 /// Shared by the sync ([`compute_scan`]) and async ([`compute_scan_async`])
-/// entry points so the scheme-aware ω/vertex derivation stays single-sourced.
-fn make_6d_builder(params: &ScanParams) -> AdaptiveBuilder {
-    let max_n_vertices = params.subdivision.n_vertices(params.max_n_div);
+/// entry points so the scheme-aware ω/vertex derivation and the reach check
+/// stay single-sourced.
+fn make_6d_builder(params: &ScanParams) -> anyhow::Result<AdaptiveBuilder> {
     let beta = 1.0 / crate::thermal_energy(params.temperature); // 1/(kJ/mol)
-
     let builder = AdaptiveBuilder::with_subdivision(
         params.subdivision,
         params.rmin,
@@ -158,15 +161,40 @@ fn make_6d_builder(params: &ScanParams) -> AdaptiveBuilder {
         params.gradient_threshold,
         beta,
     );
+    ensure_complete(params, &builder)?;
     info!(
         "Adaptive 6D table ({:?}): {} R-bins x {} omega-bins, max {} vertices (n_div={})",
         params.subdivision,
         builder.n_r(),
         builder.n_omega(),
-        max_n_vertices,
+        params.subdivision.n_vertices(params.max_n_div),
         params.max_n_div,
     );
-    builder
+    Ok(builder)
+}
+
+/// Fails, before any work, where [`compute_scan`] would refuse `params`.
+/// Builds only the angular meshes; slabs stay empty.
+pub fn validate(params: &ScanParams) -> anyhow::Result<()> {
+    make_6d_builder(params).map(drop)
+}
+
+/// A finite reach drops the tail, so a table stopping short of it would lose energy.
+fn ensure_complete(params: &ScanParams, builder: &AdaptiveBuilder) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let last = (builder.n_r().checked_sub(1).map(|ri| builder.r_value(ri)))
+        .context("the R range holds no bin; widen --rmin..--rmax")?;
+    if params.reach.is_infinite() || last >= params.reach {
+        return Ok(());
+    }
+    // The last bin is one dr below rmax, rounded onto the dr grid.
+    let bins = ((params.reach - params.rmin) / params.dr).ceil();
+    anyhow::bail!(
+        "the pair interacts out to {:.1} Å but the last bin is at {last:.1} Å; \
+         use at least --rmax {:.2}",
+        params.reach,
+        params.rmin + (bins + 1.0) * params.dr,
+    )
 }
 
 /// Run the 6D scan computation, returning raw results without I/O.
@@ -175,7 +203,7 @@ pub fn compute_scan<B: EnergyBackend + Sync>(
     backend: &B,
     on_progress: OnProgress,
 ) -> anyhow::Result<ScanResult> {
-    let mut builder = make_6d_builder(params);
+    let mut builder = make_6d_builder(params)?;
     let n_r = builder.n_r();
     let n_omega = builder.n_omega();
 
@@ -269,7 +297,7 @@ pub async fn compute_scan_async(
     backend: &impl crate::backend::AsyncEnergyBackend,
     on_progress: OnProgress<'_>,
 ) -> anyhow::Result<ScanResult> {
-    let mut builder = make_6d_builder(params);
+    let mut builder = make_6d_builder(params)?;
     let n_r = builder.n_r();
     let n_omega = builder.n_omega();
 
@@ -412,14 +440,18 @@ pub(crate) fn table_metadata(params: &ScanParams, result: &ScanResult) -> TableM
         .map(|(_, s)| s.free_energy())
         .collect();
     let electric_prefactor = faunus::interatomic::ELECTRIC_PREFACTOR / params.permittivity;
-    let tail_terms = fit_tail_correction(
-        &result.distances,
-        &free_energies,
-        params.charges,
-        params.dipole_moments,
-        params.kappa,
-        electric_prefactor,
-    );
+    let tail_terms = if params.reach.is_finite() {
+        vec![] // the table covers every interacting separation
+    } else {
+        fit_tail_correction(
+            &result.distances,
+            &free_energies,
+            params.charges,
+            params.dipole_moments,
+            params.kappa,
+            electric_prefactor,
+        )
+    };
     let point_group = if params.homo_dimer {
         icotable::PointGroup::Exchange
     } else {
@@ -760,6 +792,7 @@ mod tests {
             gradient_threshold: 0.5,
             subdivision: Subdivision::Geodesic,
             homo_dimer: false,
+            reach: f64::INFINITY,
         }
     }
 
@@ -769,7 +802,7 @@ mod tests {
     fn rederived_omega_matches_builder() {
         for max_n_div in 0..=3 {
             let params = params(max_n_div);
-            let builder = make_6d_builder(&params);
+            let builder = make_6d_builder(&params).unwrap();
             for oi in 0..builder.n_omega() {
                 assert_relative_eq!(
                     oi as f64 * omega_step(params.subdivision, params.max_n_div),
@@ -808,6 +841,38 @@ mod tests {
         fn kind(&self) -> crate::backend::ScanBackend {
             crate::backend::ScanBackend::Reference
         }
+    }
+
+    /// A finite reach needs the last bin (29.5 Å here) at or beyond it, then
+    /// the table is complete and has no tail.
+    #[test]
+    fn finite_reach_must_fit_in_the_table_and_drops_the_tail() {
+        let backend = StubBackend::new();
+        let short = ScanParams {
+            reach: 29.6,
+            ..params(0)
+        };
+        let err = compute_scan(&short, &backend, None).err().unwrap();
+        // 30.1 would still end at 29.5: bins round to the dr grid.
+        assert!(format!("{err:#}").contains("--rmax 30.50"), "{err:#}");
+
+        let fits = ScanParams {
+            reach: 29.5,
+            ..params(0)
+        };
+        let result = compute_scan(&fits, &backend, None).unwrap();
+        let meta = table_metadata(&fits, &result);
+        assert!(meta.tail_terms.is_empty());
+        assert_eq!(meta.tail_energy(40.0), 0.0);
+    }
+
+    #[test]
+    fn a_range_without_bins_is_refused() {
+        let empty = ScanParams {
+            rmin: 29.8,
+            ..params(0)
+        };
+        assert!(compute_scan(&empty, &StubBackend::new(), None).is_err());
     }
 
     /// The web app plots streamed points during the scan, then replaces them with the

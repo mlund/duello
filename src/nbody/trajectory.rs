@@ -331,6 +331,7 @@ mod tests {
                 grid_size: 200,
                 homo_dimer: true,
                 subdivision: Default::default(),
+                coulomb_cutoff: None,
             },
         }
     }

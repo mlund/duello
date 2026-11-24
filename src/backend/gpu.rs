@@ -165,7 +165,9 @@ struct GpuUniforms {
     n_atom_types: u32,
     n_poses: u32,
     kappa: f32,
-    _pad: [u32; 3],
+    coulomb_cutoff_sq: f32,
+    coulomb_shift: f32,
+    _pad: u32,
 }
 
 /// GPU backend for energy calculations using wgpu compute shaders.
@@ -268,7 +270,9 @@ impl GpuBackend {
             n_atom_types: splines.n_types() as u32,
             n_poses: 0,
             kappa: coulomb.kappa,
-            _pad: [0; 3],
+            coulomb_cutoff_sq: coulomb.cutoff_sq(),
+            coulomb_shift: coulomb.shift,
+            _pad: 0,
         };
         log::info!(
             "GPU backend: {} atom types, {} + {} atoms",
@@ -347,6 +351,20 @@ impl super::AsyncEnergyBackend for GpuBackend {
 mod tests {
     use super::*;
     use crate::backend::test_support::{assert_matches_exact, lysozyme, no_gpu, pose_list};
+
+    /// A Coulomb cutoff changes the kernel as it changes the reference.
+    #[test]
+    fn gpu_matches_exact_cpu_with_a_coulomb_cutoff() {
+        if no_gpu() {
+            return;
+        }
+        let sys = lysozyme().with_coulomb_cutoff(15.0);
+        let (a, b) = (sys.ref_a.clone(), sys.ref_b.clone());
+        let gpu = GpuBackend::new(a.clone(), b.clone(), &sys.splines, &sys.coulomb).unwrap();
+        let poses = pose_list();
+        let got = gpu.compute_energies(&poses);
+        assert_matches_exact("gpu", &poses, &got, &sys.into_exact(a, b));
+    }
 
     #[test]
     fn gpu_matches_exact_cpu_on_lysozyme() {

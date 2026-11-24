@@ -190,6 +190,7 @@ duello scan \
 | `--backend`              | auto          | Compute backend: `auto`, `gpu`, `grid`, `simd`, `reference` |
 | `--grid-spacing`         | 1.0           | Map spacing for `--backend grid` (angstrom)           |
 | `--grid-cap`             | 1000          | Cap on large repulsive energies, `--backend grid` (kJ/mol) |
+| `--coulomb-cutoff`       | --            | Truncate Yukawa (angstrom), see [Coulomb Cutoff](#coulomb-cutoff) |
 | `--grid`                 | (see below)   | Spline grid settings (see [Spline Grid](#spline-grid)) |
 | `--pmf`                  | pmf.dat       | Output PMF file                                       |
 | `--savetable`            | --            | Save 6D binary table (`.bin.gz` for compression)      |
@@ -479,6 +480,20 @@ zero beyond it. Every pair must therefore be bounded, and the topology must not
 contain Coulomb terms, since duello adds Yukawa electrostatics from the medium.
 For Lennard-Jones cut and shifted at rc, use
 `!AshbaughHatch {mixing: …, cutoff: rc}` with `hydrophobicity: !Lambda 1.0` atoms.
+
+## Coulomb Cutoff
+
+Yukawa is untruncated by default. To compare with a simulation that cuts it,
+`--coulomb-cutoff rc` shifts each pair's Yukawa to vanish at `rc` and drops it
+beyond, on every backend. The pair then has a finite reach, the longest pair
+range plus both molecular radii. `--rmax` must cover it, and the table gets no
+long-range tail.
+
+For example, the lipase many-body reference of
+[Pasquier et al. 2023](https://doi.org/10.1016/j.jcis.2022.08.054) cuts every
+interaction at 5 Debye lengths. Use a topology with
+`!AshbaughHatch {mixing: LorentzBerthelot, cutoff: 46.9}` and
+`hydrophobicity: !Lambda 1.0` atoms, and scan with `--coulomb-cutoff 46.9`.
 
 ## Spline Grid
 

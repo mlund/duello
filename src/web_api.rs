@@ -65,7 +65,7 @@ fn prepare_scan(req: &WebScanRequest) -> anyhow::Result<PreparedScan> {
         Salt::SodiumChloride,
         settings.ionic_strength,
     );
-    let system = PairSystem::load(PairSpec {
+    let mut system = PairSystem::load(PairSpec {
         a: Source::PdbBytes(&req.mol1_pdb),
         b: (!settings.homo_dimer).then_some(Source::PdbBytes(&req.mol2_pdb)),
         top: None,
@@ -78,6 +78,10 @@ fn prepare_scan(req: &WebScanRequest) -> anyhow::Result<PreparedScan> {
         },
         medium: &medium,
     })?;
+    // Applied here so every backend either honours the cutoff or refuses it.
+    system.pair_matrix = system
+        .pair_matrix
+        .with_coulomb_cutoff(settings.coulomb_cutoff)?;
 
     let spline_config = SplineConfig {
         n_points: settings.grid_size,
@@ -124,6 +128,10 @@ fn build_scan_params(prep: &PreparedScan) -> ScanParams {
         gradient_threshold: settings.gradient_threshold,
         subdivision: settings.subdivision,
         homo_dimer: settings.homo_dimer,
+        reach: prep
+            .system
+            .pair_matrix
+            .reach(&prep.system.ref_a, &prep.system.ref_b),
     }
 }
 
@@ -265,6 +273,7 @@ pub(crate) mod tests {
                 grid_size: 200,
                 homo_dimer: mol1 == mol2,
                 subdivision: Subdivision::default(),
+                coulomb_cutoff: None,
             },
         }
     }
@@ -314,6 +323,18 @@ pub(crate) mod tests {
         };
         let archive = run_scan(req, None).unwrap(); // wraps run_scan_async
         assert_eq!(archive.backend, ScanBackend::Grid(spec));
+    }
+
+    /// The cutoff reaches the backend: the archive records it, no tail is fitted.
+    #[test]
+    fn a_coulomb_cutoff_scan_is_complete() {
+        let peptide = ["LYS", "LYS", "LYS"];
+        let mut req = request(&peptide, &peptide);
+        req.settings.coulomb_cutoff = Some(10.0);
+        req.settings.rmax = 60.0;
+        let archive = reloaded(&cpu_scan(&req));
+        assert_eq!(archive.settings.coulomb_cutoff, Some(10.0));
+        assert!(archive.table.metadata.unwrap().tail_terms.is_empty());
     }
 
     /// Grid scans carry a small bias, so a session must say what filled it.
@@ -407,7 +428,7 @@ pub(crate) mod tests {
         assert!(!names.contains(&"LEU"), "{names:?}");
     }
 
-    /// D3: the built-in bounded models scan, and their splines stop at the model's range.
+    /// The built-in bounded models scan, and their splines stop at the model's range.
     #[test]
     fn built_in_models_spline_to_their_range() {
         use cgkitten::forcefield::MODEL_RANGE;

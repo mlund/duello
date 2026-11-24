@@ -10,9 +10,10 @@ struct Uniforms {
     n_atom_types: u32,
     n_poses: u32,
     kappa: f32,
-    _pad1: u32,
-    _pad2: u32,
-    _pad3: u32,
+    // Yukawa truncation; f32 max and 0 when untruncated.
+    coulomb_cutoff_sq: f32,
+    coulomb_shift: f32,
+    _pad: u32,
 }
 
 @group(0) @binding(0) var<storage, read> spline_coeffs: array<SplineCoeffs>;
@@ -28,11 +29,11 @@ struct Uniforms {
 // Analytical Coulomb/Yukawa energy: prefactor * exp(-κr) / r
 // Evaluated analytically (not splined) to avoid polynomial ringing from the
 // SR potential's hard cutoff discontinuity inside the spline grid.
-// No distance cutoff — Yukawa decays exponentially; exp() is single-cycle on GPU.
+// Shifted to vanish at the optional cutoff, as in `CoulombParams`.
 fn coulomb_energy(pair_idx: u32, r: f32) -> f32 {
     let prefactor = coulomb_prefactors[pair_idx];
-    if prefactor == 0.0 { return 0.0; } // skip uncharged pairs
-    return prefactor * exp(-uniforms.kappa * r) / r;
+    if prefactor == 0.0 || r * r >= uniforms.coulomb_cutoff_sq { return 0.0; }
+    return prefactor * (exp(-uniforms.kappa * r) / r - uniforms.coulomb_shift);
 }
 
 @compute @workgroup_size(64)

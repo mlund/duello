@@ -29,6 +29,7 @@ fn params(sys: &TestPair, rmin: f64, rmax: f64, dr: f64) -> ScanParams {
         gradient_threshold: 0.5,
         subdivision: Default::default(),
         homo_dimer: true,
+        reach: f64::INFINITY,
     }
 }
 

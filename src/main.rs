@@ -393,6 +393,10 @@ enum Commands {
         /// default unless changing it leaves your results unchanged
         #[arg(long, default_value_t = DEFAULT_ENERGY_CAP)]
         grid_cap: f64,
+        /// Truncate Yukawa at this distance (angstroms), shifted to vanish there,
+        /// to match a cutoff simulation
+        #[arg(long)]
+        coulomb_cutoff: Option<f64>,
         #[command(flatten)]
         cg: CgArgs,
         /// Validate the input and stop before scanning (dry run; writes no files)
@@ -491,6 +495,7 @@ fn save_scan_request(
         grid,
         cg,
         locator,
+        coulomb_cutoff,
         ..
     } = cmd
     else {
@@ -517,6 +522,7 @@ fn save_scan_request(
         grid_size: grid.size,
         homo_dimer,
         subdivision: (*locator).into(),
+        coulomb_cutoff: *coulomb_cutoff,
     };
     // A given --top file replaces CG generation, so it is the topology to keep.
     let topology_yaml = match (generated, top_file) {
@@ -555,6 +561,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         grid,
         grid_spacing,
         grid_cap,
+        coulomb_cutoff,
         cg,
         check,
     } = cmd
@@ -603,10 +610,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
         cg: cg.options()?,
         medium: &medium,
     })?;
-    if *check {
-        return input_ok();
-    }
-    save_generated(loaded, generated.as_ref())?;
+    let pair_matrix = pair_matrix.with_coulomb_cutoff(*coulomb_cutoff)?;
     let rmin_auto = rmin.is_none();
     let rmin = duello::steric::resolve_rmin(*rmin, [&ref_a, &ref_b], *dr, *rmax)?;
 
@@ -646,6 +650,7 @@ fn do_scan(cmd: &Commands) -> Result<()> {
             gradient_threshold: *gradient_threshold,
             subdivision: (*locator).into(),
             homo_dimer,
+            reach: pair_matrix.reach(&ref_a, &ref_b),
         },
         pmf_file: pmf_file.clone(),
         save_table: savetable.clone(),
@@ -665,6 +670,11 @@ fn do_scan(cmd: &Commands) -> Result<()> {
             })
             .transpose()?,
     };
+    icoscan::validate(&scan_config.params)?;
+    if *check {
+        return input_ok();
+    }
+    save_generated(loaded, generated.as_ref())?;
 
     if let Backend::Reference = backend_type {
         let backend = backend::cpu::CpuBackend::new(ref_a, ref_b, pair_matrix);
