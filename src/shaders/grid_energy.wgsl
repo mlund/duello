@@ -14,7 +14,12 @@ struct Batch {
     n_charged_b: u32,
     // Where B's beads start in `beads`.
     b_offset: u32,
-    _pad: u32,
+    // Yukawa truncation; f32 max and 0 when untruncated.
+    coulomb_cutoff_sq: f32,
+    coulomb_shift: f32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
     cells: Cells,
 }
 
@@ -129,8 +134,8 @@ fn yukawa(tf: RigidTransform) -> f32 {
             let prefactor = coulomb_prefactors[u32(a.w) * grid.n_atom_types + u32(b.w)];
             // A kept bead can still be neutral towards this type; skipping avoids
             // 0·inf = NaN when two beads coincide.
-            if prefactor != 0.0 {
-                u += prefactor * exp(-batch.kappa * r) / r;
+            if prefactor != 0.0 && r * r < batch.coulomb_cutoff_sq {
+                u += prefactor * (exp(-batch.kappa * r) / r - batch.coulomb_shift);
             }
         }
     }

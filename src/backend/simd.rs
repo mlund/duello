@@ -126,6 +126,9 @@ pub struct SimdBackend {
     coulomb_prefactors: Vec<f32>,
     /// Inverse Debye screening length κ (1/Å), 0.0 for unscreened
     kappa: f32,
+    /// Yukawa truncation and shift, as in [`CoulombParams`]
+    coulomb_cutoff_sq: f32,
+    coulomb_shift: f32,
 }
 
 impl SimdBackend {
@@ -202,6 +205,8 @@ impl SimdBackend {
             pair_groups,
             coulomb_prefactors: coulomb.prefactors.clone(),
             kappa: coulomb.kappa,
+            coulomb_cutoff_sq: coulomb.cutoff_sq(),
+            coulomb_shift: coulomb.shift,
         }
     }
 
@@ -254,11 +259,14 @@ impl SimdBackend {
             let prefactor = self.coulomb_prefactors[group.pair_idx as usize];
             if prefactor.abs() > 1e-12 {
                 // skip uncharged pair types
-                let kappa = self.kappa;
-                for &rsq in &rsq_vec {
+                // Shift is per pair, so count pairs inside the cutoff.
+                let (mut yukawa, mut n_inside) = (0.0f32, 0.0f32);
+                for &rsq in rsq_vec.iter().filter(|&&rsq| rsq < self.coulomb_cutoff_sq) {
                     let r = rsq.sqrt();
-                    total_energy += prefactor * (-kappa * r).exp() / r;
+                    yukawa += (-self.kappa * r).exp() / r;
+                    n_inside += 1.0;
                 }
+                total_energy += prefactor * (yukawa - n_inside * self.coulomb_shift);
             }
         }
 
@@ -295,6 +303,17 @@ mod tests {
     #[test]
     fn simd_matches_exact_reference_on_lysozyme() {
         let sys = lysozyme();
+        let (a, b) = (sys.ref_a.clone(), sys.ref_b.clone());
+        let simd = SimdBackend::new(a.clone(), b.clone(), &sys.splines, &sys.coulomb);
+        let poses = pose_list();
+        let got = simd.compute_energies(&poses);
+        assert_matches_exact("simd", &poses, &got, &sys.into_exact(a, b));
+    }
+
+    /// A Coulomb cutoff changes both evaluators the same way.
+    #[test]
+    fn simd_matches_exact_reference_with_a_coulomb_cutoff() {
+        let sys = lysozyme().with_coulomb_cutoff(15.0);
         let (a, b) = (sys.ref_a.clone(), sys.ref_b.clone());
         let simd = SimdBackend::new(a.clone(), b.clone(), &sys.splines, &sys.coulomb);
         let poses = pose_list();

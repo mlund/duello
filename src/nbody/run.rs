@@ -804,6 +804,7 @@ pub(crate) mod tests {
                 grid_size: 200,
                 homo_dimer,
                 subdivision: Default::default(),
+                coulomb_cutoff: None,
             },
             backend: crate::archive::ScanBackend::Reference,
             table: table(move |_, _, _| well),

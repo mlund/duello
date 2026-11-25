@@ -1,5 +1,5 @@
 use super::*;
-use crate::archive::{tests::archive, FreeSaltEstimate, StructureFile};
+use crate::archive::{tests::archive, FreeSaltEstimate, ScanSettings, StructureFile};
 use crate::nbody::{NBodyRun, RunSpec, Stage};
 use crate::Vector3;
 use icotable::lookup::Lookup6D;
@@ -193,6 +193,15 @@ fn an_edited_pmf_extract_does_not_change_the_loaded_scan() {
 
     let points: Vec<_> = scan.points.iter().map(|p| (p.r, p.free_energy)).collect();
     assert_eq!(points, [(5.0, 1.5), (6.0, -0.25)]);
+}
+
+/// Bundles written before the Coulomb cutoff existed were untruncated.
+#[test]
+fn settings_without_a_coulomb_cutoff_read_as_untruncated() {
+    let mut json = serde_json::to_value(archive().settings).unwrap();
+    json.as_object_mut().unwrap().remove("coulomb_cutoff");
+    let settings: ScanSettings = serde_json::from_value(json).unwrap();
+    assert_eq!(settings.coulomb_cutoff, None);
 }
 
 fn load_error(bytes: &[u8]) -> String {

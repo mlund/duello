@@ -43,6 +43,10 @@ pub struct ScanSettings {
     /// (JSON) written before it existed still read.
     #[serde(default)]
     pub subdivision: Subdivision,
+    /// Yukawa truncation (Å), shifted to vanish there; None = untruncated.
+    /// Defaulted, so older bundles read as untruncated, which they were.
+    #[serde(default)]
+    pub coulomb_cutoff: Option<f64>,
 }
 
 /// Energy backend that filled a scan's table. A result, not an input, so it
@@ -389,6 +393,7 @@ pub(crate) mod tests {
                 grid_size: 200,
                 homo_dimer: false,
                 subdivision: Default::default(),
+                coulomb_cutoff: Some(12.0),
             },
             // The struct-shaped variant, so round trips exercise its JSON.
             backend: ScanBackend::Grid(Default::default()),

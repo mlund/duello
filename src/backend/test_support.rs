@@ -31,6 +31,19 @@ impl TestPair {
         CpuBackend::new(a, b, self.pair_matrix)
     }
 
+    /// The same pair with Yukawa truncated and shifted at `cutoff` (Å).
+    pub fn with_coulomb_cutoff(self, cutoff: f64) -> Self {
+        let pair_matrix = self
+            .pair_matrix
+            .with_coulomb_cutoff(Some(cutoff))
+            .expect("valid cutoff");
+        Self {
+            coulomb: pair_matrix.coulomb_params().clone(),
+            pair_matrix,
+            ..self
+        }
+    }
+
     /// Atom types in A, split by whether they carry charge.
     pub fn types_by_charge(&self) -> (Vec<usize>, Vec<usize>) {
         let n = self.splines.n_types();

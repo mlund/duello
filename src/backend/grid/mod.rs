@@ -101,7 +101,9 @@ struct BatchUniform {
     n_charged_a: u32,
     n_charged_b: u32,
     b_offset: u32,
-    _pad: u32,
+    coulomb_cutoff_sq: f32,
+    coulomb_shift: f32,
+    _pad: [u32; 3],
     cells: CellsUniform,
 }
 
@@ -115,6 +117,8 @@ impl BatchUniform {
             n_atoms_b: ref_b.pos.len() as u32,
             sr_range: sr_range as f32,
             kappa: coulomb.kappa,
+            coulomb_cutoff_sq: coulomb.cutoff_sq(),
+            coulomb_shift: coulomb.shift,
             ..Self::zeroed()
         }
     }
@@ -410,6 +414,27 @@ mod tests {
         spacing: 0.5,
         energy_cap: 1e4,
     };
+
+    /// Yukawa is summed outside the maps, so a cutoff applies as in the
+    /// reference: shifted inside, zero beyond.
+    #[test]
+    fn charged_pair_follows_the_coulomb_cutoff() {
+        if no_gpu() {
+            return;
+        }
+        let sys = lysozyme().with_coulomb_cutoff(30.0);
+        let (_, charged) = sys.types_by_charge();
+        let (ta, tb) = (charged[0], *charged.last().unwrap());
+        let grid = GridBackend::new(bead(ta), bead(tb), &sys.splines, &sys.coulomb, SPEC).unwrap();
+        let exact = sys.into_exact(bead(ta), bead(tb));
+        for r in [25.0, 29.0, 35.0] {
+            let (u_grid, u_exact) = (
+                grid.compute_energy(&along_x(r)),
+                exact.compute_energy(&along_x(r)),
+            );
+            approx::assert_abs_diff_eq!(u_grid, u_exact, epsilon = 1e-5 * u_exact.abs() + 1e-6);
+        }
+    }
 
     /// B at (r, 0, 0): `vertex_i = x̂` maps the separation axis onto x.
     fn along_x(r: f64) -> PoseParams {

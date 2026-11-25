@@ -50,6 +50,10 @@ pub struct CoulombParams {
     pub prefactors: Vec<f32>,
     /// Inverse Debye screening length κ (1/Å). 0.0 for unscreened Coulomb.
     pub kappa: f32,
+    /// Pairs at or beyond this distance (Å) don't interact; ∞ = untruncated.
+    pub cutoff: f32,
+    /// e^{−κ·cutoff}/cutoff, subtracted so each pair's energy reaches 0 at the cutoff.
+    pub shift: f32,
     /// Cached to avoid `isqrt(prefactors.len())` on every pair lookup.
     n_types: usize,
 }
@@ -60,8 +64,33 @@ impl CoulombParams {
         Self {
             prefactors: vec![0.0; n_types * n_types],
             kappa: 0.0,
+            cutoff: f32::INFINITY,
+            shift: 0.0,
             n_types,
         }
+    }
+
+    /// Truncated at `cutoff` (Å) and shifted to vanish there. Set together here
+    /// so `shift` can't go stale.
+    fn with_cutoff(self, cutoff: f64) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            cutoff.is_finite() && cutoff > 0.0,
+            "Coulomb cutoff must be finite and positive, got {cutoff}"
+        );
+        // From the stored f32 cutoff, so the shift cancels where backends truncate.
+        let cutoff = f64::from(cutoff as f32);
+        let kappa = f64::from(self.kappa);
+        Ok(Self {
+            cutoff: cutoff as f32,
+            shift: ((-kappa * cutoff).exp() / cutoff) as f32,
+            ..self
+        })
+    }
+
+    /// Squared cutoff for f32 kernels; f32::MAX rather than ∞ when untruncated,
+    /// as GPU fast-math needn't honour ∞ in comparisons.
+    pub fn cutoff_sq(&self) -> f32 {
+        (self.cutoff * self.cutoff).min(f32::MAX)
     }
 }
 
@@ -99,7 +128,7 @@ pub fn extract_coulomb_params(
     let params = CoulombParams {
         prefactors,
         kappa: kappa.unwrap_or(0.0) as f32,
-        n_types,
+        ..CoulombParams::zero(n_types)
     };
     debug_assert_eq!(params.prefactors.len(), n_types * n_types);
     Some(params)
@@ -260,6 +289,26 @@ impl PairMatrix {
         SplinedPotentials::from_nonbonded(&self.nonbonded, config)
     }
 
+    /// Truncate Yukawa at `cutoff` (Å), shifted to vanish there, as a cutoff MC
+    /// reference does. None keeps it untruncated.
+    pub fn with_coulomb_cutoff(mut self, cutoff: Option<f64>) -> anyhow::Result<Self> {
+        if let Some(cutoff) = cutoff {
+            self.coulomb_params = self.coulomb_params.with_cutoff(cutoff)?;
+        }
+        Ok(self)
+    }
+
+    /// Mass-centre separation (Å) at and beyond which `a` and `b` don't interact:
+    /// the longest pair range plus both radii. ∞ while Yukawa is untruncated.
+    pub fn reach(&self, a: &Structure, b: &Structure) -> f64 {
+        let pairs = self.nonbonded.get_potentials();
+        let short_range = itertools::iproduct!(a.unique_atom_types(), b.unique_atom_types())
+            .map(|(i, j)| pairs[(i, j)].cutoff())
+            .fold(0.0, f64::max);
+        let range = short_range.max(f64::from(self.coulomb_params.cutoff));
+        range + a.radius() + b.radius()
+    }
+
     /// Coulomb parameters for analytical evaluation in backends.
     pub const fn coulomb_params(&self) -> &CoulombParams {
         &self.coulomb_params
@@ -301,21 +350,24 @@ where
 /// Screened Coulomb (Yukawa) energy for a single pair.
 /// Skips uncharged pairs to avoid the exp() call and division by zero at r=0.
 #[inline]
-fn yukawa_energy(prefactor: f32, kappa: f64, r: f64) -> f64 {
-    if prefactor.abs() > 1e-12 {
-        f64::from(prefactor) * (-kappa * r).exp() / r
-    } else {
-        0.0
+fn yukawa_energy(prefactor: f32, params: &CoulombParams, r_sq: f64) -> f64 {
+    if prefactor.abs() <= 1e-12 || r_sq >= f64::from(params.cutoff).powi(2) {
+        return 0.0;
     }
+    let (r, kappa) = (r_sq.sqrt(), f64::from(params.kappa));
+    f64::from(prefactor) * ((-kappa * r).exp() / r - f64::from(params.shift))
 }
 
 /// Analytical Coulomb/Yukawa energy between two structures.
 fn pairwise_analytical_coulomb(a: &Structure, b: &Structure, params: &CoulombParams) -> f64 {
     let n = params.n_types;
-    let kappa = f64::from(params.kappa);
     itertools::iproduct!(a.pos.iter().zip(&a.atom_ids), b.pos.iter().zip(&b.atom_ids))
         .map(|((pa, &ida), (pb, &idb))| {
-            yukawa_energy(params.prefactors[ida * n + idb], kappa, (pa - pb).norm())
+            yukawa_energy(
+                params.prefactors[ida * n + idb],
+                params,
+                (pa - pb).norm_squared(),
+            )
         })
         .sum()
 }
@@ -350,15 +402,17 @@ fn single_atom_analytical_coulomb(
     params: &CoulombParams,
 ) -> f64 {
     let n = params.n_types;
-    let kappa = f64::from(params.kappa);
     structure
         .pos
         .iter()
         .zip(structure.atom_ids.iter())
         .map(|(atom_pos, &aid)| {
             let idx = aid * n + atom_id;
-            let r = (atom_pos - pos).norm();
-            yukawa_energy(params.prefactors[idx], kappa, r)
+            yukawa_energy(
+                params.prefactors[idx],
+                params,
+                (atom_pos - pos).norm_squared(),
+            )
         })
         .sum()
 }
@@ -373,7 +427,7 @@ pub fn electric_potential(structure: &Structure, r: &Vector3, multipole: &Plain)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use approx::assert_abs_diff_eq;
+    use approx::{assert_abs_diff_eq, assert_relative_eq};
 
     /// Two bead kinds, A (σ = 4) and B (σ = 6), whose every pair is `terms`.
     fn pair_matrix(terms: &str) -> anyhow::Result<PairMatrix> {
@@ -451,6 +505,64 @@ mod tests {
         assert!(err.contains("A") && err.contains("Coulomb"), "{err}");
     }
 
+    /// A(e^{−κr}/r − e^{−κr_el}/r_el) inside r_el, continuous to 0 there, 0 beyond.
+    #[test]
+    fn yukawa_is_shifted_and_truncated_at_the_coulomb_cutoff() {
+        let matrix = pair_matrix("")
+            .unwrap()
+            .with_coulomb_cutoff(Some(15.0))
+            .unwrap();
+        let (a, b) = (
+            matrix.coulomb_params().prefactors[1],
+            matrix.coulomb_params().kappa,
+        );
+        let (a, kappa) = (f64::from(a), f64::from(b));
+        let u = |r: f64| matrix.sum_energy(&atom(Vector3::zeros(), 0), &atom(Vector3::x() * r, 1));
+        let yukawa = |r: f64| (-kappa * r).exp() / r;
+        assert_relative_eq!(
+            u(5.0),
+            a * (yukawa(5.0) - yukawa(15.0)),
+            max_relative = 1e-6
+        );
+        assert_abs_diff_eq!(u(15.0 - 1e-6), 0.0, epsilon = 1e-6);
+        assert_eq!(u(15.0), 0.0);
+        assert_eq!(u(20.0), 0.0);
+    }
+
+    /// Charged bead 10 Å from the mass centre, balanced by a neutral one opposite.
+    fn off_center(atom_id: usize) -> Structure {
+        Structure {
+            pos: vec![Vector3::x() * 10.0, -Vector3::x() * 10.0],
+            masses: vec![1.0, 1.0],
+            charges: vec![0.0; 2],
+            radii: vec![1.0; 2],
+            atom_ids: vec![atom_id, atom_id],
+        }
+    }
+
+    /// Beyond R* = max(r_SR, r_el) + R_a + R_b no bead pair interacts.
+    #[test]
+    fn reach_adds_both_radii_to_the_longest_range() {
+        let (a, b) = (off_center(0), off_center(1));
+        let untruncated = pair_matrix("").unwrap();
+        assert_eq!(untruncated.reach(&a, &b), f64::INFINITY);
+        let coulomb_only = untruncated.with_coulomb_cutoff(Some(15.0)).unwrap();
+        assert_eq!(coulomb_only.reach(&a, &b), 35.0);
+        let sr = pair_matrix("!AshbaughHatch {mixing: arithmetic, cutoff: 20.0}").unwrap();
+        assert_eq!(
+            sr.with_coulomb_cutoff(Some(15.0)).unwrap().reach(&a, &b),
+            40.0
+        );
+    }
+
+    #[test]
+    fn coulomb_cutoff_must_be_finite_and_positive() {
+        for bad in [0.0, -1.0, f64::INFINITY, f64::NAN] {
+            let result = pair_matrix("").unwrap().with_coulomb_cutoff(Some(bad));
+            assert!(result.is_err(), "{bad} accepted");
+        }
+    }
+
     #[test]
     fn test_coulomb_params_zero() {
         let params = CoulombParams::zero(3);
@@ -478,7 +590,7 @@ mod tests {
         let params = CoulombParams {
             prefactors: vec![10.0],
             kappa: 0.0,
-            n_types: 1,
+            ..CoulombParams::zero(1)
         };
         let e_ab = pairwise_analytical_coulomb(&a, &b, &params);
         let e_ba = pairwise_analytical_coulomb(&b, &a, &params);
@@ -494,7 +606,7 @@ mod tests {
         let params = CoulombParams {
             prefactors: vec![7.0],
             kappa: 0.1,
-            n_types: 1,
+            ..CoulombParams::zero(1)
         };
         let e = pairwise_analytical_coulomb(&a, &b, &params);
         let expected = 7.0 * (-1.0_f64).exp() / 10.0;
