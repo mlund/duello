@@ -1432,7 +1432,7 @@ dependencies = [
 [[package]]
 name = "interatomic"
 version = "0.7.0"
-source = "git+https://github.com/mlund/interatomic.git#3475ec7f117b8b979c4b6e674499980dcf7a76f9"
+source = "git+https://github.com/mlund/interatomic.git#69dfaa1c56ef3cc3df516526d2e11b3d760a9d28"
 dependencies = [
  "bytemuck",
  "coulomb",

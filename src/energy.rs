@@ -17,9 +17,7 @@ use crate::Vector3;
 use faunus::interatomic::coulomb::pairwise::{MultipolePotential as _, Plain};
 use faunus::interatomic::coulomb::permittivity::ConstantPermittivity;
 use faunus::interatomic::coulomb::{DebyeLength as _, Medium};
-use faunus::interatomic::twobody::{
-    IsotropicTwobodyEnergy, NoInteraction, SplineConfig, SplinedPotential,
-};
+use faunus::interatomic::twobody::{IsotropicTwobodyEnergy, SplineConfig, SplinedPotential};
 use faunus::interatomic::Cutoff;
 use faunus::topology::CustomProperty;
 use faunus::{energy::NonbondedMatrix, topology::AtomKind};
@@ -144,21 +142,6 @@ pub struct SplinedPotentials {
     n_types: usize,
 }
 
-/// Tabulate one pair over its own range. An absent pair (zero range) becomes an
-/// all-zero table, so backends need no special case for it.
-fn spline_pair<P: IsotropicTwobodyEnergy + Cutoff>(
-    pair: &P,
-    config: SplineConfig,
-) -> anyhow::Result<SplinedPotential> {
-    const ZERO_RANGE_TABLE: f64 = 1.0; // Å; any positive extent tabulates zero
-    let spline = if pair.cutoff() == 0.0 {
-        SplinedPotential::with_cutoff(&NoInteraction, ZERO_RANGE_TABLE, config)
-    } else {
-        SplinedPotential::new(pair, config)
-    };
-    Ok(spline?)
-}
-
 impl SplinedPotentials {
     /// Spline potentials from `NonbondedMatrix`, treating entries opaquely
     /// via [`IsotropicTwobodyEnergy`].
@@ -168,7 +151,7 @@ impl SplinedPotentials {
         let mut potentials = Vec::with_capacity(n_types * n_types);
         for i in 0..n_types {
             for j in 0..n_types {
-                potentials.push(spline_pair(&source[(i, j)], config.clone())?);
+                potentials.push(SplinedPotential::new(&source[(i, j)], config.clone())?);
             }
         }
         debug_assert_eq!(potentials.len(), n_types * n_types);
@@ -192,16 +175,19 @@ impl SplinedPotentials {
     ///
     /// A pair can vanish well inside its nominal range (e.g. Ashbaugh–Hatch with
     /// λ ≈ 0), so callers that size or cull by range should use this rather
-    /// than `r_max`.
+    /// than the pair's range or the table's extent.
     pub fn vanishes_beyond(&self, i: usize, j: usize) -> f64 {
         const STEP: f64 = 0.05;
         const NEGLIGIBLE: f64 = 1e-6; // kJ/mol
         let spline = self.get(i, j);
-        let mut r = spline.r_max();
+        // Where the pair acts: its range, which a shorter table truncates. The
+        // table's extent alone overstates an absent pair.
+        let range = spline.cutoff().min(spline.r_max());
+        let mut r = range;
         while r > STEP && spline.isotropic_twobody_energy(r * r).abs() < NEGLIGIBLE {
             r -= STEP;
         }
-        r + STEP
+        (r + STEP).min(range)
     }
 
     /// The `(i, j)` well's bottom (r, U) in (Å, kJ/mol), sampled over the
@@ -495,6 +481,8 @@ mod tests {
                 "r = {r}"
             );
         }
+        assert_eq!(splines.get(0, 1).cutoff(), 0.0);
+        assert_eq!(splines.vanishes_beyond(0, 1), 0.0);
     }
 
     /// Electrostatics belong to duello, not the topology: a Coulomb term is refused by name.
