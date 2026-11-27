@@ -120,6 +120,8 @@ pub struct SimdBackend {
     pos_b_z: Vec<f32>,
     /// Spline tables from interatomic (one per pair type, flattened n_types × n_types)
     spline_tables: Vec<SplineTableSimdF32>,
+    /// Squared table start per pair type; a pair inside it is an overlap
+    table_start_sq: Vec<f32>,
     /// Precomputed pair groups (pairs grouped by atom type combination)
     pair_groups: PairGroups,
     /// Coulomb prefactors per pair type (n_types²), kJ/mol·Å
@@ -155,6 +157,7 @@ impl SimdBackend {
         let n_types = splined_matrix.n_types();
 
         let mut spline_tables = Vec::with_capacity(n_types * n_types);
+        let mut table_start_sq = Vec::with_capacity(n_types * n_types);
         for i in 0..n_types {
             for j in 0..n_types {
                 let spline = splined_matrix.get(i, j);
@@ -171,6 +174,7 @@ impl SimdBackend {
                 };
 
                 spline_tables.push(spline.to_simd_f32());
+                table_start_sq.push(spline.r_min().powi(2) as f32);
             }
         }
 
@@ -202,6 +206,7 @@ impl SimdBackend {
             pos_b_y,
             pos_b_z,
             spline_tables,
+            table_start_sq,
             pair_groups,
             coulomb_prefactors: coulomb.prefactors.clone(),
             kappa: coulomb.kappa,
@@ -219,7 +224,9 @@ impl SimdBackend {
     /// Note: spline and Coulomb energies are accumulated separately (batched SIMD vs scalar),
     /// so f32 summation order differs slightly from the GPU backend. This is expected and
     /// not worth fixing as it would degrade performance or code clarity.
-    fn compute_energy_simd(&self, pose: &PoseParams) -> f32 {
+    ///
+    /// Also returns whether a pair sits inside its table start, an overlap.
+    fn compute_energy_simd(&self, pose: &PoseParams) -> (f32, bool) {
         let n_b = self.pos_b_x.len();
 
         // Transform all B positions using the same rotation sequence as orient_structures
@@ -237,6 +244,7 @@ impl SimdBackend {
 
         // Process each pair group with uniform spline parameters
         let mut total_energy = 0.0f32;
+        let mut overlap = false;
 
         for group in &self.pair_groups.groups {
             let spline = &self.spline_tables[group.pair_idx as usize];
@@ -254,6 +262,9 @@ impl SimdBackend {
                 .collect();
 
             total_energy += spline.energy_batch(&rsq_vec);
+            // Branch-free OR, so the pass vectorises.
+            let start_sq = self.table_start_sq[group.pair_idx as usize];
+            overlap |= rsq_vec.iter().fold(false, |o, &rsq| o | (rsq < start_sq));
 
             // Analytical Coulomb/Yukawa (not splined to avoid ringing from SR cutoff)
             let prefactor = self.coulomb_prefactors[group.pair_idx as usize];
@@ -270,13 +281,14 @@ impl SimdBackend {
             }
         }
 
-        total_energy
+        (total_energy, overlap)
     }
 }
 
 impl EnergyBackend for SimdBackend {
     fn compute_energy(&self, pose: &PoseParams) -> f64 {
-        self.compute_energy_simd(pose) as f64
+        let (energy, overlap) = self.compute_energy_simd(pose);
+        crate::energy::overlap_or(f64::from(energy), overlap)
     }
 
     fn kind(&self) -> super::ScanBackend {

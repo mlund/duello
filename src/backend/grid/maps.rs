@@ -116,7 +116,7 @@ fn fill_maps(
         tables.wgsl,
         field.slots.types.len(),
         layout_consts(),
-        include_str!("../../shaders/spline_eval.wgsl"),
+        crate::backend::gpu::spline_eval_wgsl(),
         include_str!("../../shaders/grid_common.wgsl"),
         super::switch::WGSL,
         include_str!("../../shaders/grid_build.wgsl")

@@ -358,7 +358,7 @@ fn energy_source(spline_wgsl: &str) -> String {
         "{spline_wgsl}\n{}{}\n{}\n{}\n{}\n{}\n{}",
         maps::layout_consts(),
         include_str!("../../shaders/common.wgsl"),
-        include_str!("../../shaders/spline_eval.wgsl"),
+        crate::backend::gpu::spline_eval_wgsl(),
         include_str!("../../shaders/grid_common.wgsl"),
         switch::WGSL,
         near::WGSL,
@@ -405,7 +405,8 @@ mod tests {
     use super::switch::Switch;
     use super::*;
     use crate::backend::test_support::{
-        bead, contact_poses, kt, lysozyme, lysozyme_with_range, no_gpu, pose_list, random_direction,
+        along_x, bead, contact_poses, kt, lysozyme, lysozyme_with_range, no_gpu, pose_list,
+        random_direction,
     };
     use crate::backend::GpuBackend;
     use crate::Vector3;
@@ -433,16 +434,6 @@ mod tests {
                 exact.compute_energy(&along_x(r)),
             );
             approx::assert_abs_diff_eq!(u_grid, u_exact, epsilon = 1e-5 * u_exact.abs() + 1e-6);
-        }
-    }
-
-    /// B at (r, 0, 0): `vertex_i = x̂` maps the separation axis onto x.
-    fn along_x(r: f64) -> PoseParams {
-        PoseParams {
-            r,
-            omega: 0.0,
-            vertex_i: Vector3::x(),
-            vertex_j: Vector3::z(),
         }
     }
 
@@ -617,7 +608,9 @@ mod tests {
             ..SPEC
         };
         let grid = GridBackend::new(bead(ta), bead(tb), &sys.splines, &sys.coulomb, spec).unwrap();
-        for r in [1.0, 1.25] {
+        // Just outside the table start: inside it, a pose is OVERLAP_ENERGY instead.
+        let start = sys.splines.get(ta, tb).r_min();
+        for r in [start + 0.05, start + 0.3] {
             let u = grid.compute_energy(&along_x(r));
             approx::assert_relative_eq!(u, spec.energy_cap, max_relative = 1e-6);
         }

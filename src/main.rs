@@ -137,7 +137,8 @@ impl From<SplineGrid> for GridType {
 pub struct GridOptions {
     pub grid_type: SplineGrid,
     pub size: usize,
-    /// If set, cap |U(r_min)| to reduce f32 precision loss on GPU/SIMD
+    /// If set, cap |U(r_min)| to reduce f32 precision loss on GPU/SIMD. Tables
+    /// then start where |U| = cap, and pairs inside them count as overlaps.
     pub energy_cap: Option<f64>,
 }
 

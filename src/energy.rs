@@ -132,6 +132,11 @@ pub fn extract_coulomb_params(
     Some(params)
 }
 
+/// Energy (kJ/mol) of a pose with a pair closer than its table start, where
+/// the model is undefined: ~400 kT, so it carries no weight. Set, not added,
+/// so it stays finite (coincident charges give ±∞) and backends agree on it.
+pub const OVERLAP_ENERGY: f64 = 1000.0;
+
 /// Splined pair potentials for GPU/SIMD backends.
 ///
 /// Created via [`PairMatrix::create_sr_splines`] and consumed by backend constructors.
@@ -248,10 +253,11 @@ impl PairMatrix {
     }
 
     /// Sum energy between two structures (kJ/mol): SR + analytical Coulomb.
+    /// A pair inside its `lower_cutoff` makes it an overlap ([`OVERLAP_ENERGY`]).
     pub fn sum_energy(&self, a: &Structure, b: &Structure) -> f64 {
         let sr = compute_pairwise_energy(a, b, self.nonbonded.get_potentials());
         let coulomb = pairwise_analytical_coulomb(a, b, &self.coulomb_params);
-        let energy = sr + coulomb;
+        let energy = sr.pose_energy(coulomb);
         trace!("molecule-molecule energy: {energy:.2} kJ/mol");
         energy
     }
@@ -260,7 +266,7 @@ impl PairMatrix {
     pub fn energy_with_atom(&self, structure: &Structure, atom_id: usize, pos: &Vector3) -> f64 {
         let sr = single_atom_energy(structure, atom_id, pos, self.nonbonded.get_potentials());
         let coulomb = single_atom_analytical_coulomb(structure, atom_id, pos, &self.coulomb_params);
-        sr + coulomb
+        sr.pose_energy(coulomb)
     }
 
     /// Create splined SR potentials for GPU/SIMD backends.
@@ -320,23 +326,54 @@ fn validate_pairs(nonbonded: &NonbondedMatrix, atomkinds: &[AtomKind]) -> anyhow
     Ok(())
 }
 
-/// Compute pairwise energy between two structures using a potential matrix.
-fn compute_pairwise_energy<P, T>(a: &Structure, b: &Structure, potentials: &P) -> f64
+/// The pose's energy given whether a pair sits closer than its table start:
+/// an overlap is [`OVERLAP_ENERGY`], whatever Yukawa attracts.
+#[inline]
+pub(crate) fn overlap_or(energy: f64, overlap: bool) -> f64 {
+    if overlap {
+        OVERLAP_ENERGY
+    } else {
+        energy
+    }
+}
+
+/// Short-range energy over pairs, and whether one is closer than its
+/// `lower_cutoff`, below which the pair's model is undefined.
+#[derive(Clone, Copy, Default)]
+struct ShortRange {
+    energy: f64,
+    overlap: bool,
+}
+
+impl ShortRange {
+    fn add<T: IsotropicTwobodyEnergy + Cutoff + ?Sized>(self, pair: &T, r_sq: f64) -> Self {
+        Self {
+            energy: self.energy + pair.isotropic_twobody_energy(r_sq),
+            overlap: self.overlap || r_sq < pair.lower_cutoff().powi(2),
+        }
+    }
+
+    fn pose_energy(self, coulomb: f64) -> f64 {
+        overlap_or(self.energy + coulomb, self.overlap)
+    }
+}
+
+/// Short-range energy between two structures using a potential matrix.
+fn compute_pairwise_energy<P, T>(a: &Structure, b: &Structure, potentials: &P) -> ShortRange
 where
     P: std::ops::Index<(usize, usize), Output = T>,
-    T: IsotropicTwobodyEnergy,
+    T: IsotropicTwobodyEnergy + Cutoff + ?Sized,
 {
     itertools::iproduct!(a.pos.iter().zip(&a.atom_ids), b.pos.iter().zip(&b.atom_ids))
-        .map(|((pa, &ida), (pb, &idb))| {
-            potentials[(ida, idb)].isotropic_twobody_energy((pa - pb).norm_squared())
+        .fold(ShortRange::default(), |sr, ((pa, &ida), (pb, &idb))| {
+            sr.add(&potentials[(ida, idb)], (pa - pb).norm_squared())
         })
-        .sum()
 }
 
 /// Screened Coulomb (Yukawa) energy for a single pair.
 /// Skips uncharged pairs to avoid the exp() call and division by zero at r=0.
 #[inline]
-fn yukawa_energy(prefactor: f32, params: &CoulombParams, r_sq: f64) -> f64 {
+pub(crate) fn yukawa_energy(prefactor: f32, params: &CoulombParams, r_sq: f64) -> f64 {
     if prefactor.abs() <= 1e-12 || r_sq >= f64::from(params.cutoff).powi(2) {
         return 0.0;
     }
@@ -358,26 +395,24 @@ fn pairwise_analytical_coulomb(a: &Structure, b: &Structure, params: &CoulombPar
         .sum()
 }
 
-/// Compute energy between all atoms in a structure and a single test atom.
+/// Short-range energy between all atoms in a structure and a single test atom.
 fn single_atom_energy<P, T>(
     structure: &Structure,
     atom_id: usize,
     pos: &Vector3,
     potentials: &P,
-) -> f64
+) -> ShortRange
 where
     P: std::ops::Index<(usize, usize), Output = T>,
-    T: IsotropicTwobodyEnergy,
+    T: IsotropicTwobodyEnergy + Cutoff + ?Sized,
 {
     structure
         .pos
         .iter()
-        .zip(structure.atom_ids.iter())
-        .map(|(atom_pos, &aid)| {
-            let dist_sq = (atom_pos - pos).norm_squared();
-            potentials[(aid, atom_id)].isotropic_twobody_energy(dist_sq)
+        .zip(&structure.atom_ids)
+        .fold(ShortRange::default(), |sr, (atom_pos, &aid)| {
+            sr.add(&potentials[(aid, atom_id)], (atom_pos - pos).norm_squared())
         })
-        .sum()
 }
 
 /// Analytical Coulomb energy between all atoms in a structure and a single test atom.
