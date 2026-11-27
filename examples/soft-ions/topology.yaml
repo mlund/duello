@@ -1,0 +1,10 @@
+# Cation and anion whose short-range pair is a soft wall: the table starts at
+# lower_cutoff = 1 Å on a few kJ/mol, far below what Yukawa gains on overlap.
+atoms:
+  - {name: PP, mass: 1.0, charge: 1.0, sigma: 4.0, epsilon: 0.5}
+  - {name: NP, mass: 1.0, charge: -1.0, sigma: 4.0, epsilon: 0.5}
+system:
+  energy:
+    - !Nonbonded
+      default:
+        - !CustomPotential {function: "E*(1-r/RC)^2", cutoff: 4.0, lower_cutoff: 1.0, constants: {E: 5.0, RC: 4.0}}

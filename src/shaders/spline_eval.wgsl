@@ -1,8 +1,19 @@
 // Spline lookup shared by kernels that bind `spline_coeffs` and `spline_params`.
+// Prepended: `const OVERLAP_ENERGY` (energy::OVERLAP_ENERGY).
+
+// Below its table start a pair's model is undefined, so the pose is an
+// overlap: its energy is OVERLAP_ENERGY. Without this, exact Yukawa
+// outweighs the linearly extrapolated wall and opposite charges collapse.
+fn inside_table(params: SplineParams, r: f32) -> bool {
+    return r < params.r_min;
+}
+
+fn spline_energy(pair_idx: u32, r: f32) -> f32 {
+    return spline_energy_at(spline_params[pair_idx], r);
+}
 
 // Evaluate spline energy using Horner's method
-fn spline_energy(pair_idx: u32, r: f32) -> f32 {
-    let params = spline_params[pair_idx];
+fn spline_energy_at(params: SplineParams, r: f32) -> f32 {
 
     if r >= params.r_max {
         return 0.0;

@@ -96,9 +96,71 @@ pub trait AsyncEnergyBackend: EnergyBackend {
 #[cfg(test)]
 mod tests {
     use super::simd::orient_position_f32;
+    use super::test_support::{along_x, soft_ion_pair, TestPair};
     use super::*;
     use crate::icoscan::orient_structures;
     use crate::structure::Structure;
+
+    /// Every backend on `pair`.
+    fn backends(pair: TestPair) -> Vec<(&'static str, Box<dyn EnergyBackend>)> {
+        use super::grid::{GridBackend, GridSpec};
+        use super::test_support::no_gpu;
+        let (a, b) = (pair.ref_a.clone(), pair.ref_b.clone());
+        let simd = SimdBackend::new(a.clone(), b.clone(), &pair.splines, &pair.coulomb);
+        let mut backends: Vec<(&str, Box<dyn EnergyBackend>)> = vec![("simd", Box::new(simd))];
+        if !no_gpu() {
+            let gpu = GpuBackend::new(a.clone(), b.clone(), &pair.splines, &pair.coulomb).unwrap();
+            // A cap far above the overlap floor, so only the table start can trip it.
+            let spec = GridSpec {
+                energy_cap: 1e4,
+                ..GridSpec::default()
+            };
+            let grid =
+                GridBackend::new(a.clone(), b.clone(), &pair.splines, &pair.coulomb, spec).unwrap();
+            backends.push(("gpu", Box::new(gpu)));
+            backends.push(("grid", Box::new(grid)));
+        }
+        backends.push(("reference", Box::new(pair.into_exact(a, b))));
+        backends
+    }
+
+    // Invariant: a pair closer than its table start makes the pose an overlap,
+    // however much Yukawa attracts.
+    #[test]
+    fn opposite_charges_cannot_collapse_through_a_soft_wall() {
+        for (label, backend) in backends(soft_ion_pair().0) {
+            let u = backend.compute_energy(&along_x(0.05));
+            assert!(
+                u >= crate::energy::OVERLAP_ENERGY,
+                "{label}: overlap scored {u:.1} kJ/mol"
+            );
+        }
+    }
+
+    // Invariant: an overlap stays finite, even with like charges coincident.
+    #[test]
+    fn coincident_like_charges_stay_finite() {
+        let (mut pair, _) = soft_ion_pair();
+        pair.ref_b = pair.ref_a.clone(); // cation on cation
+        for (label, backend) in backends(pair) {
+            let u = backend.compute_energy(&along_x(0.0));
+            assert_eq!(u, crate::energy::OVERLAP_ENERGY, "{label}");
+        }
+    }
+
+    // Invariant: poses with every pair at or beyond its table start are unchanged.
+    #[test]
+    fn pairs_beyond_the_table_start_are_not_overlaps() {
+        let (pair, lower) = soft_ion_pair();
+        let r = 2.0 * lower;
+        let (ia, ib) = (pair.ref_a.atom_ids[0], pair.ref_b.atom_ids[0]);
+        let prefactor = pair.coulomb.prefactors[ia * pair.splines.n_types() + ib];
+        let yukawa = crate::energy::yukawa_energy(prefactor, &pair.coulomb, r * r);
+        for (label, backend) in backends(pair) {
+            let u = backend.compute_energy(&along_x(r));
+            assert!(u < 0.5 * yukawa, "{label}: {u:.1} kJ/mol at {r} Å");
+        }
+    }
 
     /// Verify that the f32/glam orientation (SIMD) agrees with the f64/nalgebra
     /// orientation (CPU) to within f32 precision. Both paths must produce the

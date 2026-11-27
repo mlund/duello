@@ -116,6 +116,37 @@ fn lysozyme_with_topology(top: &Path) -> TestPair {
     load(spec)
 }
 
+/// examples/soft-ions: one cation (A) and one anion (B) whose pair table
+/// starts at 1 Å on a soft wall. Returns the pair and that table start (Å).
+pub fn soft_ion_pair() -> (TestPair, f64) {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/soft-ions");
+    let (pp, np, top) = (
+        dir.join("PP.xyz"),
+        dir.join("NP.xyz"),
+        dir.join("topology.yaml"),
+    );
+    let medium = Medium::salt_water(TEMPERATURE, Salt::SodiumChloride, 0.02);
+    let spec = PairSpec {
+        a: Source::File(&pp),
+        b: Some(Source::File(&np)),
+        top: Some(&top),
+        chains: [&[], &[]],
+        cg: CgOptions::default(),
+        medium: &medium,
+    };
+    (load(spec), 1.0)
+}
+
+/// B at (r, 0, 0): `vertex_i = x̂` maps the separation axis onto x.
+pub fn along_x(r: f64) -> PoseParams {
+    PoseParams {
+        r,
+        omega: 0.0,
+        vertex_i: Vector3::x(),
+        vertex_j: Vector3::z(),
+    }
+}
+
 /// Temperature (K) of the chymotrypsinogen fixture.
 pub const CGN_TEMPERATURE: f64 = 300.0;
 

@@ -2,7 +2,7 @@
 // Each workgroup thread processes one pose
 //
 // Prepended at runtime: the grid-type-specific spline WGSL (interatomic
-// crate), common.wgsl and spline_eval.wgsl.
+// crate), common.wgsl and spline_eval.wgsl (gpu::spline_eval_wgsl).
 
 struct Uniforms {
     n_atoms_a: u32,
@@ -47,6 +47,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Transform each B bead once, then loop A inside: N_B rotations per pose.
     var total_energy: f32 = 0.0;
+    var overlap = false;
 
     for (var j: u32 = 0u; j < uniforms.n_atoms_b; j++) {
         let pos_b = quat_rotate(tf.q, ref_pos_b[j].xyz) + tf.c;
@@ -56,9 +57,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let pair_idx = atom_ids[i] * uniforms.n_atom_types + id_b;
             let diff = ref_pos_a[i].xyz - pos_b;
             let r = sqrt(dot(diff, diff));
-            total_energy += spline_energy(pair_idx, r) + coulomb_energy(pair_idx, r);
+            let params = spline_params[pair_idx];
+            total_energy += spline_energy_at(params, r) + coulomb_energy(pair_idx, r);
+            overlap = overlap || inside_table(params, r);
         }
     }
 
+    if overlap {
+        total_energy = OVERLAP_ENERGY;
+    }
     energies[pose_idx] = total_energy;
 }

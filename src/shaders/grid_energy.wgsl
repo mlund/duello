@@ -83,13 +83,16 @@ struct Near {
     u: f32,
     // The bead's near energy reached the cap: the pose is an overlap.
     in_wall: bool,
+    // A pair sits inside its table start: an overlap too (see inside_table).
+    inside: bool,
 }
 
-// S·U of A beads [span.x, span.y) within near_r2 of `p`, uncapped. Walls are
-// finite (splines extrapolate linearly); one big enough to swamp the f32 sum
-// also puts its bead over the cap, so the lost digits never matter.
-fn span_energy(span: vec2<u32>, type_b: u32, p: vec3<f32>, r2_max: f32) -> f32 {
-    var u = 0.0;
+// S·U of A beads [span.x, span.y) within near_r2 of `p`, uncapped, and
+// whether one sits inside its table start (`inside`). Walls are finite (splines
+// extrapolate linearly); one big enough to swamp the f32 sum also puts its
+// bead over the cap, so the lost digits never matter.
+fn span_energy(span: vec2<u32>, type_b: u32, p: vec3<f32>, r2_max: f32) -> Near {
+    var near = Near(0.0, false, false);
     for (var i = span.x; i < span.y; i++) {
         let a = bead_a(i);
         let d = a.xyz - p;
@@ -98,27 +101,31 @@ fn span_energy(span: vec2<u32>, type_b: u32, p: vec3<f32>, r2_max: f32) -> f32 {
         if d2 < r2_max {
             let r = sqrt(d2);
             let pair = u32(a.w) * grid.n_atom_types + type_b;
-            u += near_weight(r) * spline_energy(pair, r);
+            let params = spline_params[pair];
+            near.u += near_weight(r) * spline_energy_at(params, r);
+            near.inside = near.inside || inside_table(params, r);
         }
     }
-    return u;
+    return near;
 }
 
 // S·U over A beads within near_r2 of `p`, then capped as a whole: a bead
 // whose net near energy reaches the cap is an overlap, while a wall pair
 // offset by attraction from other A beads stays as summed.
 fn near_energy(type_b: u32, p: vec3<f32>) -> Near {
-    var u = 0.0;
+    var near = Near(0.0, false, false);
     let r2_max = grid.near_r2 * grid.near_r2;
     let box = near_box(batch.cells, p);
     if !box.empty {
         for (var z = box.lo.z; z <= box.hi.z; z++) {
             for (var y = box.lo.y; y <= box.hi.y; y++) {
-                u += span_energy(row_span(batch.cells, box, y, z), type_b, p, r2_max);
+                let span = span_energy(row_span(batch.cells, box, y, z), type_b, p, r2_max);
+                near.u += span.u;
+                near.inside = near.inside || span.inside;
             }
         }
     }
-    return Near(min(u, grid.energy_cap), u >= grid.energy_cap);
+    return Near(min(near.u, grid.energy_cap), near.u >= grid.energy_cap, near.inside);
 }
 
 // Exact screened Coulomb over charged pairs; not gridded, so it holds at any
@@ -152,6 +159,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let tf = pose_transform(pose);
     var u: f32 = 0.0;
     var in_wall = false;
+    var inside = false;
     if pose.r <= batch.sr_range {
         for (var j = 0u; j < batch.n_atoms_b; j++) {
             let b = bead_b(j);
@@ -159,6 +167,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let code = u32(b.w);
             let near = near_energy(code & 0xffffu, p);
             in_wall = in_wall || near.in_wall;
+            inside = inside || near.inside;
             u += far_energy(code >> 16u, p) + near.u;
         }
     }
@@ -167,6 +176,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // this a low cap would let attraction outweigh it.
     if in_wall {
         u = max(u, grid.energy_cap);
+    }
+    if inside {
+        u = OVERLAP_ENERGY;
     }
     energies[pose_idx] = u;
 }

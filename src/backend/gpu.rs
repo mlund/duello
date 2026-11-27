@@ -156,6 +156,16 @@ pub(crate) fn pack_positions(s: &Structure) -> Vec<[f32; 4]> {
     s.pos.iter().map(|p| pack_bead(p, 0.0)).collect()
 }
 
+/// Spline lookup for kernels binding `spline_coeffs` and `spline_params`,
+/// with the overlap floor its table start implies.
+pub(crate) fn spline_eval_wgsl() -> String {
+    format!(
+        "const OVERLAP_ENERGY: f32 = {:?};\n{}",
+        crate::energy::OVERLAP_ENERGY as f32,
+        include_str!("../shaders/spline_eval.wgsl")
+    )
+}
+
 /// GPU-compatible uniform parameters.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -243,7 +253,7 @@ impl GpuBackend {
             "{}\n{}\n{}\n{}",
             tables.wgsl,
             include_str!("../shaders/common.wgsl"),
-            include_str!("../shaders/spline_eval.wgsl"),
+            spline_eval_wgsl(),
             include_str!("../shaders/energy.wgsl")
         );
         let kernel = PoseKernel::new(&gpu, "Energy", &source, &BINDINGS);
